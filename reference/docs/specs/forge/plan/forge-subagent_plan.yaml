@@ -1,0 +1,389 @@
+# forge-subagent 実装計画書
+
+# === トレーサビリティ ===
+requirements_traceability:
+  - requirement_id: REQ-005
+    title: review 系 SKILL の起動契約 整理要件
+    design_id: DES-029
+    status: completed
+
+design_traceability:
+  - design_id: DES-029
+    title: SKILL / Agent 起動契約 設計書
+    requirement_ids:
+      - REQ-005
+    task_ids:
+      - TASK-001
+      - TASK-002
+      - TASK-003
+      - TASK-004
+      - TASK-005
+      - TASK-006
+      - TASK-007
+      - TASK-008
+      - TASK-009
+      - TASK-010
+      - TASK-011
+      - TASK-012
+      - TASK-013
+      - TASK-014
+      - TASK-015
+      - TASK-016
+
+# === タスク一覧 ===
+tasks:
+  # --- Phase 1: fork 安全機能の全適用 (Step 1) ---
+  - task_id: TASK-001
+    title: COMMON-DES-001 §6 リスト改訂（reviewer / evaluator / fixer の 3 行追加）
+    priority: 90
+    status: completed
+    design_id: DES-029
+    depends_on: []
+    group_id: null
+    build_check: per_task
+    description:
+      - docs/specs/common/design/COMMON-DES-001_skill_base_design.md の §6 fork 型 SKILL 一覧テーブルを読む
+      - DES-029 §10 の 3 行（reviewer / evaluator / fixer）を §6 テーブルに fork 採用根拠つきで追加
+      - dprint fmt 適用
+      - python3 -m unittest discover -s tests -p 'test_*.py' がパスすることを確認
+    acceptance_criteria: "COMMON-DES-001 §6 テーブルに reviewer / evaluator / fixer が fork 採用根拠つきで追記され、python3 -m unittest discover -s tests がパスすること"
+    required_reading:
+      - docs/specs/common/design/COMMON-DES-001_skill_base_design.md
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+
+  - task_id: TASK-002
+    title: reviewer/SKILL.md fork 安全機能全適用（§6.1〜§6.4）
+    priority: 90
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/reviewer/SKILL.md を読む
+      - frontmatter に context: fork と agent: general-purpose を追加
+      - argument-hint を "session_dir kind engine [flags]" に変更（reviewer 固有の engine 引数）
+      - 本文冒頭に自己再帰禁止 [MANDATORY] 注記を追加（DES-029 §6.4 の雛形）
+      - ## Role セクションに否定的制約（親タスク引継禁止 / Edit 禁止 / 他スキル起動禁止）を追加（§6.2）
+      - ## 引数解釈 セクションに引数解釈ガードを追加（§6.3 の例テーブル、engine 引数あり）
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "reviewer/SKILL.md frontmatter に context: fork と agent: general-purpose が含まれ、本文に Role 否定的制約・引数解釈ガード・自己再帰禁止が含まれること。既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/rules/skill_authoring_notes.md
+      - plugins/forge/skills/reviewer/SKILL.md
+
+  - task_id: TASK-003
+    title: evaluator/SKILL.md fork 安全機能全適用（§6.1〜§6.4）
+    priority: 90
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/evaluator/SKILL.md を読む
+      - frontmatter に context: fork と agent: general-purpose を追加
+      - argument-hint を "session_dir kind [flags]" に変更（engine 引数なし）
+      - 本文冒頭に自己再帰禁止 [MANDATORY] 注記を追加
+      - ## Role セクションに否定的制約を追加（reviewer と同構造、Edit / Write 禁止含む）
+      - ## 引数解釈 セクションに引数解釈ガードを追加（§6.3 の例テーブル、engine 引数なし）
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "evaluator/SKILL.md frontmatter に context: fork と agent: general-purpose が含まれ、本文に Role 否定的制約・引数解釈ガード・自己再帰禁止が含まれること。既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/rules/skill_authoring_notes.md
+      - plugins/forge/skills/evaluator/SKILL.md
+
+  - task_id: TASK-004
+    title: fixer/SKILL.md fork 安全機能全適用（§6.1〜§6.4、Edit/Write 除外ルール適用）
+    priority: 90
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/fixer/SKILL.md を読む
+      - frontmatter に context: fork と agent: general-purpose を追加
+      - argument-hint を "session_dir kind [flags]" に変更
+      - 本文冒頭に自己再帰禁止 [MANDATORY] 注記を追加
+      - ## Role セクションに否定的制約を追加（§6.2 の "(fixer 以外)" 括弧書きに準拠し Edit/Write は許可）
+      - ## 引数解釈 セクションに引数解釈ガードを追加（§6.3）
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "fixer/SKILL.md frontmatter に context: fork と agent: general-purpose が含まれ、本文に Role 否定的制約・引数解釈ガード・自己再帰禁止が含まれること（Edit/Write は fixer の本質的責務として許可記述あり）。既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/rules/skill_authoring_notes.md
+      - plugins/forge/skills/fixer/SKILL.md
+
+  # --- Phase 2: 誤読源文言削除 (Step 2+3、Phase 1 後・TASK-002/003 完了後に並列可) ---
+
+  - task_id: TASK-005
+    title: reviewer/SKILL.md 誤読源文言削除（Issue #32 対策、設計原則セクション更新）
+    priority: 80
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-002
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/reviewer/SKILL.md の「設計原則」セクションを読む
+      - 汎用 Agent として動作 -> fork 型 SKILL として動作 に変更
+      - Claude engine 時は汎用 Agent への委譲ではなく自身 (fork 型 SKILL) が実行すると変更
+      - reviewer が別の汎用 Agent を起動するとも読める記述を全て削除または修正
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "reviewer/SKILL.md に「汎用 Agent として動作」「汎用 Agent を起動」という誤読源の表現が含まれないこと。既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - plugins/forge/skills/reviewer/SKILL.md
+
+  - task_id: TASK-006
+    title: evaluator/SKILL.md 誤読源文言削除(設計原則セクション更新)
+    priority: 80
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-003
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/evaluator/SKILL.md の「設計原則」セクションを読む
+      - 汎用 Agent として起動される -> Skill ツール (fork) で起動される に変更
+      - 汎用 Agent 起動を前提とした記述を fork 型 SKILL として動作する記述に修正
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "evaluator/SKILL.md に「汎用 Agent として起動」という誤読源の表現が含まれないこと。既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - plugins/forge/skills/evaluator/SKILL.md
+
+  # --- Phase 3: mark_fixed.py 責務移転 (Step 4、Phase 1 後・Phase 2 と並列可) ---
+
+  - task_id: TASK-007
+    title: mark_fixed.py 責務移転（fixer / review / present-findings の 3 ファイルを同時変更）
+    priority: 80
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-004
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/fixer/SKILL.md の mark_fixed.py 呼び出し手順を削除し、patch_result.json 書き込みを明記
+      - plugins/forge/skills/review/SKILL.md の軽量経路での mark_fixed.py 直呼びを削除し単独修正レビュー後に呼ぶ契約に変更
+      - plugins/forge/skills/present-findings/SKILL.md の fixer 完了直後の mark_fixed.py 呼び出しを削除し単独修正レビュー後に呼ぶフローに変更
+      - 3 ファイルを同一コミットで変更（中間不整合を防ぐため、DES-029 §11 Step 4 の注記に従う）
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "fixer/SKILL.md に mark_fixed.py を直接呼ぶ手順がなく、review/SKILL.md・present-findings/SKILL.md で mark_fixed.py を単独修正レビュー後に呼ぶ契約になっていること。既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - plugins/forge/skills/fixer/SKILL.md
+      - plugins/forge/skills/review/SKILL.md
+      - plugins/forge/skills/present-findings/SKILL.md
+
+  # --- Phase 4: オーケストレーターの起動方法変更 (Step 5+6、Phase 2+3 完了後) ---
+
+  - task_id: TASK-008
+    title: review/SKILL.md 起動方法変更（Skill ツール (fork) 化・経路分岐表追記・allowed-tools Agent 削除）
+    priority: 70
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-005
+      - TASK-006
+      - TASK-007
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/review/SKILL.md を読む
+      - reviewer / evaluator / fixer の起動を Agent ツール → Skill ツール (fork) に変更
+      - 各 SKILL 起動箇所の args 形式を DES-029 §6.3 に合わせて整備
+      - allowed-tools から Agent を削除（Skill に変更済みのため不要）
+      - DES-029 §7 の修正経路分岐表を review/SKILL.md の適切なセクションに追記
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "review/SKILL.md の reviewer/evaluator/fixer 起動が Skill ツール (fork) 経由になっており、allowed-tools に Agent がなく修正経路分岐表が追記されていること。既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - plugins/forge/skills/review/SKILL.md
+
+  - task_id: TASK-009
+    title: present-findings/SKILL.md 残り改訂（fixer 起動を Skill ツール (fork) に変更）
+    priority: 70
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-007
+    group_id: null
+    build_check: per_task
+    description:
+      - plugins/forge/skills/present-findings/SKILL.md を読む
+      - fixer 起動の記述を「汎用 Agent 経由」→「Skill ツール (fork) 経由」に変更
+      - 設計原則テーブルの「fixer は汎用 Agent 経由」を「fixer は Skill ツール (fork) 経由」に更新
+      - allowed-tools に Skill が含まれることを確認し Agent が含まれていれば削除
+      - dprint fmt 適用 + 既存テストがパスすることを確認
+    acceptance_criteria: "present-findings/SKILL.md の fixer 起動記述が Skill ツール (fork) 経由になっており、既存テストが pass すること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - plugins/forge/skills/present-findings/SKILL.md
+
+  # --- Phase 5: 静的検証テストの追加 (Step 7、Phase 4 完了後) ---
+
+  - task_id: TASK-010
+    title: TEST-S001 + TEST-S002 実装（allowed-tools 整合性テスト 2 種）
+    priority: 60
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-008
+      - TASK-009
+    group_id: null
+    build_check: per_task
+    description:
+      - tests/forge/subagent/__init__.py を作成（テストパッケージ初期化）
+      - tests/forge/subagent/test_agent_allowedtools_consistency.py を作成（TEST-S001）
+      - tests/forge/subagent/test_skill_allowedtools_consistency.py を作成（TEST-S002）
+      - 除外スコープ（fenced コードブロック・### 制約/### 禁止事項 見出し配下）を正規表現で実装
+      - python3 -m unittest discover -s tests -p 'test_*.py' -v で全件パスを確認
+    acceptance_criteria: "test_agent_allowedtools_consistency.py と test_skill_allowedtools_consistency.py が tests/forge/subagent/ に存在し、python3 -m unittest discover がパスすること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/rules/implementation_guidelines.md
+
+  - task_id: TASK-011
+    title: TEST-S003 実装（旧 perspective 文字列の除去確認テスト）
+    priority: 60
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-008
+      - TASK-009
+    group_id: null
+    build_check: per_task
+    description:
+      - tests/forge/subagent/test_legacy_perspective_removed.py を作成（TEST-S003）
+      - plugins/forge/ と docs/readme/forge/ 配下で review_{perspective}.md 文字列を検索する実装
+      - OBSOLETE マーカー付き行を除外する実装を追加
+      - python3 -m unittest discover -s tests -p 'test_*.py' -v でパスを確認
+    acceptance_criteria: "test_legacy_perspective_removed.py が tests/forge/subagent/ に存在し、python3 -m unittest がパスすること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/rules/implementation_guidelines.md
+
+  - task_id: TASK-012
+    title: TEST-S004 + TEST-S005 実装（Warning テスト 2 種）
+    priority: 60
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-008
+      - TASK-009
+    group_id: null
+    build_check: per_task
+    description:
+      - tests/forge/subagent/test_subagent_term_usage.py を作成（TEST-S004、warning 相当・CI fail なし）
+      - tests/forge/subagent/test_slash_command_launch_context.py を作成（TEST-S005）
+      - TEST-S005 は近傍 5 行内の起動経路明示を確認し [KNOWN-FP] マーカーで除外可能にする
+      - 両テストとも assertion ではなく stdout 出力（warning）で違反を報告する実装
+      - python3 -m unittest discover -s tests がパスすることを確認
+    acceptance_criteria: "TEST-S004/S005 が tests/forge/subagent/ に存在し、python3 -m unittest がパスすること。両テストが warning 段階で CI fail させない設計になっていること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/rules/implementation_guidelines.md
+
+  - task_id: TASK-013
+    title: fork 型 SKILL frontmatter 検証テスト実装（§9.2 拡張）
+    priority: 60
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-008
+      - TASK-009
+    group_id: null
+    build_check: per_task
+    description:
+      - tests/forge/subagent/test_fork_skill_frontmatter.py を作成
+      - reviewer / evaluator / fixer の frontmatter に context: fork が含まれることを検証
+      - reviewer / evaluator / fixer の frontmatter に agent: general-purpose が含まれることを検証
+      - reviewer / evaluator の本文に Edit/Write 禁止の制約文言があることを検証
+      - reviewer / evaluator / fixer の本文に「親タスクを引き継がない」旨の Role 制約があることを検証
+      - reviewer / evaluator / fixer の本文に「自己再帰禁止」の明示があることを検証
+      - python3 -m unittest discover -s tests がパスすることを確認
+    acceptance_criteria: "test_fork_skill_frontmatter.py が tests/forge/subagent/ に存在し、reviewer/evaluator/fixer の全 fork 型要件を網羅的に検証し、python3 -m unittest がパスすること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/rules/implementation_guidelines.md
+
+  # --- Phase 6: 設計書更新 (Step 8、Phase 4 完了後) ---
+
+  - task_id: TASK-014
+    title: DES-015 への修正経路分岐表追記
+    priority: 50
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-008
+    group_id: null
+    build_check: per_task
+    description:
+      - docs/specs/forge/design/DES-015_review_workflow_design.md を読む
+      - DES-029 §7 の修正経路分岐表（軽量経路 / fork 型 fixer 経路の 2 種）を適切なセクションに追記
+      - 追記箇所のコンテキストに沿った文章で接続する
+      - dprint fmt 適用
+    acceptance_criteria: "DES-015 に修正経路分岐表（軽量経路 / fork 型 fixer 経路の 2 種）が追記されていること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/specs/forge/design/DES-015_review_workflow_design.md
+
+  - task_id: TASK-015
+    title: DES-028 の軽量経路手順 Step 4 を新 fixed 遷移契約に更新
+    priority: 50
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-008
+    group_id: null
+    build_check: per_task
+    description:
+      - docs/specs/forge/design/DES-028_review_policy_design.md を読む
+      - 軽量経路の手順で mark_fixed.py を呼ぶ記述を探す
+      - 呼び出し元（review / present-findings）が単独修正レビュー後に mark_fixed.py を呼ぶ契約に更新
+      - dprint fmt 適用
+    acceptance_criteria: "DES-028 の軽量経路手順に「単独修正レビュー後に呼び出し元が mark_fixed.py を呼ぶ」契約が記述されていること"
+    required_reading:
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+      - docs/specs/forge/design/DES-028_review_policy_design.md
+
+  # --- Phase 7: 要件書 TBD 解消 (Step 9、Phase 5 完了後) ---
+
+  - task_id: TASK-016
+    title: REQ-005 の TBD-002〜005 解消
+    priority: 30
+    status: completed
+    design_id: DES-029
+    depends_on:
+      - TASK-010
+      - TASK-011
+      - TASK-012
+      - TASK-013
+    group_id: null
+    build_check: per_task
+    description:
+      - docs/specs/forge/requirements/REQ-005_skill_agent_launch_contract.md の §8 未確定事項を読む
+      - TBD-002（TEST-S001/S002 の判定ロジック）を Phase 5 の実装内容に基づき解消
+      - TBD-003（TEST-S003 の OBSOLETE マーカー運用）を test_legacy_perspective_removed.py の除外ロジックから記述
+      - TBD-004（方針選定）は B-2 採用済みとして DES-029 §5 への参照で解消
+      - TBD-005（TEST-S005 検出ヒューリスティクス）を test_slash_command_launch_context.py の実装内容から記述
+      - dprint fmt 適用
+    acceptance_criteria: "REQ-005 の §8 TBD-002〜005 が全て「解消済み」になっており、各 TBD に解消内容が記述されていること"
+    required_reading:
+      - docs/specs/forge/requirements/REQ-005_skill_agent_launch_contract.md
+      - docs/specs/forge/design/DES-029_skill_agent_launch_contract_design.md
+
+# === 改定履歴 ===
+revision_history:
+  - date: "2026-05-26"
+    content: 初版作成。DES-029 §11 の 9 ステップを 7 フェーズ・16 タスクに分解
