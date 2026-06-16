@@ -4,7 +4,7 @@
 .claude/settings.local.json
 .claude/.temp/
 # doc-advisor embedding index は派生物 (API キー/モデルバージョン依存) のため非追跡
-.claude/doc-advisor/index/
+.claude/.doc-advisor/index/
 
 # テスト用一時ディレクトリ（tempfile.mkdtemp の出力先・/tmp 不可環境のフォールバック）
 tests/**/.temp/
