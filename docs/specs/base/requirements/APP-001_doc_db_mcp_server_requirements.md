@@ -11,7 +11,7 @@ Markdown テキストを受け取り、ハイブリッド検索（ベクトル +
 | ID     | 要件 |
 |--------|------|
 | PRE-01 | サーバーに OpenAI API キーが設定されていること。`OPENAI_API_DOCDB_KEY` を優先し、未設定時のみ `OPENAI_API_KEY` をフォールバックとして使用する |
-| PRE-02 | クライアント（Claude Code）が MCP Server に SSE/HTTP で接続できること |
+| PRE-02 | MCP クライアントが MCP Server に SSE/HTTP で接続できること |
 
 ## 要件一覧
 
