@@ -1,6 +1,6 @@
 # ToC checksums for key: specs
 # Auto-generated - do not edit
-generated_at: 2026-06-16T13:43:49Z
+generated_at: 2026-06-19T09:47:36Z
 file_count: 1
 checksums:
-  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md: a7b6405580e2bba2fe49b3b0c894faf8677f065d8c2cc51bced23c0ef99bf11e
+  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md: 04dad4570e4330e1c9d2668b7a31804b57f9f409b9c1d5ea0868ebb349532db9
