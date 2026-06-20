@@ -5,38 +5,71 @@
 metadata:
   name: Document Search Index (specs)
   key: specs
-  generated_at: 2026-06-19T09:47:36Z
-  file_count: 1
+  generated_at: 2026-06-20T05:08:48Z
+  file_count: 2
 
 docs:
-  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md:
-    title: APP-001 doc-db MCP Server Requirements Specification
-    purpose: Defines requirements for a hybrid search document MCP server supporting vector, lexical, and LLM reranking across registered document indices
+  docs/specs/base/design/DES-001_doc_db_mcp_server_design.md:
+    title: DES-001 doc-db MCP Server Design
+    purpose: Specifies architecture, data model, modules, API integration, and search pipeline for Markdown hybrid search MCP server with vector and BM25 indexes
     content_details:
-      - Document upsert with heading-based chunking and differential embedding
-      - Document deletion with batch path handling
-      - Hybrid search with vector and lexical matching combined with LLM reranking
-      - Index management by key with listing and deletion capabilities
-      - TTL-based expiration for inactive indices
-      - LRU-based capacity eviction when storage limits exceeded
-      - OpenAI API integration for embeddings and rerank operations
-      - SSE/HTTP communication protocol for MCP client-server connection
-      - Error handling for API failures, missing indices, and rerank fallback
-      - Multi-user concurrent query support with parallel access safety
+      - Streamable HTTP transport and MCP server architecture
+      - SQLite schema with keys, records, series_keys, chunks, embeddings, BM25 indexes
+      - Chunker, Embedder, Fetcher, and SearchPipeline modules with interfaces
+      - Hybrid search pipeline combining vector similarity, BM25 lexical search, RRF score fusion, and LLM Rerank
+      - Embedding model selection text-embedding-3-small 1536-dim or text-embedding-3-large 3072-dim
+      - OpenAI Embedding and Chat Completions API integration with retry and timeout settings
+      - WAL mode concurrent access, writer mutex protection, reader RWMutex, busy timeout, and connection pool
+      - TTL and LRU expiry policies with per-key configuration overrides
+      - Upsert series_keys deduplication by content hash to skip re-embedding
+      - Configuration environment variables and testing strategy with unit and integration tests
     applicable_tasks:
-      - doc-db MCP server implementation planning
-      - Feature requirement specification review
-      - Architecture and interface design
-      - API contract validation
-      - Error handling policy implementation
+      - Initial implementation of doc-db MCP server
+      - Architecture and module interface definition review
+      - Search pipeline and scoring algorithm implementation
+      - Database schema and transaction management setup
+      - OpenAI API integration and error handling
+      - Performance testing with concurrent access patterns
+      - Feature addition or modification to chunking, ranking, or expiry policies
     keywords:
-      - doc-db
+      - MCP server
+      - hybrid search
+      - vector similarity
+      - BM25
+      - embedding
+      - SQLite
+      - Streamable HTTP
+      - Rerank
+      - TTL
+      - chunking
+  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md:
+    title: Application Overview Specification
+    purpose: Specification for a hybrid-search MCP server managing document indexes with vector embedding, lexical matching, and LLM reranking for multi-user document registration and natural language queries
+    content_details:
+      - upsert_documents tool for adding and updating documents
+      - delete_documents tool for removing documents by key and series
+      - query tool with hybrid search modes (embedding, lexical, rerank)
+      - index management tool for listing and deleting indexes
+      - expiration policies with TTL and LRU-based cleanup
+      - Markdown heading-based chunk splitting with hierarchy paths
+      - embedding sharing across series by content hash
+      - series-based versioning for document tracking
+      - error handling with external factor focus and fallback strategies
+      - OpenAI API integration for embedding generation and LLM reranking
+    applicable_tasks:
+      - MCP server implementation
+      - hybrid search system design
+      - document index architecture planning
+      - API design and specification review
+      - embedding and vector storage implementation
+    keywords:
       - MCP server
       - hybrid search
       - embedding
       - lexical matching
-      - reranking
-      - chunking
+      - LLM rerank
+      - document indexing
+      - chunk splitting
       - OpenAI API
-      - indexing
-      - TTL expiration
+      - series versioning
+      - expiration policy
