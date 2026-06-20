@@ -60,7 +60,7 @@ internal/store  → (外部依存なし)
 | パッケージ | 責務 | 主な依存 |
 | --- | --- | --- |
 | `cmd/docdb` | エントリポイント・設定読み込み・サーバー起動 | `internal/mcp`, `internal/store`, `internal/expiry` |
-| `internal/mcp` | MCP ツールハンドラ（upsert/delete/query/manage） | `internal/store`, `internal/search`, `internal/chunker`, `internal/fetcher` |
+| `internal/mcp` | MCP ツールハンドラ（upsert/delete/query/manage） | `internal/store`, `internal/search`, `internal/chunker`, `internal/embedder`, `internal/fetcher` |
 | `internal/store` | SQLite の読み書き・トランザクション管理 | `modernc.org/sqlite` |
 | `internal/chunker` | Markdown を見出し境界でチャンク分割 | （外部依存なし） |
 | `internal/embedder` | OpenAI Embedding API 呼び出し | `net/http` |
@@ -168,8 +168,8 @@ CREATE TABLE chunks (
 );
 
 -- 埋め込みベクトル（BLOB: float32 配列をリトルエンディアンでシリアライズ）
--- dim カラム: 行ごとにベクトル次元数を記録する。モデル変更時の次元ミスマッチを起動時に検出するために保持する。
--- 同一 DB 内で異なる dim のベクトルが混在した場合は起動時エラーとして fail-fast する。
+-- dim カラム: 行ごとにベクトル次元数を記録する。起動時に SELECT DISTINCT dim FROM embeddings を実行し、
+-- 結果が DOCDB_EMBED_DIM と異なる場合は「モデル変更後の DB 再構築が必要」として fail-fast する。
 CREATE TABLE embeddings (
     chunk_id  INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
     vector    BLOB NOT NULL,
@@ -251,7 +251,7 @@ sequenceDiagram
             H->>F: Fetch(ctx, url)
             F-->>H: content (失敗時: スキップ・エラー記録)
         end
-        H->>H: SHA-256(content) → hash
+        H->>H: normalize(content) → SHA-256 → hash
         H->>S: FindRecord(key, path, hash)
         alt 同一ハッシュあり (DIF-02)
             H->>S: AppendSeries(record_id, series)
@@ -267,6 +267,20 @@ sequenceDiagram
     end
     H-->>C: UpsertResult{processed, skipped, failed, errors}
 ```
+
+**ハッシュ算出の正規化規則（M1）**:
+
+コンテンツの SHA-256 は以下の正規化を行った後の `[]byte` に対して算出する:
+
+1. **BOM 除去**: UTF-8 BOM（`0xEF 0xBB 0xBF`）が先頭にある場合は除去する
+2. **改行コード統一**: `\r\n` および単独 `\r` を `\n` に変換する
+3. **エンコーディング**: UTF-8 として扱う（他エンコーディングは変換せず `Content-Type` charset ヘッダを参照。不明な場合は UTF-8 と仮定する）
+
+クライアントが `hash` フィールドを省略せず送付する場合（`content` 指定時）、サーバーは同じ正規化を行った上で hash を算出し、クライアント提供値と照合する。不一致の場合はサーバー算出値を正として扱う（クライアントの正規化漏れを吸収する）。
+
+**部分 Embed 失敗時の一貫性方針（M2）**:
+
+チャンクの一部が Embedding API 呼び出し失敗でスキップされた場合、**成功チャンクのみを保存する（部分 record 保存）**。理由: all-or-nothing では一時的な API 障害で全ドキュメントが登録失敗になり、リトライまで検索不能になる。歯抜け record が検索品質に与える影響は許容範囲内（失敗チャンクは次回 upsert で再登録できる）。失敗したチャンクのインデックス番号はエラー情報（UPS-OUT-01）に含めて返す。
 
 ### 5.3 query シーケンス
 
@@ -509,3 +523,4 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 | ---------- | ---------- | ---- |
 | 2026-06-20 | 0.1        | 初版作成 |
 | 2026-06-20 | 0.2        | レビュー対応: C2(DIF-02 series 剥がし漏れ修正)・C3(WAL+接続プール方針に改訂)・H1(トークナイザ仕様追加)・H2(ID boost/EMB guarantee追加)・H3(スケール上限明記)・H5(LRU SQL修正)・H6(SSRF対策追加)・H7(起動時 fail-fast)・Chunker依存修正・WALテスト注記・series廃棄TBD追加 |
+| 2026-06-20 | 0.3        | レビュー対応(追補): M1(ハッシュ正規化規則追加)・M2(部分 Embed 失敗方針を部分保存に確定)・§4.1(dim 検査の動作主体を明示)・§3.1(internal/mcp の embedder 依存を追記) |
