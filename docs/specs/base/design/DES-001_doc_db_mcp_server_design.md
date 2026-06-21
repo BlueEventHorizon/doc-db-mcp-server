@@ -46,7 +46,6 @@ flowchart TB
 cmd/          → internal/mcp
 internal/mcp  → internal/store, internal/search, internal/chunker, internal/embedder, internal/fetcher
 internal/search → internal/store
-internal/chunker → internal/embedder
 internal/expiry → internal/store
 internal/store  → (外部依存なし)
 ```
@@ -125,6 +124,10 @@ classDiagram
     SearchPipeline --> Store
     ExpiryWorker --> Store
 ```
+
+**型定義**:
+
+- `KeyInfo`: `ListKeys` の戻り値要素。`key string`・`series []string`・`doc_count int`・`last_updated_at string`・`last_accessed_at string`・`expiry_policy *ExpiryPolicy` を含む。MNG-01「KEY・series 一覧・ドキュメント数・最終更新日時・最終アクセス日時・廃棄ポリシー設定を取得できること」に対応する。
 
 ## 4. データモデル
 
@@ -310,7 +313,7 @@ sequenceDiagram
         R-->>SP: rerankedResults (失敗時: topK をそのまま返す)
     end
     SP-->>H: []SearchResult
-    H-->>C: results{path, heading_path, text, score, score_breakdown, series_keys}
+    H-->>C: results{path, heading_path, text, score, score_breakdown, series_keys, stage_stats}
 ```
 
 ## 6. 検索パイプライン詳細
@@ -341,13 +344,13 @@ sequenceDiagram
 
 - upsert 時に各チャンクの term frequency（TF）と document frequency（DF）を `bm25_stats` / `bm25_df` に保存
 - クエリ時に SQLite から TF/DF を取得し BM25 スコアをメモリ計算
-- パラメータ（k1, b）はサーバー設定ファイルで指定（デフォルト: k1=1.5, b=0.75）
+- パラメータ（k1, b）はサーバー設定ファイルで指定（デフォルト: k1=1.5, b=0.75。Okapi BM25 の経験則デフォルト値（Robertson et al.）。k1 はワード頻度のサチュレーション、b は文書長正規化を制御する）
 
 **トークナイザ仕様（LEX-01）**:
 
 Unicode 正規化 + 正規表現ベースのトークン分割を採用する（形態素解析器は使用しない）。
 
-1. NFKC 正規化 + 小文字化（`unicodedata.normalize("NFKC", text).lower()`）
+1. NFKC 正規化 + 小文字化（`norm.NFKC.String(text)` 後 `strings.ToLower()` を適用。`golang.org/x/text/unicode/norm` + 標準 `strings` パッケージ）
 2. 以下のパターンで順に優先マッチ:
    - `[A-Za-z]+-\d+` → ID パターン全体をひとつのトークンとして扱う（例: `FNC-001`）
    - `[A-Za-z0-9_]+` → ASCII 英数字・アンダースコア
@@ -378,15 +381,28 @@ BM25 スコアに加え、以下のボーナスを加算する:
 Reciprocal Rank Fusion（RRF）を採用:
 
 ```
-score(d) = Σ 1 / (k + rank_i(d))   (k = 60)
+score(d) = Σ 1 / (k + rank_i(d))   (k = 60。Cormack et al. 2009 原論文の推奨値)
 ```
 
 embedding ランクと lexical ランクを統合。加重和より外れ値に頑健で、スケール正規化不要のため採用。
 
 **EMB フォールバックと保証（SC-01）**:
 
-- **EMB フォールバック** (`EMB_FALLBACK_LEX_RATIO = 0.05`): lexical ヒット数 / emb ヒット数 < 0.05 の場合（日本語クエリで BM25 がほぼヒットしない場合など）、RRF ではなく embedding スコア降順でフォールバックする。
-- **EMB top-K 保証** (`EMB_GUARANTEE_K = 5`): クロスランゲージ同義語など lexical スコアが 0 の文書が RRF で押し出されることを防ぐため、embedding 上位 5 件は fused 上位 K 件に必ず含まれるよう昇格させる。
+- **EMB フォールバック** (`EMB_FALLBACK_LEX_RATIO = 0.05`): lexical ヒット数 / emb ヒット数 < 0.05 の場合（日本語クエリで BM25 がほぼヒットしない場合など）、RRF ではなく embedding スコア降順でフォールバックする。（経験則による暫定値。実運用データで検証し調整する）
+- **EMB top-K 保証** (`EMB_GUARANTEE_K = 5`): クロスランゲージ同義語など lexical スコアが 0 の文書が RRF で押し出されることを防ぐため、embedding 上位 5 件は fused 上位 K 件に必ず含まれるよう昇格させる。（経験則による暫定値。実運用データで検証し調整する）
+
+**ステージ候補数トラッキング（QRY-OUT-02）**:
+
+各検索ステージを通過した候補数を `stage_stats` としてクエリ単位で記録し、`SearchResult` に付与する:
+
+```
+stage_stats: {
+  emb_candidates: N,    // embedding 検索でヒットした候補数
+  lex_candidates: N,    // lexical 検索でヒットした候補数
+  fused_candidates: N,  // RRF 融合後の候補数
+  rerank_candidates: N  // LLM Rerank に渡した候補数（Rerank スキップ時は fused_candidates と同値）
+}
+```
 
 ### 6.4 LLM Rerank
 
@@ -464,9 +480,13 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 
 ### 8.4 KEY ごとのポリシーオーバーライド（EXP-04）
 
-`keys.expiry_policy` JSON に個別値を設定。`null` の場合はサーバーデフォルトを適用（TBD-007 確定後に upsert_documents または専用ツールで設定する）。
+**設定方法**: 専用 MCP ツール `manage_index(key, expiry_policy)` を新設する（TBD-007 確定。B案採用）。
 
-> TBD-007 と APP-001 EXP-04 が整合するよう、設定方法確定時に同時改訂する。
+- `manage_index(key string, expiry_policy {ttl_days?: int, max_chunks?: int})` — KEY の廃棄ポリシーを設定・更新する。ドキュメントの再 upsert なしにポリシー変更が可能。
+- `expiry_policy` に `null` を渡すとサーバーデフォルトにリセットする。
+- `keys.expiry_policy` JSON カラムに値を保存。`null` の場合はサーバーデフォルトを適用。
+
+> B案を採用した理由: ドキュメントの再 upsert なしにポリシーを変更できるため、大規模インデックスのポリシー変更が安全かつ効率的。MNG-01/02 と同様の管理操作として専用ツールへ集約することで、ツール責務が明確になる。
 
 ## 9. 設定
 
@@ -495,7 +515,7 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 
 ## 10. エラーハンドリング方針
 
-要件 COMMON-REQ-002（外部要因エラーのみキャッチ、内部バグは伝播）に従う。
+外部要因エラーのみキャッチし、内部バグはサイレントフォールバックせず伝播させる（APP-001 エラーケース節）。
 
 | レイヤー | 方針 |
 | --- | --- |

@@ -1,0 +1,789 @@
+# base 実装計画書
+
+# === トレーサビリティ ===
+requirements_traceability:
+  # 前提条件
+  - requirement_id: PRE-01
+    title: OpenAI API キー設定
+    design_id: DES-001
+    status: pending
+  - requirement_id: PRE-02
+    title: MCP プロトコル準拠の HTTP transport で接続できること
+    design_id: DES-001
+    status: pending
+  # FNC-001 チャンク分割
+  - requirement_id: CHK-01
+    title: Markdown 見出し境界（H1〜H6）でチャンク分割・見出し階層パス保持
+    design_id: DES-001
+    status: pending
+  - requirement_id: CHK-02
+    title: 見出しなし文書は全体を 1 チャンクとして扱う
+    design_id: DES-001
+    status: pending
+  - requirement_id: CHK-03
+    title: チャンク最大サイズ（DOCDB_MAX_CHUNK_SIZE=1500）
+    design_id: DES-001
+    status: pending
+  # FNC-001 差分管理
+  - requirement_id: DIF-01
+    title: key・path 単位で embedding record を管理（hash/chunks/vectors/series_keys）
+    design_id: DES-001
+    status: pending
+  - requirement_id: DIF-02
+    title: 同一ハッシュ時は再 Embedding スキップ・series_keys に追記
+    design_id: DES-001
+    status: pending
+  - requirement_id: DIF-03
+    title: ハッシュ不一致時は新規 record 作成・同一 series の旧 record から series 除去
+    design_id: DES-001
+    status: pending
+  # FNC-001 Embedding
+  - requirement_id: EMB-01
+    title: チャンク単位で Embedding を生成する
+    design_id: DES-001
+    status: pending
+  - requirement_id: EMB-02
+    title: Embedding モデル text-embedding-3-small / 次元数 1536（確定値）
+    design_id: DES-001
+    status: pending
+  # FNC-001 出力
+  - requirement_id: UPS-OUT-01
+    title: 処理結果（処理数・スキップ数・失敗数・失敗パスとエラー内容）を返す
+    design_id: DES-001
+    status: pending
+  - requirement_id: UPS-OUT-02
+    title: 一部 Embedding 失敗時も処理継続・失敗情報を結果に含める
+    design_id: DES-001
+    status: pending
+  # FNC-002 削除処理
+  - requirement_id: DEL-01
+    title: 指定 series を series_keys から除去・空になった record を物理削除
+    design_id: DES-001
+    status: pending
+  - requirement_id: DEL-02
+    title: 存在しないパスはスキップし処理結果に警告として含める
+    design_id: DES-001
+    status: pending
+  # FNC-003 検索処理
+  - requirement_id: LEX-01
+    title: BM25 語彙一致スコア算出・ID パターン完全一致を高スコア処理
+    design_id: DES-001
+    status: pending
+  - requirement_id: SC-01
+    title: Embedding スコアと語彙スコアの統合（RRF k=60）
+    design_id: DES-001
+    status: pending
+  - requirement_id: RR-01
+    title: LLM Rerank（mode=rerank 時のみ・gpt-4o-mini）
+    design_id: DES-001
+    status: pending
+  - requirement_id: RR-02
+    title: LLM Rerank 失敗時は RRF 順でフォールバック
+    design_id: DES-001
+    status: pending
+  # FNC-003 出力
+  - requirement_id: QRY-OUT-01
+    title: 検索結果に path/heading_path/text/score/score_breakdown/series_keys を含める
+    design_id: DES-001
+    status: pending
+  - requirement_id: QRY-OUT-02
+    title: 各ステージ通過候補数（stage_stats）を結果に含める
+    design_id: DES-001
+    status: pending
+  # FNC-004 インデックス管理
+  - requirement_id: MNG-01
+    title: KEY 別インデックス一覧（KEY/series/doc_count/last_updated/last_accessed/expiry_policy）
+    design_id: DES-001
+    status: pending
+  - requirement_id: MNG-02
+    title: 指定 KEY のインデックスを削除できること
+    design_id: DES-001
+    status: pending
+  # FNC-005 廃棄ポリシー
+  - requirement_id: EXP-01
+    title: TTL（最終アクセスからの経過時間）による自動廃棄
+    design_id: DES-001
+    status: pending
+  - requirement_id: EXP-02
+    title: LRU（チャンク総数上限）による自動廃棄
+    design_id: DES-001
+    status: pending
+  - requirement_id: EXP-03
+    title: サーバー全体のデフォルト廃棄ポリシーを環境変数で設定できること
+    design_id: DES-001
+    status: pending
+  - requirement_id: EXP-04
+    title: KEY ごとに廃棄ポリシーをオーバーライドできること（manage_index ツール）
+    design_id: DES-001
+    status: pending
+  - requirement_id: EXP-05
+    title: TTL デフォルト値 30 日・LRU 上限 10000 チャンク（DES-001 §9 確定値）
+    design_id: DES-001
+    status: pending
+  # 非機能要件
+  - requirement_id: NFR-01
+    title: 複数ユーザーの同時クエリに対応すること
+    design_id: DES-001
+    status: pending
+  - requirement_id: NFR-02
+    title: インデックスストレージの並行アクセス耐性（WAL + Mutex）
+    design_id: DES-001
+    status: pending
+  - requirement_id: NFR-03
+    title: MCP プロトコル準拠の HTTP transport で通信すること
+    design_id: DES-001
+    status: pending
+  - requirement_id: NFR-04
+    title: API キーはサーバー側環境変数で管理・クライアントに公開しないこと
+    design_id: DES-001
+    status: pending
+  - requirement_id: NFR-05
+    title: サーバー停止時も既存インデックスデータが失われないこと
+    design_id: DES-001
+    status: pending
+  - requirement_id: NFR-06
+    title: エラーおよび処理状況をログとして出力すること
+    design_id: DES-001
+    status: pending
+  - requirement_id: NFR-07
+    title: 稼働率・フェイルオーバー要件（スコープ外）
+    design_id: DES-001
+    status: pending
+    exclude_reason: "スコープ外（APP-001 NFR-07 参照）"
+  - requirement_id: NFR-08
+    title: クエリ応答時間の目標値（TBD-003 未確定）
+    design_id: DES-001
+    status: pending
+    exclude_reason: "TBD-003 確定待ち（APP-001 NFR-08 参照）"
+
+design_traceability:
+  - design_id: DES-001
+    title: DES-001 doc-db MCP Server 設計書
+    requirement_ids:
+      - PRE-01
+      - PRE-02
+      - CHK-01
+      - CHK-02
+      - CHK-03
+      - DIF-01
+      - DIF-02
+      - DIF-03
+      - EMB-01
+      - EMB-02
+      - UPS-OUT-01
+      - UPS-OUT-02
+      - DEL-01
+      - DEL-02
+      - LEX-01
+      - SC-01
+      - RR-01
+      - RR-02
+      - QRY-OUT-01
+      - QRY-OUT-02
+      - MNG-01
+      - MNG-02
+      - EXP-01
+      - EXP-02
+      - EXP-03
+      - EXP-04
+      - EXP-05
+      - NFR-01
+      - NFR-02
+      - NFR-03
+      - NFR-04
+      - NFR-05
+      - NFR-06
+      - NFR-07
+      - NFR-08
+    task_ids:
+      - TASK-001
+      - TASK-002
+      - TASK-003
+      - TASK-004
+      - TASK-005
+      - TASK-006
+      - TASK-007
+      - TASK-008
+      - TASK-009
+      - TASK-010
+      - TASK-011
+      - TASK-012
+      - TASK-013
+      - TASK-014
+      - TASK-015
+      - TASK-016
+      - TASK-017
+      - TASK-018
+      - TASK-019
+      - TASK-020
+      - TASK-021
+      - TASK-022
+      - TASK-023
+      - TASK-024
+      - TASK-025
+      - TASK-026
+      - TASK-027
+
+# === タスク一覧 ===
+tasks:
+  # ────────────────────────────────────────
+  # フェーズ 1: データ基盤とテキスト処理（priority 90-99）
+  # ────────────────────────────────────────
+
+  - task_id: TASK-001
+    title: プロジェクト骨格・go.mod・依存パッケージ追加
+    priority: 99
+    status: pending
+    design_id: DES-001
+    depends_on: []
+    group_id: null
+    build_check: per_task
+    description:
+      - go.mod を初期化し module 名・Go バージョンを設定する
+      - ディレクトリ構成を作成する（cmd/docdb, internal/{mcp,store,chunker,embedder,fetcher,search,expiry}）
+      - 各パッケージに最小限のスタブ（package 宣言のみ）を置き go build ./... が通る状態にする
+      - 依存パッケージを go get で追加する（modernc.org/sqlite, MCP go-sdk, golang.org/x/text）
+      - cmd/docdb/main.go にスタブ main 関数を置く
+    acceptance_criteria: "go build ./... が成功し、go vet ./... が警告なしで通ること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-002
+    title: internal/store — SQLite スキーマ・CRUD・WAL 設定
+    priority: 97
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - DES-001 §4.1 のスキーマを Go の CREATE TABLE 文として実装する
+      - 起動時に WAL モードとビジータイムアウトを設定する（DES-001 §4.2）
+      - 接続プールを設定する（DES-001 §4.2）
+      - Store 構造体と全メソッドを実装する（DES-001 §3.2 Store クラス図）
+      - CleanOtherSeries ロジックを実装する（DIF-02/DIF-03 両経路で必須・DES-001 §4.3）
+      - BM25 テーブル更新方針に従い削除時の bm25_df 整合性を保つトランザクション処理を実装する（DES-001 §6.2）
+      - 書き込み操作にミューテックスを適用し読み取りにはロックを掛けない（DES-001 §4.2）
+      - embeddings.dim 不一致チェックを起動時に実装する（DES-001 §4.1）
+    acceptance_criteria: "go build ./internal/store/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-003
+    title: internal/store 単体テスト
+    priority: 95
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-002
+    group_id: null
+    build_check: per_task
+    description:
+      - インメモリ SQLite（file::memory:）を使用したテストをセットアップする
+      - DIF-02（同一ハッシュ時の series_keys 追記）と DIF-03（新規・変更時の record 作成）の両経路をテストする
+      - CleanOtherSeries が DIF-02/DIF-03 両経路で正しく実行されること（「同一 key+path+series は常に高々1 record」）を確認する
+      - BM25 テーブル（bm25_stats/bm25_df）の削除時整合性テスト（CASCADE と df 減算の順序）を書く
+      - 並行書き込みの Mutex 保護テスト（2 ゴルーチンからの同時 UpsertRecord）を書く
+    acceptance_criteria: "go test ./internal/store/... が全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-004
+    title: internal/chunker — Markdown 見出し境界チャンク分割
+    priority: 93
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - Markdown の見出し（H1〜H6）境界でチャンクを切り出す Split メソッドを実装する（CHK-01）
+      - '各チャンクに文書パスと見出し階層パス（例: "# A > ## B > ### C"）を付与する（CHK-01）'
+      - 見出しなし文書は全体を 1 チャンクとして扱う（CHK-02）
+      - DOCDB_MAX_CHUNK_SIZE（デフォルト 1500）を超えるチャンクをさらに分割する（CHK-03・§9）
+    acceptance_criteria: "go build ./internal/chunker/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-005
+    title: internal/chunker 単体テスト
+    priority: 91
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-004
+    group_id: null
+    build_check: per_task
+    description:
+      - H1〜H6 各見出しレベルでの分割境界を検証するテストを書く
+      - 見出し階層パスが正しく構築されることを確認する（"# A > ## B > ### C" 形式）
+      - 見出しなし文書が 1 チャンクになることを確認する
+      - DOCDB_MAX_CHUNK_SIZE を超えるチャンクが再分割されることを確認する
+    acceptance_criteria: "go test ./internal/chunker/... が全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  # ────────────────────────────────────────
+  # フェーズ 2: 外部 API 連携とリスク解決（priority 70-89）
+  # ────────────────────────────────────────
+
+  - task_id: TASK-006
+    title: internal/embedder — OpenAI Embedding API 呼び出し
+    priority: 87
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - Embedder インターフェースを定義しモック可能にする（DES-001 §3.2 Embedder クラス図・§11）
+      - OpenAI Embedding API を直接呼び出す実装を書く（DES-001 §7.1）
+      - バッチ上限・指数バックオフリトライ・タイムアウトを実装する（DES-001 §7.1）
+      - OPENAI_API_DOCDB_KEY → OPENAI_API_KEY のフォールバックで API キーを読む（PRE-01）
+      - Embedding モデルと次元数を環境変数で設定する（DES-001 §9）
+    acceptance_criteria: "go build ./internal/embedder/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-007
+    title: internal/embedder 単体テスト
+    priority: 85
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-006
+    group_id: null
+    build_check: per_task
+    description:
+      - モック HTTP サーバー（httptest.NewServer）を使ってリトライロジックをテストする
+      - 3 回リトライ後に成功するケースと 3 回全失敗するケースを検証する
+      - バックオフ間隔（初回 1s）のタイミングをモックで確認する
+      - バッチ上限 100 テキストを超える場合に複数リクエストに分割されることを確認する
+    acceptance_criteria: "go test ./internal/embedder/... が全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-008
+    title: internal/fetcher — URL コンテンツ取得・SSRF 対策
+    priority: 83
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - Fetcher インターフェースを定義しモック可能にする（DES-001 §3.2 Fetcher クラス図・§11）
+      - HTTP クライアントにタイムアウト・リダイレクト上限を設定する（DES-001 §7.2）
+      - Content-Type が text/ 系以外はエラーとしてスキップする（DES-001 §7.2）
+      - SSRF 対策として DNS 解決後 IP のプライベートアドレス判定を実装する（DES-001 §7.2）
+      - DOCDB_FETCH_ALLOW_PRIVATE=true でプライベート IP ブロックを無効化できるようにする（DES-001 §7.2）
+    acceptance_criteria: "go build ./internal/fetcher/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-009
+    title: internal/fetcher 単体テスト
+    priority: 81
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-008
+    group_id: null
+    build_check: per_task
+    description:
+      - SSRF 対策のアドレス検証テストを書く（127.0.0.0/8・10.0.0.0/8・172.16.0.0/12・192.168.0.0/16・169.254.0.0/16・::1・fc00::/7）
+      - Content-Type text/ 以外でエラーになることを確認する
+      - DOCDB_FETCH_ALLOW_PRIVATE=true でプライベート IP へのアクセスが通ることを確認する
+      - リダイレクト上限 5 回の動作を httptest で確認する
+    acceptance_criteria: "go test ./internal/fetcher/... が全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-010
+    title: internal/search — BM25・コサイン類似度・RRF・LLM Rerank 実装
+    priority: 79
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-002
+      - TASK-006
+    group_id: null
+    build_check: per_task
+    description:
+      - コサイン類似度計算を math パッケージで実装する（DES-001 §6.1）
+      - BM25 トークナイザを実装する（DES-001 §6.2）
+      - ID 完全一致ボーナス・クエリ全文一致ボーナスを実装する（DES-001 §6.2）
+      - RRF によるスコア融合を実装する（DES-001 §6.3）
+      - EMB フォールバックと EMB top-K 保証を実装する（DES-001 §6.3）
+      - stage_stats を SearchResult に付与する（QRY-OUT-02・DES-001 §6.3）
+      - LLM Rerank を OpenAI Chat Completions で実装する（DES-001 §6.4）
+      - Rerank 失敗時は RRF 順でフォールバックする（RR-02）
+      - SearchPipeline を実装する（DES-001 §3.2 SearchPipeline クラス図）
+    acceptance_criteria: "go build ./internal/search/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-011
+    title: internal/search 単体テスト
+    priority: 77
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-010
+    group_id: null
+    build_check: per_task
+    description:
+      - コサイン類似度を固定ベクトルで計算し期待値と一致することを確認する
+      - BM25 スコア（k1=1.5, b=0.75）を固定 TF/DF 値で計算し期待値と一致することを確認する
+      - RRF 融合結果が embedding ランクと lexical ランクの両方を考慮した順序になることを確認する
+      - EMB top-K 保証（lexical スコア 0 の文書が RRF 上位に残ること）を確認する
+      - EMB フォールバック（lex ヒット率が閾値未満時に emb スコア降順になること）を確認する
+      - BM25 トークナイザが ID パターン（例: FNC-001）を単一トークンとして扱うことを確認する
+    acceptance_criteria: "go test ./internal/search/... が全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  # ────────────────────────────────────────
+  # フェーズ 3: MCP 統合とエントリポイント（priority 50-69）
+  # ────────────────────────────────────────
+
+  - task_id: TASK-012
+    title: internal/expiry — TTL/LRU 廃棄ワーカー
+    priority: 67
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-002
+    group_id: null
+    build_check: per_task
+    description:
+      - TTL ワーカーを実装する（last_accessed_at が N 日以前の KEY を削除・§8.1）
+      - LRU ワーカーを実装する（total_chunks > DOCDB_MAX_CHUNKS の場合 last_accessed_at ASC で KEY を削除・§8.2）
+      - バックグラウンドゴルーチンとして DOCDB_EXPIRY_INTERVAL 秒ごとに実行する（§8）
+      - ExpiryWorker.Start(ctx) を実装しコンテキストキャンセルで停止できるようにする
+      - エラー時はログ出力して継続し、サーバーを停止しない（§10）
+    acceptance_criteria: "go build ./internal/expiry/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-027
+    title: internal/expiry — TTL/LRU 廃棄ワーカー単体テスト
+    priority: 66
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-012
+    group_id: null
+    build_check: per_task
+    description:
+      - TTL ワーカーのテストを書く（last_accessed_at が N 日以前の KEY が削除されることを確認・§8.1）
+      - LRU ワーカーのテストを書く（total_chunks > DOCDB_MAX_CHUNKS 時に last_accessed_at ASC で KEY が削除されることを確認・§8.2）
+      - コンテキストキャンセルで ExpiryWorker が停止することを確認する
+      - インメモリ SQLite を使用してテストを実装する
+    acceptance_criteria: "go test ./internal/expiry/... が全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-013
+    title: internal/mcp UpsertHandler 実装
+    priority: 65
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-002
+      - TASK-004
+      - TASK-006
+      - TASK-008
+    group_id: null
+    build_check: per_task
+    description:
+      - upsert_documents MCP ツールハンドラを実装する（§5.2 シーケンス図に従う）
+      - url 指定ドキュメントは Fetcher で取得し content に変換する
+      - M1 ハッシュ正規化（BOM 除去・改行コード統一・クライアント提供 hash との照合）を実装する（§5.2）
+      - 'DIF-02（同一ハッシュ: AppendSeries + CleanOtherSeries）と DIF-03（新規: Split + Embed + UpsertRecord + CleanOtherSeries）の分岐を実装する'
+      - M2 部分保存方針を実装する（チャンク一部 Embedding 失敗時に成功チャンクのみ保存）（§5.2）
+      - UpsertResult（processed/skipped/failed/errors）を返す（UPS-OUT-01/02）
+    acceptance_criteria: "go build ./internal/mcp/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-014
+    title: internal/mcp DeleteHandler 実装
+    priority: 63
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-002
+    group_id: null
+    build_check: per_task
+    description:
+      - delete_documents MCP ツールハンドラを実装する
+      - 指定 series を各 embedding record の series_keys から削除し、空になった record を物理削除する（DEL-01）
+      - 存在しないパスはスキップし処理結果に警告として含める（DEL-02）
+    acceptance_criteria: "go build ./internal/mcp/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-015
+    title: internal/mcp QueryHandler 実装
+    priority: 61
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-010
+    group_id: null
+    build_check: per_task
+    description:
+      - query MCP ツールハンドラを実装する（§5.3 シーケンス図に従う）
+      - 呼び出し時に Store.TouchKey でアクセス時刻を更新する
+      - SearchPipeline.Run を呼び出して mode=emb/lex/hybrid/rerank を処理する
+      - 検索結果に path/heading_path/text/score/score_breakdown/series_keys/stage_stats を含める（QRY-OUT-01/02）
+      - 指定 KEY のインデックスが未登録の場合はエラーを返す
+    acceptance_criteria: "go build ./internal/mcp/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-016
+    title: internal/mcp ManageHandler 実装（list_indexes / delete_index / manage_index）
+    priority: 59
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-002
+    group_id: null
+    build_check: per_task
+    description:
+      - KEY 別インデックス一覧を返すツールハンドラを実装する（MNG-01: Store.ListKeys → KeyInfo）
+      - 指定 KEY のインデックスを削除するツールハンドラを実装する（MNG-02: Store.DeleteKey）
+      - KEY の廃棄ポリシーを設定・更新する manage_index ツールハンドラを実装する（EXP-04: §8.4）
+      - manage_index の expiry_policy に null を渡した場合はサーバーデフォルトにリセットする（§8.4）
+      - ツール名は DES-001 §5.1 の記載（TBD-008 は設計書の状態のまま）に従う
+    acceptance_criteria: "go build ./internal/mcp/... が成功すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-017
+    title: cmd/docdb — エントリポイント・設定読み込み・MCP サーバー起動
+    priority: 55
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-012
+      - TASK-013
+      - TASK-014
+      - TASK-015
+      - TASK-016
+    group_id: null
+    build_check: per_task
+    description:
+      - §9 の全環境変数を読み込む設定構造体を実装する
+      - OPENAI_API_DOCDB_KEY と OPENAI_API_KEY の両方が未設定の場合サーバーを即座に終了する（fail-fast・§10）
+      - MCP go-sdk の Streamable HTTP transport でサーバーを起動する（DOCDB_PORT=8080・§1）
+      - 全 MCP ツールハンドラ（upsert_documents/delete_documents/query/manage_index/list_indexes/delete_index）を登録する
+      - ExpiryWorker をバックグラウンドゴルーチンとして起動する
+      - DB 起動時に embeddings.dim 整合性チェックを実行する（§4.1）
+      - slog 等でログ出力を実装する（NFR-06）
+    acceptance_criteria: "go build ./cmd/docdb/... が成功し、OPENAI_API_DOCDB_KEY 未設定で起動するとエラーで終了すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-023
+    title: internal/mcp DeleteHandler 単体テスト
+    priority: 62
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-014
+    group_id: null
+    build_check: per_task
+    description:
+      - delete_documents ハンドラの正常系テストを書く（DEL-01: series 除去・空 record の物理削除）
+      - 存在しないパスのスキップと警告返却を確認する（DEL-02）
+      - 異常系テストを書く（無効 series・空パスリスト等）
+      - Embedder/Fetcher はモックを使用する
+    acceptance_criteria: "go test ./internal/mcp/... が DeleteHandler のテストケースをすべて通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-024
+    title: internal/mcp ManageHandler 単体テスト
+    priority: 58
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-016
+    group_id: null
+    build_check: per_task
+    description:
+      - list_indexes ハンドラの正常系テストを書く（MNG-01: KeyInfo 一覧取得）
+      - delete_index ハンドラの正常系テストを書く（MNG-02: 指定 KEY のインデックス削除）
+      - manage_index ハンドラのポリシー設定・null リセットをテストする（EXP-04）
+      - 異常系テストを書く（存在しない KEY への操作等）
+    acceptance_criteria: "go test ./internal/mcp/... が ManageHandler のテストケースをすべて通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-025
+    title: internal/mcp UpsertHandler 単体テスト
+    priority: 63
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-013
+    group_id: null
+    build_check: per_task
+    description:
+      - upsert_documents ハンドラの正常系テストを書く（DIF-02: 同一ハッシュで Embedding スキップ・DIF-03: ハッシュ不一致で新規 record 作成）
+      - url 指定ドキュメントの Fetcher 経由取得フローをモックで確認する
+      - M2 部分保存（一部 Embedding 失敗時に成功チャンクのみ保存）を確認する
+      - UpsertResult（processed/skipped/failed）が正しく返ることを確認する（UPS-OUT-01/02）
+      - Embedder/Fetcher はモックを使用する
+    acceptance_criteria: "go test ./internal/mcp/... が UpsertHandler のテストケースをすべて通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-026
+    title: internal/mcp QueryHandler 単体テスト
+    priority: 60
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-015
+    group_id: null
+    build_check: per_task
+    description:
+      - query ハンドラの正常系テストを書く（mode=emb/lex/hybrid/rerank の各モード呼び出し）
+      - 呼び出し時に Store.TouchKey が呼ばれることをモックで確認する
+      - 検索結果に path/heading_path/text/score/score_breakdown/series_keys/stage_stats が含まれることを確認する（QRY-OUT-01/02）
+      - 指定 KEY 未登録時のエラー返却を確認する
+      - Embedder/Reranker はモックを使用する
+    acceptance_criteria: "go test ./internal/mcp/... が QueryHandler のテストケースをすべて通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  # ────────────────────────────────────────
+  # フェーズ 4: テスト完全網羅と品質担保（priority 20-49）
+  # ────────────────────────────────────────
+
+  - task_id: TASK-018
+    title: upsert_documents 統合テスト
+    priority: 45
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-017
+    group_id: null
+    build_check: per_task
+    description:
+      - DES-001 §11 の統合テスト仕様に従い upsert_documents フローをテストする
+      - 同一ハッシュで upsert した場合に Embedder が呼ばれないことをモックで確認する（DIF-02）
+      - 異なるハッシュで upsert した場合に旧 record から series が除去されることを確認する（DIF-03）
+      - url 指定ドキュメントの Fetcher 経由取得フローをモックで確認する
+      - 部分 Embedding 失敗時に成功チャンクのみ保存されることを確認する（M2）
+    acceptance_criteria: "統合テストが全通過すること（Embedder/Fetcher はモックを使用）"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-019
+    title: query 統合テスト（mode 別結果差異・stage_stats 検証）
+    priority: 43
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-017
+    group_id: null
+    build_check: per_task
+    description:
+      - DES-001 §11 の統合テスト仕様に従い query の mode 別結果差異をテストする
+      - mode=emb / mode=lex / mode=hybrid / mode=rerank で結果が異なることを確認する
+      - stage_stats（各ステージ通過候補数）が SearchResult に含まれることを確認する（QRY-OUT-02）
+      - series 指定時に該当 series のチャンクのみが対象となることを確認する
+      - LLM Rerank フォールバック（Reranker エラー時に RRF 順で返すこと）を確認する
+    acceptance_criteria: "統合テストが全通過すること（Embedder/Reranker はモックを使用）"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-020
+    title: WAL 並行テスト（実ファイル SQLite での複数ゴルーチン同時アクセス）
+    priority: 41
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-003
+      - TASK-017
+    group_id: null
+    build_check: per_task
+    description:
+      - DES-001 §11 の WAL 並行テスト仕様に従い実ファイル SQLite で並行テストを実施する
+      - os.MkdirTemp でテンポラリディレクトリを作成し実 SQLite ファイルを使用する（インメモリ DB では WAL 挙動不可）
+      - 複数ゴルーチンから同時に UpsertRecord（書き込み）と GetChunksForSearch（読み取り）を実行する
+      - データ競合・デッドロックが発生しないことを確認する（-race フラグで実行する）
+    acceptance_criteria: "go test -race ./... で WAL 並行テストが全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+
+  - task_id: TASK-021
+    title: 廃棄ポリシー統合テスト（TTL/LRU 削除動作）
+    priority: 39
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-017
+    group_id: null
+    build_check: per_task
+    description:
+      - DES-001 §11 の廃棄ポリシー統合テスト仕様に従いテストを実施する
+      - TTL テスト: last_accessed_at を過去日時に設定した KEY が TTL ワーカー実行後に削除されることを確認する（EXP-01）
+      - LRU テスト: DOCDB_MAX_CHUNKS を超えた状態でワーカー実行後に最古アクセス KEY が削除されることを確認する（EXP-02）
+      - manage_index で設定した KEY 固有ポリシーが優先されることを確認する（EXP-04）
+      - 廃棄済み KEY への query/upsert でエラーが返ることを確認する
+    acceptance_criteria: "廃棄ポリシー統合テストが全通過すること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+  - task_id: TASK-022
+    title: エラーハンドリング検証テスト・最終品質確認
+    priority: 37
+    status: pending
+    design_id: DES-001
+    depends_on:
+      - TASK-017
+    group_id: null
+    build_check: per_task
+    description:
+      - Fetcher タイムアウトが発生した場合に該当ドキュメントがスキップされ結果に含まれることを確認する
+      - Embedder 部分失敗（一部チャンクのみ失敗）時に成功チャンクのみ保存されることを確認する（M2）
+      - Reranker エラー時に RRF 順の結果が返ることを確認する（RR-02）
+      - DOCDB_MAX_CHUNKS 到達時の LRU 削除動作を境界値テストで確認する
+      - go test ./... が全通過し go vet ./... が警告なしで通ることを確認する
+    acceptance_criteria: "go test ./... と go vet ./... が全てクリーンに通ること"
+    required_reading:
+      - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
+      - docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md
+
+# === 改定履歴 ===
+revision_history:
+  - date: "2026-06-21"
+    content: 初版作成（4フェーズ22タスク）
+  - date: "2026-06-21"
+    content: レビュー対応 — DeleteHandler/ManageHandler テストタスク追加（TASK-023/024）・NFR-07/08 除外理由明記・description の設計詳細転記を DES-001 参照形式に修正
+  - date: "2026-06-21"
+    content: レビュー対応 — UpsertHandler/QueryHandler/expiry 単体テストタスク追加（TASK-025/026/027）
