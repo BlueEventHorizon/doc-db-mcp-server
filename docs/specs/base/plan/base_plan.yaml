@@ -233,7 +233,7 @@ tasks:
   - task_id: TASK-001
     title: プロジェクト骨格・go.mod・依存パッケージ追加
     priority: 99
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on: []
     group_id: null
