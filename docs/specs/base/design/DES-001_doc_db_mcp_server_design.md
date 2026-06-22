@@ -87,7 +87,7 @@ classDiagram
         +Handle(ctx, req) ManageResult
     }
     class Store {
-        +UpsertRecord(ctx, rec) error
+        +UpsertRecord(ctx, rec) (int64, error)
         +DeleteSeries(ctx, key, series, paths) error
         +GetChunksForSearch(ctx, key, series) []Chunk
         +ListKeys(ctx) []KeyInfo
@@ -95,7 +95,7 @@ classDiagram
         +TouchKey(ctx, key) error
     }
     class Chunker {
-        +Split(path, content) []Chunk
+        +Split(path, content) ([]Chunk, error)
     }
     class Embedder {
         +Embed(ctx, texts) []Vector
@@ -261,7 +261,7 @@ sequenceDiagram
             H->>S: CleanOtherSeries(key, path, series, except=record_id)
         else 新規 or 内容変更 (DIF-03)
             H->>Ch: Split(path, content)
-            Ch-->>H: []Chunk
+            Ch-->>H: ([]Chunk, error)
             H->>E: Embed(ctx, chunk_texts)
             E-->>H: []Vector (失敗時: スキップ・エラー記録)
             H->>S: UpsertRecord(key, path, hash, series, chunks, vectors)
