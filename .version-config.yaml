@@ -1,0 +1,18 @@
+# version_config_version: 1.0
+
+targets:
+  - name: doc-db-mcp-server
+    version_file: VERSION
+    version_path: ""          # plain text ファイル（内容がバージョン文字列そのもの）
+
+changelog:
+  file: CHANGELOG.md
+  format: keep-a-changelog
+  git_log_auto: true          # git log から Conventional Commits を分類して自動挿入
+  section_per_target: false   # ターゲット単一のためサブセクション不要
+
+git:
+  tag_format: "v{version}"
+  commit_message: "chore: bump version to {version}"
+  auto_tag: false
+  auto_commit: false
