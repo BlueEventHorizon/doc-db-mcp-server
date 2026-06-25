@@ -16,7 +16,21 @@ import (
 	"github.com/k2moons/doc-db-mcp-server/internal/store"
 )
 
+// version はビルド時に -ldflags "-X main.version=..." で上書きされる（DES-002 §4.2）。
+// VERSION ファイルが canonical（APP-002 VER-01）。手元 `go build` でこの値を埋めるには
+// Makefile の build target を使うか、以下のワンライナーを実行する:
+//   go build -ldflags "-X main.version=$(cat VERSION)" -o doc-db ./cmd/docdb
+var version = "dev"
+
 func main() {
+	// --version は設定ファイル読み込み・API キー検証・Store/Expiry 初期化より前に処理する（APP-002 VER-03）。
+	// Homebrew test（brew test doc-db）はこの分岐を踏んで即時終了するため、
+	// 設定ファイルや API キーがなくてもパスする。
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println(version)
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

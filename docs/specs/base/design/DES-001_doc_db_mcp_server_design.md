@@ -172,7 +172,7 @@ CREATE TABLE chunks (
 
 -- 埋め込みベクトル（BLOB: float32 配列をリトルエンディアンでシリアライズ）
 -- dim カラム: 行ごとにベクトル次元数を記録する。起動時に SELECT DISTINCT dim FROM embeddings を実行し、
--- 結果が DOCDB_EMBED_DIM と異なる場合は「モデル変更後の DB 再構築が必要」として fail-fast する。
+-- 結果が embedding.dim と異なる場合は「モデル変更後の DB 再構築が必要」として fail-fast する。
 CREATE TABLE embeddings (
     chunk_id  INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
     vector    BLOB NOT NULL,
@@ -327,16 +327,16 @@ sequenceDiagram
 
 **Embedding モデルと次元数の確定値（EMB-02）**:
 
-| モデル（`DOCDB_EMBED_MODEL`） | 次元数 | `embeddings.dim` |
+| モデル（`embedding.model`） | 次元数 | `embeddings.dim` |
 | --- | --- | --- |
 | `text-embedding-3-small`（デフォルト） | 1536 | 1536 |
 | `text-embedding-3-large` | 3072 | 3072 |
 
 デフォルトモデル `text-embedding-3-small` を使用する場合、`embeddings.dim = 1536` で固定される。モデル変更時はデータベースを再構築する（異なる次元数のベクトルは混在不可）。
 
-**モデル選択根拠**: `text-embedding-3-small` をデフォルトとして採用する。本サーバーは内部開発ツール（NFR-07）であり、コストとのトレードオフを優先する。`text-embedding-3-large` はコストが約6.5倍高いが検索品質の向上は開発ドキュメント用途では限定的。モデルを変更する場合は環境変数 `DOCDB_EMBED_MODEL` と `DOCDB_EMBED_DIM` の両方を設定し、DB を再構築する。
+**モデル選択根拠**: `text-embedding-3-small` をデフォルトとして採用する。本サーバーは内部開発ツール（NFR-07）であり、コストとのトレードオフを優先する。`text-embedding-3-large` はコストが約6.5倍高いが検索品質の向上は開発ドキュメント用途では限定的。モデルを変更する場合は設定ファイルの `embedding.model` と `embedding.dim` の両方を更新し、DB を再構築する。
 
-**スケール上限**: `DOCDB_MAX_CHUNKS`（デフォルト 10,000）はシステム全体の上限。key 単位では通常 1,000〜5,000 チャンク程度を想定する（1,000 チャンク × 1536 dim × 4 byte ≈ 6 MB）。10,000 チャンクでも 60 MB / クエリであり、内部ツール用途では許容範囲。100,000 チャンクを超える場合はベクトルキャッシュ（起動時 mmap またはプロセス内メモリキャッシュ）の導入を検討する。
+**スケール上限**: `expiry.max_chunks`（デフォルト 10,000）はシステム全体の上限。key 単位では通常 1,000〜5,000 チャンク程度を想定する（1,000 チャンク × 1536 dim × 4 byte ≈ 6 MB）。10,000 チャンクでも 60 MB / クエリであり、内部ツール用途では許容範囲。100,000 チャンクを超える場合はベクトルキャッシュ（起動時 mmap またはプロセス内メモリキャッシュ）の導入を検討する。
 
 **設計判断**: ベクトルをすべてメモリに展開する方式を採用。`modernc.org/sqlite` は pure-Go のため `sqlite-vec` 等の C 拡張をロードできない。内部開発ツールであり大規模データを前提としないため（NFR-07）、in-process 計算で十分。
 
@@ -436,7 +436,7 @@ stage_stats: {
   - `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`（RFC1918 プライベート）
   - `169.254.0.0/16`（リンクローカル / AWS IMDS 等）
   - `::1`、`fc00::/7`（IPv6 ループバック / ユニークローカル）
-- ホワイトリストが必要な場合は環境変数 `DOCDB_FETCH_ALLOW_PRIVATE=true` で無効化できる（デプロイ管理者が責任を持つ）。
+- ホワイトリストが必要な場合は設定ファイルの `fetcher.allow_private: true` で無効化できる（デプロイ管理者が責任を持つ）。
 
 ## 8. 廃棄ポリシー（Expiry Worker）
 
@@ -490,28 +490,64 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 
 ## 9. 設定
 
-環境変数で管理（設定ファイルは `.env` または OS 環境変数）:
+### 9.1 設定方式
 
-| 変数名 | デフォルト | 説明 |
+設定は **YAML 設定ファイル** で管理する（環境変数による設定値オーバーライドは行わない）。API キーのみシークレットとして環境変数で扱う。
+
+| 種別 | 渡し方 | 対象 |
 | --- | --- | --- |
-| `OPENAI_API_DOCDB_KEY` | — | OpenAI API キー（優先） |
-| `OPENAI_API_KEY` | — | フォールバックキー |
-| `DOCDB_EMBED_MODEL` | `text-embedding-3-small` | Embedding モデル（変更時は DB 再構築が必要） |
-| `DOCDB_EMBED_DIM` | `1536` | Embedding ベクトル次元数（`text-embedding-3-small` = 1536、`text-embedding-3-large` = 3072）（EMB-02 確定値） |
-| `DOCDB_MAX_CHUNK_SIZE` | `1500` | チャンクあたり最大文字数（CHK-03 確定値）。見出し境界を優先し、この文字数を超えるチャンクはさらに分割する |
-| `DOCDB_RERANK_MODEL` | `gpt-4o-mini` | Rerank モデル |
-| `DOCDB_RERANK_FACTOR` | `3` | LLM Rerank 候補数倍率（`top_n × rerank_factor` 件を Rerank に渡す）。暫定採用値。TBD-005 確定後に見直す |
-| `DOCDB_DB_PATH` | `./docdb.sqlite` | SQLite ファイルパス |
-| `DOCDB_PORT` | `8080` | HTTP ポート |
-| `DOCDB_TTL_DAYS` | `30` | TTL デフォルト値（TBD-001） |
-| `DOCDB_MAX_CHUNKS` | `10000` | LRU チャンク上限（TBD-002）。システム全体の上限。key 単位では 1,000〜5,000 チャンク程度を想定 |
-| `DOCDB_EXPIRY_INTERVAL` | `3600` | 廃棄チェック間隔（秒） |
-| `DOCDB_FETCH_TIMEOUT` | `30` | URL フェッチタイムアウト（秒） |
-| `DOCDB_FETCH_ALLOW_PRIVATE` | `false` | プライベート IP へのフェッチを許可する（SSRF 対策を無効化）。内部ネットワーク上の URL を意図的に登録する場合のみ `true` にする |
-| `DOCDB_EMBED_TIMEOUT` | `60` | Embedding API タイムアウト（秒） |
-| `DOCDB_RERANK_TIMEOUT` | `30` | Rerank タイムアウト（秒） |
-| `DOCDB_BM25_K1` | `1.5` | BM25 パラメータ k1 |
-| `DOCDB_BM25_B` | `0.75` | BM25 パラメータ b |
+| シークレット | 環境変数 | `OPENAI_API_DOCDB_KEY`（優先） / `OPENAI_API_KEY`（フォールバック） |
+| 動作設定 | YAML ファイル | Embedding モデル・タイムアウト・ポート・パス等のすべて |
+
+**設定ファイルパス（CFG-01）**: `~/.doc-db/doc-db.yaml`（固定）。`$HOME` が解決できない、またはファイルが存在しない場合は **fail-fast** でサーバーを終了する。CLI フラグ・環境変数によるパス変更は提供しない（設計上の簡潔性を優先）。
+
+**ロード方式（CFG-02）**: 起動時に 1 回だけ読み込み、`internal/config` パッケージが `Config` 構造体を返す。サーバー稼働中の設定再読み込みは行わない（変更時は再起動）。
+
+**検証（CFG-03）**: パース後にバリデーションを行う。未知のキー、型不一致、必須項目欠落、値域外（ポート範囲・正の整数等）は fail-fast で起動を中止する。
+
+### 9.2 設定ファイルスキーマ
+
+```yaml
+# ~/.doc-db/doc-db.yaml
+server:
+  port: 8080                       # HTTP ポート
+  db_path: "./docdb.sqlite"        # SQLite ファイルパス
+
+embedding:
+  model: "text-embedding-3-small"  # Embedding モデル（変更時は DB 再構築必須）
+  dim: 1536                        # ベクトル次元数（EMB-02 確定値）
+  timeout_seconds: 60              # API タイムアウト
+
+rerank:
+  model: "gpt-4o-mini"             # LLM Rerank モデル
+  factor: 3                        # top_n × factor 件を Rerank に渡す
+  timeout_seconds: 30              # API タイムアウト
+
+chunker:
+  max_chunk_size: 1500             # チャンクあたり最大文字数（CHK-03 確定値）
+
+bm25:
+  k1: 1.5                          # サチュレーション係数（Robertson 経験則）
+  b: 0.75                          # 文書長正規化係数
+
+fetcher:
+  timeout_seconds: 30              # URL フェッチタイムアウト
+  allow_private: false             # プライベート IP へのフェッチを許可（SSRF 対策無効化）
+
+expiry:
+  ttl_days: 30                     # 未アクセス KEY の自動削除日数（TBD-001）
+  max_chunks: 10000                # システム全体のチャンク上限（TBD-002）
+  interval_seconds: 3600           # 廃棄チェック間隔
+```
+
+### 9.3 設計判断
+
+| 項目 | 判断 | 理由 |
+| --- | --- | --- |
+| YAML 採用 | TOML/JSON ではなく YAML | コメント可・階層構造の可読性・運用者の編集容易性 |
+| 環境変数オーバーライド不採用 | ファイルが唯一の正本 | 設定の出所を一元化し、デバッグ時の挙動推定を容易にする |
+| パス固定 | `~/.doc-db/doc-db.yaml` のみ | CLI / env でのパス変更が増えると「実際にどの設定が使われているか」の判定コストが増す。サーバー用途では複数構成を持つ必要がない |
+| API キーだけ環境変数 | シークレットは設定ファイルに書かない | 平文記録・git 誤コミットのリスク回避 |
 
 ## 10. エラーハンドリング方針
 
@@ -544,3 +580,4 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 | 2026-06-20 | 0.1        | 初版作成 |
 | 2026-06-20 | 0.2        | レビュー対応: C2(DIF-02 series 剥がし漏れ修正)・C3(WAL+接続プール方針に改訂)・H1(トークナイザ仕様追加)・H2(ID boost/EMB guarantee追加)・H3(スケール上限明記)・H5(LRU SQL修正)・H6(SSRF対策追加)・H7(起動時 fail-fast)・Chunker依存修正・WALテスト注記・series廃棄TBD追加 |
 | 2026-06-20 | 0.3        | レビュー対応(追補): M1(ハッシュ正規化規則追加)・M2(部分 Embed 失敗方針を部分保存に確定)・§4.1(dim 検査の動作主体を明示)・§3.1(internal/mcp の embedder 依存を追記) |
+| 2026-06-24 | 0.4        | §9 を YAML 設定ファイル方式に変更（`~/.doc-db/doc-db.yaml` 固定パス・環境変数オーバーライド不採用・API キーのみ環境変数）。本文中の `DOCDB_*` 環境変数参照を設定ファイルキー参照に更新 |

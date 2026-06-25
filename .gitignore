@@ -31,6 +31,7 @@ docs/references
 **/uxui_references/competitors/
 **/uxui_references/inspirations/
 
-# Go ビルド成果物
-docdb
+# Go ビルド成果物（リポジトリ root のビルドバイナリのみ。`cmd/docdb/` パッケージは無視しない）
+/docdb
+/doc-db
 *.sqlite
