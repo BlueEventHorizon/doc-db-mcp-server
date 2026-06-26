@@ -1,0 +1,42 @@
+# Makefile snippet（言語アダプタの build/version 部分を差し替えて使用）
+#
+# 既存の Makefile がある場合は verify target だけマージする。
+
+SHELL := /bin/bash
+
+VERSION := $(shell {{VERSION_EXTRACT_CMD}})
+BIN     := {{BINARY}}
+{{LANG_SPECIFIC_VARS}}
+
+.PHONY: build version test clean verify verify-version verify-tag help
+
+help:
+	@echo "{{BINARY}} build targets:"
+	@echo "  make build           - $(BIN) を $(VERSION) でビルド"
+	@echo "  make version         - canonical version を表示"
+	@echo "  make test            - テスト実行"
+	@echo "  make verify          - verify-version + verify-tag"
+	@echo "  make verify-version  - 静的整合性検証（CHANGELOG / .version-config.yaml / Formula tag）"
+	@echo "  make verify-tag      - tag 整合性検証（Formula revision == git tag commit SHA）"
+	@echo "  make clean           - ビルド成果物を削除"
+
+build:
+{{BUILD_RECIPE}}
+	@echo "built: ./$(BIN) ($(VERSION))"
+
+version:
+	@echo "$(VERSION)"
+
+test:
+{{TEST_RECIPE}}
+
+verify: verify-version verify-tag
+
+verify-version:
+	@bash scripts/verify_version_consistency.sh
+
+verify-tag:
+	@bash scripts/verify_release_tag.sh
+
+clean:
+{{CLEAN_RECIPE}}
