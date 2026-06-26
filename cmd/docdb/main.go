@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/k2moons/doc-db-mcp-server/internal/config"
-	"github.com/k2moons/doc-db-mcp-server/internal/embedder"
-	"github.com/k2moons/doc-db-mcp-server/internal/expiry"
-	"github.com/k2moons/doc-db-mcp-server/internal/store"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/config"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/embedder"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/expiry"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/store"
 )
 
 // version はビルド時に -ldflags "-X main.version=..." で上書きされる（DES-002 §4.2）。

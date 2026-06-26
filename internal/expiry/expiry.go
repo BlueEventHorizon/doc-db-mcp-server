@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/k2moons/doc-db-mcp-server/internal/store"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/store"
 )
 
 // Config は ExpiryWorker の設定。

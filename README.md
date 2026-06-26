@@ -79,10 +79,10 @@ internal/store     SQLite 読み書き・BM25 統計管理
 | `--version` フラグ | ✅ 実装済み | DES-002 §4.2.1 |
 | **YAML 設定ファイル方式**（`~/.doc-db/doc-db.yaml`） | ✅ 実装済み（`internal/config` パッケージ・`DOCDB_*` 環境変数撤廃済み） | DES-001 §9 |
 | **`doc-db.yaml.example` 同梱** | ✅ 実装済み（リポジトリ直下） | DES-002 §5.2 |
+| **Homebrew 配布**（`Formula/doc-db.rb` + tap 方式） | ✅ 実装済み（初回 git tag `v0.1.0` 待ち。Formula revision は tag 作成後に SHA で更新） | `docs/specs/install/design/DES-002` |
+| **整合性検証スクリプト**（`scripts/verify_*.sh`） | ✅ 実装済み（`make verify-version` / `make verify-tag`） | DES-002 §4.3 |
 | MCP サーバー本体（Streamable HTTP）・ツールハンドラ 4 種 | 🚧 未実装（DES-001 §3.1 で設計済み） | DES-001 |
 | 検索パイプライン（emb/lex/hybrid/rerank） | 🚧 未実装（DES-001 §6 で設計済み） | DES-001 |
-| **Homebrew 配布**（`Formula/doc-db.rb` + tap 方式） | 🚧 未実装（設計のみ） | `docs/specs/install/design/DES-002` |
-| **整合性検証スクリプト**（`scripts/verify_*.sh`） | 🚧 未実装（設計のみ） | DES-002 §4.3 |
 
 ---
 
@@ -172,8 +172,8 @@ export OPENAI_API_DOCDB_KEY=sk-...
 設計書 `docs/specs/install/design/DES-002` で確定済み。実装後は以下で導入できる予定：
 
 ```bash
-brew tap k2moons/doc-db https://github.com/k2moons/doc-db-mcp-server
-brew install k2moons/doc-db/doc-db
+brew tap blueeventhorizon/doc-db https://github.com/BlueEventHorizon/doc-db-mcp-server
+brew install blueeventhorizon/doc-db/doc-db
 ```
 
 実装に必要なファイル（いずれも未作成）：

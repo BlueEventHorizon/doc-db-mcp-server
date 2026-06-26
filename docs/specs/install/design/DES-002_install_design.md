@@ -398,14 +398,16 @@ doc-db は HTTP transport で動作するため、Claude Desktop の `mcpServers
 | 項目 | 実装状況 | 備考 |
 |------|---------|------|
 | `cmd/docdb/main.go` の `var version` + `--version`/`-v` 早期終了分岐 | ✅ 実装済み（2026-06-26） | `make build` または `go build -ldflags "-X main.version=$(cat VERSION)" -o doc-db ./cmd/docdb` で値が注入される。`doc-db --version` で `0.1.0` を出力することを検証済み |
-| `Makefile`（`build` / `version` / `test` / `clean` target） | ✅ 実装済み（2026-06-26） | ldflags 経由でローカルビルド時に canonical 値を埋める |
-| `Formula/doc-db.rb` | 🚧 未実装 | §3.2 skeleton を元に作成する |
-| `doc-db.yaml.example` | 🚧 未実装 | DES-001 §9.2 スキーマに準拠して作成する |
-| `scripts/verify_version_consistency.sh` | 🚧 未実装 | §4.3 のシェルロジックを基に作成する |
-| `scripts/verify_release_tag.sh` | 🚧 未実装 | §4.3 のシェルロジックを基に作成する |
-| `cmd/docdb/main.go` のバイナリ出力名 `doc-db`（旧 `docdb`） | 🚧 未対応 | Makefile では `doc-db` で出力するが、開発者が直接 `go build` する場合は出力名が `docdb` のままになる |
-| YAML 設定方式（DES-001 §9）の実装 | 🚧 未実装 | 現行は `DOCDB_*` 環境変数読み取り。設計上は廃止予定 |
+| `Makefile`（`build` / `version` / `test` / `clean` / `verify` / `verify-version` / `verify-tag` target） | ✅ 実装済み（2026-06-26） | ldflags 経由でローカルビルド時に canonical 値を埋める。verify target で整合性検証スクリプトを呼ぶ |
+| YAML 設定方式（DES-001 §9）の実装 | ✅ 実装済み（2026-06-26） | `internal/config` パッケージ・全 `DOCDB_*` 環境変数読み取り撤廃 |
+| `doc-db.yaml.example` | ✅ 実装済み（2026-06-26） | DES-001 §9.2 スキーマに完全準拠 |
+| `Formula/doc-db.rb` | ✅ 実装済み（2026-06-26） | revision は placeholder (40 桁 0)。git tag `v0.1.0` 作成後に SHA に書き換えて `verify-tag` でパスを確認する |
+| `scripts/verify_version_consistency.sh` | ✅ 実装済み（2026-06-26） | `make verify-version` で実行。canonical (`VERSION`) と CHANGELOG / .version-config.yaml / Formula tag の整合性を検証。初回検証パス済み |
+| `scripts/verify_release_tag.sh` | ✅ 実装済み（2026-06-26） | `make verify-tag` で実行。tag 未作成のため現時点では fail する（期待動作） |
+| `.version-config.yaml` の `sync_files` に Formula 追加 | ✅ 実装済み（2026-06-26） | `/forge:update-version` 実行時に Formula tag が自動更新される |
+| `cmd/docdb/main.go` のバイナリ出力名 `doc-db` | ⚠️ 部分対応 | Makefile・Formula は `doc-db` で出力。開発者が直接 `go build ./cmd/docdb` する場合は `docdb` になるので注意 |
 | MCP サーバー本体・ツールハンドラ | 🚧 未実装 | DES-001 §3.1 / §5 で設計済み |
+| 検索パイプライン（emb/lex/hybrid/rerank） | 🚧 未実装 | DES-001 §6 で設計済み |
 
 実装順序の推奨：
 
