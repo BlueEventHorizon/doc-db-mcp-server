@@ -1,4 +1,5 @@
 ---
+name: setup-homebrew-formula
 description: macOS で `brew tap <owner>/<name> <git-url>` + `brew install <name>` で導入可能な「自家 tap」型 Homebrew Formula と、リリース時の整合性検証スクリプト（VERSION / CHANGELOG / Formula tag / commit SHA の自動チェック）を生成し、初回リリース手順をガイドする。Go と Swift を実例として言語アダプタ構造で抽象化し、`--version` 早期終了・tag は `v{version}` 形式・Formula コメントは英語などの実装トラップを既知の経験から組み込む。トリガー例: "homebrew で配布したい", "brew install できるように", "Formula を作成", "self tap セットアップ", "brew でインストールしたい"
 when_to_use: プロジェクトを macOS ユーザーに Homebrew 経由で配布できる状態にしたいとき。新規 Formula 作成・整合性検証スクリプト 2 本（version_consistency / release_tag）の導入・README/CHANGELOG の更新・リリース手順の案内まで一貫してカバーする。既存 Formula がある場合は update モードで差分のみを提案する。
 disable-model-invocation: true
