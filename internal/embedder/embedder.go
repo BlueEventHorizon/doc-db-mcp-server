@@ -62,11 +62,14 @@ const (
 	defaultBatchSize = 100
 	maxBatchSize     = 100
 
-	embeddingEndpoint = "https://api.openai.com/v1/embeddings"
-
 	// リトライ設定（DES-001 §7.1）
-	maxRetries    = 3
-	retryBaseWait = 1 * time.Second
+	maxRetries = 3
+)
+
+// テスト時に差し替え可能にするため var とする（プロダクション値は変更しない）。
+var (
+	embeddingEndpoint = "https://api.openai.com/v1/embeddings"
+	retryBaseWait     = 1 * time.Second
 )
 
 // APIKeyFromEnv は OpenAI API キーを環境変数から取得する（PRE-01）。

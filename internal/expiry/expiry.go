@@ -4,7 +4,6 @@ package expiry
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
@@ -30,24 +29,20 @@ type Config struct {
 // storeForExpiry は expiry が必要とする store メソッドのサブセット。
 // テスト時にモック実装で差し替え可能にするためにインターフェースとして定義する。
 type storeForExpiry interface {
+	ListExpiredKeysByTTL(ctx context.Context, defaultTTLDays int) ([]string, error)
+	TotalChunkCount(ctx context.Context) (int, error)
+	ListKeysByLRU(ctx context.Context) ([]store.KeyLRUInfo, error)
 	DeleteKey(ctx context.Context, key string) error
 }
 
 // Worker は TTL/LRU 廃棄ワーカー。
 type Worker struct {
-	st   storeForExpiry
-	rawDB interface{ QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) }
-	cfg  Config
-}
-
-// storeWithDB は store.Store の QueryContext を expiry から使えるようにするための型アサーション用インターフェース。
-type storeWithDB interface {
-	storeForExpiry
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	st  storeForExpiry
+	cfg Config
 }
 
 // New は Config を使って Worker を生成する。
-func New(st *store.Store, cfg Config) *Worker {
+func New(st storeForExpiry, cfg Config) *Worker {
 	if cfg.IntervalSecs <= 0 {
 		cfg.IntervalSecs = 3600
 	}
@@ -96,35 +91,58 @@ func (w *Worker) runOnce(ctx context.Context) error {
 }
 
 // runTTL は最終アクセスが TTLDays 日以上前の KEY を削除する（DES-001 §8.1 EXP-01）。
-// store.Store が TTL クエリ用の公開メソッドを持っていないため、
-// TODO: store パッケージに ListExpiredKeysByTTL メソッドが追加されたら置き換える。
+// keys.expiry_policy.ttl_days が設定されている KEY はその値を優先する（§8.4）。
 func (w *Worker) runTTL(ctx context.Context) error {
-	// store パッケージに TTL クエリの公開メソッドが未実装のため骨格のみ。
-	// 実装予定:
-	//   keys, err := w.st.ListExpiredKeysByTTL(ctx, w.cfg.TTLDays)
-	//   for _, key := range keys {
-	//       if err := w.st.DeleteKey(ctx, key); err != nil {
-	//           slog.Error("expiry: TTL 削除失敗", "key", key, "error", err)
-	//       }
-	//   }
-	slog.Debug("expiry: TTL チェック実行（store に ListExpiredKeysByTTL 未実装のためスキップ）")
+	keys, err := w.st.ListExpiredKeysByTTL(ctx, w.cfg.TTLDays)
+	if err != nil {
+		return fmt.Errorf("list expired keys: %w", err)
+	}
+	if len(keys) == 0 {
+		slog.Debug("expiry: TTL — 対象 KEY なし")
+		return nil
+	}
+
+	for _, key := range keys {
+		if err := w.st.DeleteKey(ctx, key); err != nil {
+			// 個別の削除失敗はログ出力して継続（他の KEY を巻き込まないため）
+			slog.Error("expiry: TTL 削除失敗", "key", key, "error", err)
+			continue
+		}
+		slog.Info("expiry: TTL で KEY を削除", "key", key)
+	}
 	return nil
 }
 
 // runLRU はシステム全体のチャンク数が MaxChunks を超えた場合、
 // 最終アクセスが最も古い KEY から削除する（DES-001 §8.2 EXP-02）。
-// TODO: store パッケージに ListKeysByLRU / TotalChunkCount メソッドが追加されたら置き換える。
+// 上限以下になるまで削除を繰り返す。
 func (w *Worker) runLRU(ctx context.Context) error {
-	// store パッケージに LRU クエリの公開メソッドが未実装のため骨格のみ。
-	// 実装予定:
-	//   total, err := w.st.TotalChunkCount(ctx)
-	//   if total <= w.cfg.MaxChunks { return nil }
-	//   keys, err := w.st.ListKeysByLRU(ctx)
-	//   for _, key := range keys {
-	//       if err := w.st.DeleteKey(ctx, key); err != nil { ... }
-	//       total -= key.ChunkCount
-	//       if total <= w.cfg.MaxChunks { break }
-	//   }
-	slog.Debug("expiry: LRU チェック実行（store に TotalChunkCount/ListKeysByLRU 未実装のためスキップ）")
+	total, err := w.st.TotalChunkCount(ctx)
+	if err != nil {
+		return fmt.Errorf("total chunk count: %w", err)
+	}
+	if total <= w.cfg.MaxChunks {
+		slog.Debug("expiry: LRU — 上限以下", "total", total, "max", w.cfg.MaxChunks)
+		return nil
+	}
+
+	keys, err := w.st.ListKeysByLRU(ctx)
+	if err != nil {
+		return fmt.Errorf("list keys by LRU: %w", err)
+	}
+
+	slog.Info("expiry: LRU 削除開始", "total_chunks", total, "max_chunks", w.cfg.MaxChunks, "candidates", len(keys))
+
+	for _, info := range keys {
+		if total <= w.cfg.MaxChunks {
+			break
+		}
+		if err := w.st.DeleteKey(ctx, info.Key); err != nil {
+			slog.Error("expiry: LRU 削除失敗", "key", info.Key, "error", err)
+			continue
+		}
+		total -= info.ChunkCount
+		slog.Info("expiry: LRU で KEY を削除", "key", info.Key, "chunks", info.ChunkCount, "remaining_total", total)
+	}
 	return nil
 }

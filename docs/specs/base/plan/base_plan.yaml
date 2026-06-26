@@ -251,7 +251,7 @@ tasks:
   - task_id: TASK-002
     title: internal/store — SQLite スキーマ・CRUD・WAL 設定
     priority: 97
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-001
@@ -273,7 +273,7 @@ tasks:
   - task_id: TASK-003
     title: internal/store 単体テスト
     priority: 95
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-002
@@ -292,7 +292,7 @@ tasks:
   - task_id: TASK-004
     title: internal/chunker — Markdown 見出し境界チャンク分割
     priority: 93
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-001
@@ -310,7 +310,7 @@ tasks:
   - task_id: TASK-005
     title: internal/chunker 単体テスト
     priority: 91
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-004
@@ -332,7 +332,7 @@ tasks:
   - task_id: TASK-006
     title: internal/embedder — OpenAI Embedding API 呼び出し
     priority: 87
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-001
@@ -351,7 +351,7 @@ tasks:
   - task_id: TASK-007
     title: internal/embedder 単体テスト
     priority: 85
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-006
@@ -369,7 +369,7 @@ tasks:
   - task_id: TASK-008
     title: internal/fetcher — URL コンテンツ取得・SSRF 対策
     priority: 83
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-001
@@ -388,7 +388,7 @@ tasks:
   - task_id: TASK-009
     title: internal/fetcher 単体テスト
     priority: 81
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-008
@@ -406,7 +406,7 @@ tasks:
   - task_id: TASK-010
     title: internal/search — BM25・コサイン類似度・RRF・LLM Rerank 実装
     priority: 79
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-002
@@ -431,7 +431,7 @@ tasks:
   - task_id: TASK-011
     title: internal/search 単体テスト
     priority: 77
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-010
@@ -455,7 +455,7 @@ tasks:
   - task_id: TASK-012
     title: internal/expiry — TTL/LRU 廃棄ワーカー
     priority: 67
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-002
@@ -475,7 +475,7 @@ tasks:
   - task_id: TASK-027
     title: internal/expiry — TTL/LRU 廃棄ワーカー単体テスト
     priority: 66
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-012
@@ -494,7 +494,7 @@ tasks:
   - task_id: TASK-013
     title: internal/mcp UpsertHandler 実装
     priority: 65
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-002
@@ -518,7 +518,7 @@ tasks:
   - task_id: TASK-014
     title: internal/mcp DeleteHandler 実装
     priority: 63
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-002
@@ -536,7 +536,7 @@ tasks:
   - task_id: TASK-015
     title: internal/mcp QueryHandler 実装
     priority: 61
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-010
@@ -556,7 +556,7 @@ tasks:
   - task_id: TASK-016
     title: internal/mcp ManageHandler 実装（list_indexes / delete_index / manage_index）
     priority: 59
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-002
@@ -576,7 +576,7 @@ tasks:
   - task_id: TASK-017
     title: cmd/docdb — エントリポイント・設定読み込み・MCP サーバー起動
     priority: 55
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-012
@@ -602,7 +602,7 @@ tasks:
   - task_id: TASK-023
     title: internal/mcp DeleteHandler 単体テスト
     priority: 62
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-014
@@ -621,7 +621,7 @@ tasks:
   - task_id: TASK-024
     title: internal/mcp ManageHandler 単体テスト
     priority: 58
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-016
@@ -640,7 +640,7 @@ tasks:
   - task_id: TASK-025
     title: internal/mcp UpsertHandler 単体テスト
     priority: 63
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-013
@@ -660,7 +660,7 @@ tasks:
   - task_id: TASK-026
     title: internal/mcp QueryHandler 単体テスト
     priority: 60
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-015

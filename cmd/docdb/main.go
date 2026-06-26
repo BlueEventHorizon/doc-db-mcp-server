@@ -1,19 +1,27 @@
 // doc-db MCP サーバーのエントリポイント。
-// 設定読み込み・Store 初期化・MCP サーバー起動を行う（DES-001 §3.1）。
+// 設定読み込み・依存初期化・MCP HTTP サーバー起動を行う（DES-001 §3.1）。
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/chunker"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/config"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/embedder"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/expiry"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/fetcher"
+	docdbmcp "github.com/BlueEventHorizon/doc-db-mcp-server/internal/mcp"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/search"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/store"
 )
 
@@ -48,26 +56,43 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("起動失敗: %w", err)
 	}
 
-	// API キーのみ環境変数から取得（PRE-01 fail-fast）
+	// API キー（PRE-01 fail-fast）
 	apiKey, err := embedder.APIKeyFromEnv()
 	if err != nil {
 		return fmt.Errorf("起動失敗: %w", err)
 	}
 
-	// Embedder 設定（DES-001 §9.2 embedding セクション）
-	_ = embedder.Config{
-		APIKey:  apiKey,
-		Model:   cfg.Embedding.Model,
-		Dim:     cfg.Embedding.Dim,
-		Timeout: time.Duration(cfg.Embedding.TimeoutSeconds) * time.Second,
-	}
-
-	// Store 初期化（DES-001 §3.1）
+	// Store
 	st, err := store.New(cfg.Server.DBPath, cfg.Embedding.Dim)
 	if err != nil {
 		return fmt.Errorf("store 初期化失敗: %w", err)
 	}
 	defer st.Close()
+
+	// 各コンポーネント
+	emb := embedder.New(embedder.Config{
+		APIKey:  apiKey,
+		Model:   cfg.Embedding.Model,
+		Dim:     cfg.Embedding.Dim,
+		Timeout: time.Duration(cfg.Embedding.TimeoutSeconds) * time.Second,
+	})
+	ch := chunker.New(cfg.Chunker.MaxChunkSize)
+	fe := fetcher.New(fetcher.Config{
+		TimeoutSecs:  cfg.Fetcher.TimeoutSeconds,
+		AllowPrivate: cfg.Fetcher.AllowPrivate,
+	})
+
+	// Search Pipeline（reranker は未実装のため nil → rerank モードは RRF フォールバック）
+	pipeline := search.New(
+		st,
+		&docdbmcp.SearchEmbedderAdapter{Inner: emb},
+		nil,
+		search.Config{
+			K1:           cfg.BM25.K1,
+			B:            cfg.BM25.B,
+			RerankFactor: cfg.Rerank.Factor,
+		},
+	)
 
 	// Expiry ワーカー起動（DES-001 §8）
 	expWorker := expiry.New(st, expiry.Config{
@@ -77,24 +102,55 @@ func run(ctx context.Context) error {
 	})
 	go expWorker.Start(ctx)
 
-	// TODO: MCP サーバーを起動する（internal/mcp に Server 型が実装されたら以下を有効化）
-	// srv := mcp.NewServer(mcp.Config{
-	// 	Port:     cfg.Server.Port,
-	// 	Store:    st,
-	// 	Embedder: embedder.New(embedCfg),
-	// 	Chunker:  chunker.New(cfg.Chunker.MaxChunkSize),
-	// 	Fetcher:  fetcher.New(fetcher.Config{
-	// 		TimeoutSecs:  cfg.Fetcher.TimeoutSeconds,
-	// 		AllowPrivate: cfg.Fetcher.AllowPrivate,
-	// 	}),
-	// })
-	// return srv.Run(ctx)
+	// MCP サーバー初期化 + ツール登録
+	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{
+		Name:    "doc-db",
+		Version: version,
+	}, nil)
+	handlers := docdbmcp.New(st, ch, emb, fe, pipeline)
+	handlers.Register(mcpServer)
 
-	slog.Info("doc-db MCP サーバー起動準備完了。MCP ハンドラは未実装のため待機します",
-		"port", cfg.Server.Port,
-		"db_path", cfg.Server.DBPath,
-		"embedding_model", cfg.Embedding.Model)
-	<-ctx.Done()
-	slog.Info("シャットダウン")
-	return nil
+	// Streamable HTTP transport（NFR-03 / PRE-02）
+	handler := mcpsdk.NewStreamableHTTPHandler(
+		func(_ *http.Request) *mcpsdk.Server { return mcpServer },
+		nil,
+	)
+	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	httpServer := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
+	// graceful shutdown
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("doc-db MCP サーバー起動",
+			"addr", addr,
+			"db_path", cfg.Server.DBPath,
+			"embedding_model", cfg.Embedding.Model,
+			"version", version)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		slog.Info("シャットダウン開始")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("HTTP shutdown: %w", err)
+		}
+		// goroutine の終了を待つ
+		if err := <-errCh; err != nil {
+			return err
+		}
+		slog.Info("シャットダウン完了")
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }

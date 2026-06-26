@@ -246,6 +246,30 @@ func (s *Store) FindRecord(ctx context.Context, key, path, contentHash string) (
 	return id, nil
 }
 
+// KeyExists は key が存在するかを返す（query 開始時の存在確認用）。
+// 読み取り操作のため Mutex を取得しない。
+func (s *Store) KeyExists(ctx context.Context, key string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM keys WHERE key = ?`, key,
+	).Scan(&n); err != nil {
+		return false, fmt.Errorf("store.KeyExists: %w", err)
+	}
+	return n > 0, nil
+}
+
+// HasRecord は key+path に records が 1 件でも存在するかを返す（delete_documents の DEL-02 用）。
+// 読み取り操作のため Mutex を取得しない。
+func (s *Store) HasRecord(ctx context.Context, key, path string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM records WHERE key=? AND path=?`, key, path,
+	).Scan(&n); err != nil {
+		return false, fmt.Errorf("store.HasRecord: %w", err)
+	}
+	return n > 0, nil
+}
+
 // GetChunksForSearch は key（series 指定時はフィルタ）の全チャンクを返す。
 // 読み取り操作のため Mutex を取得しない。
 func (s *Store) GetChunksForSearch(ctx context.Context, key string, series string) ([]Chunk, error) {
@@ -735,6 +759,108 @@ func (s *Store) DeleteKey(ctx context.Context, key string) error {
 	}
 
 	return tx.Commit()
+}
+
+// KeyLRUInfo は LRU 廃棄で使う KEY のチャンク数情報（DES-001 §8.2）。
+type KeyLRUInfo struct {
+	Key        string
+	ChunkCount int
+}
+
+// ListExpiredKeysByTTL は最終アクセスが effective TTL を超えた KEY 名を返す（DES-001 §8.1 EXP-01）。
+// effective TTL = COALESCE(keys.expiry_policy.ttl_days, defaultTTLDays)。
+// 読み取り操作のため Mutex を取得しない。
+func (s *Store) ListExpiredKeysByTTL(ctx context.Context, defaultTTLDays int) ([]string, error) {
+	// JSON1 拡張で keys.expiry_policy.ttl_days を抽出し、未設定ならサーバーデフォルトを使う。
+	// last_accessed_at は RFC3339 文字列で保存されているため SQLite の datetime() と比較可能。
+	rows, err := s.db.QueryContext(ctx, `
+SELECT key
+FROM keys
+WHERE last_accessed_at < datetime('now', '-' || COALESCE(json_extract(expiry_policy, '$.ttl_days'), ?) || ' days')
+`, defaultTTLDays)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListExpiredKeysByTTL: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("store.ListExpiredKeysByTTL scan: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// TotalChunkCount はシステム全体のチャンク総数を返す（DES-001 §8.2）。
+// 読み取り操作のため Mutex を取得しない。
+func (s *Store) TotalChunkCount(ctx context.Context) (int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chunks`).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store.TotalChunkCount: %w", err)
+	}
+	return total, nil
+}
+
+// ListKeysByLRU は KEY のチャンク数を last_accessed_at ASC（古い順）で返す（DES-001 §8.2）。
+// チャンクが 0 件の KEY は含めない。読み取り操作のため Mutex を取得しない。
+func (s *Store) ListKeysByLRU(ctx context.Context) ([]KeyLRUInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT r.key, COUNT(c.id) AS chunk_count
+FROM chunks c
+JOIN records r ON c.record_id = r.id
+GROUP BY r.key
+ORDER BY (SELECT last_accessed_at FROM keys WHERE key = r.key) ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListKeysByLRU: %w", err)
+	}
+	defer rows.Close()
+
+	var result []KeyLRUInfo
+	for rows.Next() {
+		var info KeyLRUInfo
+		if err := rows.Scan(&info.Key, &info.ChunkCount); err != nil {
+			return nil, fmt.Errorf("store.ListKeysByLRU scan: %w", err)
+		}
+		result = append(result, info)
+	}
+	return result, rows.Err()
+}
+
+// SetExpiryPolicy は KEY の廃棄ポリシーを更新する（DES-001 §8.4 EXP-04 / MNG-03）。
+// policy が nil の場合は expiry_policy を NULL（サーバーデフォルト適用）にする。
+// Mutex を取得して直列化する。
+func (s *Store) SetExpiryPolicy(ctx context.Context, key string, policy *ExpiryPolicy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var policyJSON any
+	if policy != nil {
+		b, err := json.Marshal(policy)
+		if err != nil {
+			return fmt.Errorf("store.SetExpiryPolicy: marshal policy: %w", err)
+		}
+		policyJSON = string(b)
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE keys SET expiry_policy = ? WHERE key = ?`,
+		policyJSON, key,
+	)
+	if err != nil {
+		return fmt.Errorf("store.SetExpiryPolicy: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store.SetExpiryPolicy: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store.SetExpiryPolicy: key %q not found", key)
+	}
+	return nil
 }
 
 // TouchKey は key の last_accessed_at を現在時刻に更新する（query 時に呼ぶ）。

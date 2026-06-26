@@ -20,6 +20,12 @@ var lexTokenRe = regexp.MustCompile(
 		`|\d+`, // 数字列
 )
 
+// Tokenize は LEX-01 に従いテキストをトークン列に変換する（DES-001 §6.2）。
+// upsert 時の BM25 stats 構築・search 時のクエリ解析の両方で使用するため公開する。
+func Tokenize(text string) []string {
+	return tokenize(text)
+}
+
 // tokenize は LEX-01 に従いテキストをトークン列に変換する（DES-001 §6.2）。
 // 1. NFKC 正規化 + 小文字化
 // 2. 正規表現マッチでトークン分割
