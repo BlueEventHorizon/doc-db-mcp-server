@@ -4,8 +4,6 @@ package chunker
 import (
 	"bufio"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 )
 
@@ -28,19 +26,17 @@ type Chunker struct {
 	MaxChunkSize int
 }
 
-// defaultMaxChunkSize は DOCDB_MAX_CHUNK_SIZE のデフォルト値（CHK-03 確定値）。
+// defaultMaxChunkSize は最大チャンクサイズのフォールバック値（CHK-03 確定値）。
+// 通常は config.ChunkerConfig.MaxChunkSize から渡される。
 const defaultMaxChunkSize = 1500
 
-// New は環境変数 DOCDB_MAX_CHUNK_SIZE を参照して Chunker を生成する。
-// 環境変数が未設定または不正値の場合はデフォルト値 1500 を使用する。
-func New() *Chunker {
-	maxSize := defaultMaxChunkSize
-	if v := os.Getenv("DOCDB_MAX_CHUNK_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxSize = n
-		}
+// New は maxChunkSize を指定して Chunker を生成する（DES-001 §9.1）。
+// maxChunkSize <= 0 の場合は defaultMaxChunkSize を使用する。
+func New(maxChunkSize int) *Chunker {
+	if maxChunkSize <= 0 {
+		maxChunkSize = defaultMaxChunkSize
 	}
-	return &Chunker{MaxChunkSize: maxSize}
+	return &Chunker{MaxChunkSize: maxChunkSize}
 }
 
 // effectiveMaxChunkSize は実効最大チャンクサイズを返す。

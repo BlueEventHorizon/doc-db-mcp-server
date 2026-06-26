@@ -77,18 +77,18 @@ internal/store     SQLite 読み書き・BM25 統計管理
 |------|------|----------|
 | 基盤コンポーネント（store/chunker/embedder/fetcher/expiry） | ✅ 実装済み | `docs/specs/base/design/DES-001` |
 | `--version` フラグ | ✅ 実装済み | DES-002 §4.2.1 |
+| **YAML 設定ファイル方式**（`~/.doc-db/doc-db.yaml`） | ✅ 実装済み（`internal/config` パッケージ・`DOCDB_*` 環境変数撤廃済み） | DES-001 §9 |
+| **`doc-db.yaml.example` 同梱** | ✅ 実装済み（リポジトリ直下） | DES-002 §5.2 |
 | MCP サーバー本体（Streamable HTTP）・ツールハンドラ 4 種 | 🚧 未実装（DES-001 §3.1 で設計済み） | DES-001 |
 | 検索パイプライン（emb/lex/hybrid/rerank） | 🚧 未実装（DES-001 §6 で設計済み） | DES-001 |
-| **YAML 設定ファイル方式**（`~/.doc-db/doc-db.yaml`） | 🚧 未実装（DES-001 §9 で設計済み） | DES-001 §9 |
 | **Homebrew 配布**（`Formula/doc-db.rb` + tap 方式） | 🚧 未実装（設計のみ） | `docs/specs/install/design/DES-002` |
 | **整合性検証スクリプト**（`scripts/verify_*.sh`） | 🚧 未実装（設計のみ） | DES-002 §4.3 |
-| **`doc-db.yaml.example` 同梱** | 🚧 未実装 | DES-002 §5.2 |
 
 ---
 
-## 現状の使い方（暫定）
+## 現状の使い方
 
-> 以下は **現時点で動作する手順** です。MCP ハンドラ未実装のため、起動しても接続できる MCP クライアントはありません。基盤コンポーネントの動作確認用です。
+> MCP ハンドラ・検索パイプライン未実装のため、起動しても接続できる MCP クライアントはありません。基盤コンポーネント・設定ローダーの動作確認用です。
 
 ### 前提条件
 
@@ -112,44 +112,17 @@ go build -ldflags "-X main.version=$(cat VERSION)" -o doc-db ./cmd/docdb
 
 `--version` / `-v` は設定読み込み・API キー検証・サーバー起動より前に即時終了します。
 
-### 現状の起動（環境変数方式 — 暫定）
+### 設定ファイルの配置
 
-> ⚠️ **注意**: 現行 `cmd/docdb/main.go` は `DOCDB_*` 環境変数を読みます。DES-001 §9 で確定済みの **YAML 設定ファイル方式（`~/.doc-db/doc-db.yaml`）に置き換える予定**ですが、まだ実装されていません。下記は **置き換え前の暫定動作** です。
-
-```bash
-export OPENAI_API_DOCDB_KEY=sk-...
-export DOCDB_DB_PATH=./docdb.sqlite       # 任意（既定値）
-export DOCDB_TTL_DAYS=30                  # 任意（既定値）
-export DOCDB_MAX_CHUNKS=10000             # 任意（既定値）
-export DOCDB_EXPIRY_INTERVAL=3600         # 任意（既定値・秒）
-./doc-db
-# "doc-db MCP サーバー起動準備完了。MCP ハンドラは未実装のため待機します"
-# Ctrl+C で終了
-```
-
----
-
-## 設計済み・未実装の使い方（将来）
-
-### Homebrew インストール（実装予定）
-
-設計書 `docs/specs/install/design/DES-002` で確定済み。実装後は以下で導入できる予定：
+doc-db は **`~/.doc-db/doc-db.yaml`**（固定パス）から起動時に設定を読み込みます。ファイルが存在しない場合は fail-fast で終了します（CFG-01）。
 
 ```bash
-brew tap k2moons/doc-db https://github.com/k2moons/doc-db-mcp-server
-brew install k2moons/doc-db/doc-db
+mkdir -p ~/.doc-db
+cp doc-db.yaml.example ~/.doc-db/doc-db.yaml
+# 必要に応じて編集
 ```
 
-実装に必要なファイル（いずれも未作成）：
-
-- `Formula/doc-db.rb`（Homebrew Formula）
-- `doc-db.yaml.example`（リポジトリ直下に設定ファイルサンプル）
-- `scripts/verify_version_consistency.sh`
-- `scripts/verify_release_tag.sh`
-
-### YAML 設定方式（実装予定）
-
-設計書 `docs/specs/base/design/DES-001` §9 で確定済み。実装後は `~/.doc-db/doc-db.yaml` を以下のように記述：
+設定ファイル例：
 
 ```yaml
 server:
@@ -177,9 +150,39 @@ expiry:
   interval_seconds: 3600
 ```
 
-すべての項目は設定ファイルが正本。**環境変数によるオーバーライドは行わない**（API キーを除く）。実装後、現在の `DOCDB_*` 環境変数読み取りは廃止される予定です。
+全項目必須・未知キー禁止・値域外で fail-fast（CFG-03）。
 
-### Claude Code / Desktop への登録（実装予定）
+### 起動
+
+API キーのみ環境変数で渡し、その他は設定ファイルから読まれます。
+
+```bash
+export OPENAI_API_DOCDB_KEY=sk-...
+./doc-db
+# "doc-db MCP サーバー起動準備完了。MCP ハンドラは未実装のため待機します"
+# Ctrl+C で終了
+```
+
+---
+
+## 設計済み・未実装の使い方（将来）
+
+### Homebrew インストール（実装予定）
+
+設計書 `docs/specs/install/design/DES-002` で確定済み。実装後は以下で導入できる予定：
+
+```bash
+brew tap k2moons/doc-db https://github.com/k2moons/doc-db-mcp-server
+brew install k2moons/doc-db/doc-db
+```
+
+実装に必要なファイル（いずれも未作成）：
+
+- `Formula/doc-db.rb`（Homebrew Formula）
+- `scripts/verify_version_consistency.sh`
+- `scripts/verify_release_tag.sh`
+
+### Claude Code / Desktop への登録（MCP ハンドラ実装後）
 
 doc-db は Streamable HTTP transport で動作するため、URL 形式で登録します（subprocess 形式の `command` は使用しない）：
 

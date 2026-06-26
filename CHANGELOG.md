@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `internal/config` パッケージ新設（YAML 固定ファイル `~/.doc-db/doc-db.yaml` から起動時設定を読み込む。DES-001 §9）
+- `doc-db.yaml.example` 同梱（DES-002 §5.2）
+- `--version` / `-v` フラグの早期終了分岐（APP-002 VER-03）
+- `Makefile`（`make build` で ldflags 経由のバージョン値注入）
+- インストール設計書 APP-002 / DES-002（Homebrew 自家 tap 配布）
+
+### Changed
+- 動作設定の出所を環境変数（`DOCDB_*`）から YAML ファイルに変更（DES-001 §9）
+- `embedder.ConfigFromEnv` を廃止し `APIKeyFromEnv`（シークレットのみ）に分離
+- `fetcher.ConfigFromEnv` を廃止（呼び出し側で `config.FetcherConfig` から組み立て）
+- `chunker.New()` を引数受け取り型 `chunker.New(maxChunkSize int)` に変更
+
 ## [0.1.0] - 2026-06-24
 
 ### Added

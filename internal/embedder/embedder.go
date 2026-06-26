@@ -10,7 +10,6 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -31,22 +30,19 @@ type Embedder interface {
 }
 
 // Config は OpenAI Embedder の設定。
-// 環境変数から New() で読み込まれる。
+// 設定値は config.EmbeddingConfig から組み立て、APIKey のみ環境変数で渡す（DES-001 §9.1）。
 type Config struct {
-	// APIKey は OpenAI API キー。
-	// OPENAI_API_DOCDB_KEY → OPENAI_API_KEY の順でフォールバック（PRE-01）。
+	// APIKey は OpenAI API キー（OPENAI_API_DOCDB_KEY → OPENAI_API_KEY のフォールバック）。
+	// シークレットのため設定ファイルではなく環境変数経由で渡す（PRE-01）。
 	APIKey string
 
-	// Model は Embedding モデル名（デフォルト: text-embedding-3-small）。
-	// 環境変数 DOCDB_EMBED_MODEL で上書き可能。
+	// Model は Embedding モデル名（doc-db.yaml: embedding.model）。
 	Model string
 
-	// Dim は Embedding ベクトルの次元数（デフォルト: 1536）。
-	// 環境変数 DOCDB_EMBED_DIM で上書き可能。
+	// Dim は Embedding ベクトルの次元数（doc-db.yaml: embedding.dim）。
 	Dim int
 
-	// Timeout は Embedding API 1 回のリクエストタイムアウト（デフォルト: 60s）。
-	// 環境変数 DOCDB_EMBED_TIMEOUT（秒）で上書き可能。
+	// Timeout は Embedding API 1 回のリクエストタイムアウト（doc-db.yaml: embedding.timeout_seconds）。
 	Timeout time.Duration
 
 	// BatchSize は 1 リクエストあたりの最大テキスト数（デフォルト: 100、上限: 100）。
@@ -73,49 +69,17 @@ const (
 	retryBaseWait = 1 * time.Second
 )
 
-// ConfigFromEnv は環境変数から Config を構築して返す。
-// APIKey がどちらの環境変数にも設定されていない場合はエラーを返す（PRE-01 fail-fast）。
-func ConfigFromEnv() (Config, error) {
-	cfg := Config{
-		Model:     defaultModel,
-		Dim:       defaultDim,
-		Timeout:   defaultTimeout,
-		BatchSize: defaultBatchSize,
-	}
-
-	// API キー: OPENAI_API_DOCDB_KEY → OPENAI_API_KEY のフォールバック（PRE-01）
+// APIKeyFromEnv は OpenAI API キーを環境変数から取得する（PRE-01）。
+// OPENAI_API_DOCDB_KEY → OPENAI_API_KEY の順でフォールバックする。
+// どちらも未設定の場合はエラーを返す（fail-fast）。
+func APIKeyFromEnv() (string, error) {
 	if v := os.Getenv("OPENAI_API_DOCDB_KEY"); v != "" {
-		cfg.APIKey = v
-	} else if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-		cfg.APIKey = v
-	} else {
-		return Config{}, fmt.Errorf("embedder: neither OPENAI_API_DOCDB_KEY nor OPENAI_API_KEY is set")
+		return v, nil
 	}
-
-	// Embedding モデル（DOCDB_EMBED_MODEL）
-	if v := os.Getenv("DOCDB_EMBED_MODEL"); v != "" {
-		cfg.Model = v
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		return v, nil
 	}
-
-	// Embedding 次元数（DOCDB_EMBED_DIM）
-	if v := os.Getenv("DOCDB_EMBED_DIM"); v != "" {
-		dim, err := strconv.Atoi(v)
-		if err != nil || dim <= 0 {
-			return Config{}, fmt.Errorf("embedder: invalid DOCDB_EMBED_DIM %q: %w", v, err)
-		}
-		cfg.Dim = dim
-	}
-
-	// タイムアウト（DOCDB_EMBED_TIMEOUT 秒）
-	if v := os.Getenv("DOCDB_EMBED_TIMEOUT"); v != "" {
-		secs, err := strconv.Atoi(v)
-		if err != nil || secs <= 0 {
-			return Config{}, fmt.Errorf("embedder: invalid DOCDB_EMBED_TIMEOUT %q: %w", v, err)
-		}
-		cfg.Timeout = time.Duration(secs) * time.Second
-	}
-
-	return cfg, nil
+	return "", fmt.Errorf("embedder: neither OPENAI_API_DOCDB_KEY nor OPENAI_API_KEY is set")
 }
 
 // New は Config を使って Embedder を生成する。

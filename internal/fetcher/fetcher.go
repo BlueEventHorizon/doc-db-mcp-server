@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -22,14 +21,13 @@ type Fetcher interface {
 	Fetch(ctx context.Context, url string) (string, error)
 }
 
-// Config は Fetcher の設定。
+// Config は Fetcher の設定。設定値は config.FetcherConfig から組み立てる（DES-001 §9.1）。
 type Config struct {
-	// TimeoutSecs はフェッチタイムアウト秒数（デフォルト: 30）。
-	// 環境変数 DOCDB_FETCH_TIMEOUT で上書き可能。
+	// TimeoutSecs はフェッチタイムアウト秒数（doc-db.yaml: fetcher.timeout_seconds）。
 	TimeoutSecs int
 
 	// AllowPrivate が true の場合、プライベート IP へのリクエストを許可する（SSRF 対策を無効化）。
-	// 環境変数 DOCDB_FETCH_ALLOW_PRIVATE=true で有効化。
+	// （doc-db.yaml: fetcher.allow_private）
 	AllowPrivate bool
 }
 
@@ -84,27 +82,6 @@ func New(cfg Config) Fetcher {
 	}
 
 	return &httpFetcher{cfg: cfg, client: client}
-}
-
-// ConfigFromEnv は環境変数から Config を構築して返す。
-func ConfigFromEnv() Config {
-	cfg := Config{
-		TimeoutSecs:  30,
-		AllowPrivate: false,
-	}
-
-	if v := os.Getenv("DOCDB_FETCH_TIMEOUT"); v != "" {
-		var secs int
-		if _, err := fmt.Sscanf(v, "%d", &secs); err == nil && secs > 0 {
-			cfg.TimeoutSecs = secs
-		}
-	}
-
-	if os.Getenv("DOCDB_FETCH_ALLOW_PRIVATE") == "true" {
-		cfg.AllowPrivate = true
-	}
-
-	return cfg
 }
 
 // Fetch は url のコンテンツを取得して文字列で返す。
