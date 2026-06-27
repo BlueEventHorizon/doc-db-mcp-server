@@ -684,7 +684,7 @@ tasks:
   - task_id: TASK-018
     title: upsert_documents 統合テスト
     priority: 45
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-017
@@ -703,7 +703,7 @@ tasks:
   - task_id: TASK-019
     title: query 統合テスト（mode 別結果差異・stage_stats 検証）
     priority: 43
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-017
@@ -723,7 +723,7 @@ tasks:
   - task_id: TASK-020
     title: WAL 並行テスト（実ファイル SQLite での複数ゴルーチン同時アクセス）
     priority: 41
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-003
@@ -742,7 +742,7 @@ tasks:
   - task_id: TASK-021
     title: 廃棄ポリシー統合テスト（TTL/LRU 削除動作）
     priority: 39
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-017
@@ -762,7 +762,7 @@ tasks:
   - task_id: TASK-022
     title: エラーハンドリング検証テスト・最終品質確認
     priority: 37
-    status: pending
+    status: completed
     design_id: DES-001
     depends_on:
       - TASK-017
