@@ -329,12 +329,12 @@ sequenceDiagram
 
 | モデル（`embedding.model`） | 次元数 | `embeddings.dim` |
 | --- | --- | --- |
-| `text-embedding-3-small`（デフォルト） | 1536 | 1536 |
-| `text-embedding-3-large` | 3072 | 3072 |
+| `text-embedding-3-large`（デフォルト） | 3072 | 3072 |
+| `text-embedding-3-small` | 1536 | 1536 |
 
-デフォルトモデル `text-embedding-3-small` を使用する場合、`embeddings.dim = 1536` で固定される。モデル変更時はデータベースを再構築する（異なる次元数のベクトルは混在不可）。
+デフォルトモデル `text-embedding-3-large` を使用する場合、`embeddings.dim = 3072` で固定される。モデル変更時はデータベースを再構築する（異なる次元数のベクトルは混在不可）。
 
-**モデル選択根拠**: `text-embedding-3-small` をデフォルトとして採用する。本サーバーは内部開発ツール（NFR-07）であり、コストとのトレードオフを優先する。`text-embedding-3-large` はコストが約6.5倍高いが検索品質の向上は開発ドキュメント用途では限定的。モデルを変更する場合は設定ファイルの `embedding.model` と `embedding.dim` の両方を更新し、DB を再構築する。
+**モデル選択根拠**: `text-embedding-3-large` をデフォルトとして採用する。reference doc-db SKILL (Python 版) と同モデルにすることで日本語技術文書の検索精度を最大化する。コストは `-3-small` の約 6.5 倍だが、言い換え・抽象クエリでの recall 向上効果が大きい。コスト最適化が必要な場合は `text-embedding-3-small` (dim=1536) に切り替え可能。
 
 **スケール上限**: `expiry.max_chunks`（デフォルト 10,000）はシステム全体の上限。key 単位では通常 1,000〜5,000 チャンク程度を想定する（1,000 チャンク × 1536 dim × 4 byte ≈ 6 MB）。10,000 チャンクでも 60 MB / クエリであり、内部ツール用途では許容範囲。100,000 チャンクを超える場合はベクトルキャッシュ（起動時 mmap またはプロセス内メモリキャッシュ）の導入を検討する。
 
@@ -416,7 +416,7 @@ stage_stats: {
 ### 7.1 OpenAI Embedding API
 
 - エンドポイント: `https://api.openai.com/v1/embeddings`
-- モデル: 設定ファイルで指定（例: `text-embedding-3-small`）
+- モデル: 設定ファイルで指定（例: `text-embedding-3-large`）
 - バッチ上限: 1 リクエストあたり最大 100 テキスト（OpenAI 制限は 2048 だが、ペイロードサイズと遅延を抑えるため 100 を上限とする）
 - リトライ: 指数バックオフ（初回 1s、最大 3 回）
 - タイムアウト: 60s（設定可）
@@ -514,8 +514,8 @@ server:
   db_path: "./docdb.sqlite"        # SQLite ファイルパス
 
 embedding:
-  model: "text-embedding-3-small"  # Embedding モデル（変更時は DB 再構築必須）
-  dim: 1536                        # ベクトル次元数（EMB-02 確定値）
+  model: "text-embedding-3-large"  # Embedding モデル（変更時は DB 再構築必須）
+  dim: 3072                        # ベクトル次元数（EMB-02 確定値）
   timeout_seconds: 60              # API タイムアウト
 
 rerank:

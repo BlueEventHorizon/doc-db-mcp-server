@@ -13,8 +13,8 @@ server:
   db_path: "./docdb.sqlite"        # SQLite ファイルパス
 
 embedding:
-  model: "text-embedding-3-small"  # Embedding モデル（変更時は DB 再構築が必要）
-  dim: 1536                        # ベクトル次元数（text-embedding-3-small=1536 / -3-large=3072）
+  model: "text-embedding-3-large"  # Embedding モデル（変更時は DB 再構築が必要。reference doc-db SKILL と同モデル）
+  dim: 3072                        # ベクトル次元数（text-embedding-3-large=3072 / -3-small=1536）
   timeout_seconds: 60              # API タイムアウト
 
 rerank:

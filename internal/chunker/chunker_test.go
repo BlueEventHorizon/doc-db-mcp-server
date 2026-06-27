@@ -21,11 +21,12 @@ func TestSplit_H1Boundary(t *testing.T) {
 		t.Fatalf("len(chunks) = %d, want 2", len(chunks))
 	}
 
-	if chunks[0].HeadingPath != "# A" {
-		t.Errorf("chunk[0] heading = %q, want %q", chunks[0].HeadingPath, "# A")
+	// heading_path は Markdown 記号無しの title のみ（reference doc-db SKILL と同方式）。
+	if chunks[0].HeadingPath != "A" {
+		t.Errorf("chunk[0] heading = %q, want %q", chunks[0].HeadingPath, "A")
 	}
-	if chunks[1].HeadingPath != "# B" {
-		t.Errorf("chunk[1] heading = %q, want %q", chunks[1].HeadingPath, "# B")
+	if chunks[1].HeadingPath != "B" {
+		t.Errorf("chunk[1] heading = %q, want %q", chunks[1].HeadingPath, "B")
 	}
 	if !strings.Contains(chunks[0].Text, "body A") {
 		t.Errorf("chunk[0] text missing body A: %q", chunks[0].Text)
@@ -58,9 +59,9 @@ func TestSplit_NestedHeadingsAllLevels(t *testing.T) {
 		t.Fatalf("len(chunks) = %d, want 6", len(chunks))
 	}
 
-	// 最下層は完全な階層パスを持つ
+	// 最下層は完全な階層パス（title のみ ` > ` 連結）を持つ
 	last := chunks[len(chunks)-1]
-	want := "# A > ## B > ### C > #### D > ##### E > ###### F"
+	want := "A > B > C > D > E > F"
 	if last.HeadingPath != want {
 		t.Errorf("deepest heading_path = %q\nwant %q", last.HeadingPath, want)
 	}
@@ -110,8 +111,8 @@ func TestSplit_MaxChunkSize_Splits(t *testing.T) {
 		if runeLen := len([]rune(ch.Text)); runeLen > 10 {
 			t.Errorf("chunk[%d] rune len = %d, exceeds maxSize 10", i, runeLen)
 		}
-		if ch.HeadingPath != "# H" {
-			t.Errorf("chunk[%d] heading_path = %q, want %q", i, ch.HeadingPath, "# H")
+		if ch.HeadingPath != "H" {
+			t.Errorf("chunk[%d] heading_path = %q, want %q", i, ch.HeadingPath, "H")
 		}
 	}
 }
@@ -221,7 +222,7 @@ func TestSplit_HeadingStack_PopsOnSameOrShallower(t *testing.T) {
 	if len(chunks) != 3 {
 		t.Fatalf("len = %d, want 3", len(chunks))
 	}
-	want := []string{"# A", "# A > ## A1", "# B"}
+	want := []string{"A", "A > A1", "B"}
 	for i, w := range want {
 		if chunks[i].HeadingPath != w {
 			t.Errorf("chunk[%d] heading_path = %q, want %q", i, chunks[i].HeadingPath, w)

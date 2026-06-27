@@ -158,10 +158,11 @@ func TestFuseScores_RRFBasic(t *testing.T) {
 	embRank := []int{0, 1, 2}
 	lexRank := []int{2, 1, 0}
 	embScores := []float64{0.9, 0.5, 0.1}
+	lexScores := []float64{0.3, 0.5, 0.9}
 	cfg := Config{}
 	cfg.applyDefaults()
 
-	order, rrf := fuseScores(embRank, lexRank, embScores, cfg)
+	order, rrf := fuseScores(embRank, lexRank, embScores, lexScores, cfg)
 
 	if len(order) != 3 {
 		t.Fatalf("order len = %d, want 3", len(order))
@@ -180,14 +181,15 @@ func TestFuseScores_RRFBasic(t *testing.T) {
 }
 
 func TestFuseScores_EmbFallback(t *testing.T) {
-	// lex がほぼゼロヒット → emb 順がそのまま返る
+	// lex がほぼゼロヒット (lex_score > 0 が 0 件) → emb 順がそのまま返る
 	embRank := []int{2, 0, 1}
-	lexRank := []int{}
+	lexRank := []int{0, 1, 2}
 	embScores := []float64{0.5, 0.3, 0.9}
+	lexScores := []float64{0, 0, 0} // 全て 0 → lex_hits = 0 でフォールバック発動
 	cfg := Config{}
 	cfg.applyDefaults()
 
-	order, _ := fuseScores(embRank, lexRank, embScores, cfg)
+	order, _ := fuseScores(embRank, lexRank, embScores, lexScores, cfg)
 	if !reflect.DeepEqual(order, embRank) {
 		t.Errorf("EMB フォールバック: order = %v, want %v", order, embRank)
 	}

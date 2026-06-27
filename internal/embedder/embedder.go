@@ -56,8 +56,8 @@ type openAIEmbedder struct {
 }
 
 const (
-	defaultModel     = "text-embedding-3-small"
-	defaultDim       = 1536
+	defaultModel     = "text-embedding-3-large"
+	defaultDim       = 3072
 	defaultTimeout   = 60 * time.Second
 	defaultBatchSize = 100
 	maxBatchSize     = 100

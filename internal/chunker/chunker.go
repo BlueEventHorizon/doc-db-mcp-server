@@ -240,15 +240,17 @@ func splitIntoSections(content string) ([]section, error) {
 	return sections, nil
 }
 
-// buildHeadingPath は見出しスタックから "# A > ## B > ### C" 形式のパスを生成する。
+// buildHeadingPath は見出しスタックから "A > B > C" 形式のパスを生成する。
+// reference doc-db SKILL と同じく、見出し階層タイトルのみを ` > ` で連結する
+// （Markdown 記号 `#`/`##`/`###` は含めない。これらは embed_text にノイズとして
+// 入ると embedding 精度を落とすため）。
 func buildHeadingPath(stack []headingEntry) string {
 	if len(stack) == 0 {
 		return ""
 	}
 	parts := make([]string, len(stack))
 	for i, h := range stack {
-		prefix := strings.Repeat("#", h.level)
-		parts[i] = fmt.Sprintf("%s %s", prefix, h.text)
+		parts[i] = h.text
 	}
 	return strings.Join(parts, " > ")
 }

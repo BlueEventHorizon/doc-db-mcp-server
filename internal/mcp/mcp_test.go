@@ -272,8 +272,8 @@ func TestUpsert_PartialEmbeddingFailure(t *testing.T) {
 	h := newHarness(t)
 	h.embedder.failTexts = map[string]bool{
 		// chunker は Embedding API には EmbedText (heading breadcrumb + prose) を渡す。
-		// 短文 prose は前 chunk から継承されることがあるが、ここでは最初の chunk なので継承されない。
-		"# A\n\nalpha section": true,
+		// v0.1.3: heading_path から `#` プレフィックスを除去したので、形式は "A\n\nalpha section"。
+		"A\n\nalpha section": true,
 	}
 	ctx := context.Background()
 

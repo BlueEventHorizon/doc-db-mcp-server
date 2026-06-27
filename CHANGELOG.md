@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-06-27
+
+### Changed (reference doc-db SKILL との追加同期 — 残存差異 5 件)
+
+v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.py`) との
+残存差異を全て修正した。設計書には現れない実装上の微細な差が精度に影響していた。
+
+- **Embedding モデル**: デフォルトを `text-embedding-3-small` (1536 dim) →
+  `text-embedding-3-large` (3072 dim) に変更（reference と同モデル）。日本語技術文書の
+  recall が向上。コストは ~6.5x だが精度差が顕著
+- **heading_path から Markdown 記号除去**: `"# A > ## B > ### C"` →
+  `"A > B > C"` 形式に変更（reference [chunk_extractor.py:128](reference/doc-db/scripts/chunk_extractor.py) と同方式）。
+  Embedding API に渡す breadcrumb 内の `#`/`##`/`###` がノイズとして
+  ベクトル品質を下げていた問題を解消
+- **EMB フォールバック判定の修正**: `lex_hits / emb_hits` 比率を「lex_score > 0 の
+  chunk 数」で計算するよう修正（v0.1.2 までは全 chunk 数で近似していて事実上
+  常時 1.0 となり、フォールバックが発動しなかった）。CJK 言い換えクエリで lex
+  がほぼ空振りした際に正しく emb-only モードに切り替わる
+- **RRF の lex_rank フィルタ**: lex_score > 0 の chunk のみを lex_rank に含めるよう
+  修正（reference [hybrid_score.py:36](reference/doc-db/scripts/hybrid_score.py) と同方式）。v0.1.2 までは全 chunk が末尾 rank で参加し
+  て systematic noise を生んでいた
+- **Rerank 候補数決定**: `top_n × factor` から `max(top_n, MAX_CANDIDATES=30)` に変更
+  （reference [search_index.py:232](reference/doc-db/scripts/search_index.py) と同方式）。小さい top_n でも常に最大 30 候補を LLM に渡し、
+  言い換えクエリで emb 上位に正解が無いケースでも救えるようにする
+
+### Breaking
+
+- **Embedding 次元数が 1536 → 3072 に変更**。既存 DB は次元数不一致で起動時 fail-fast。
+  ユーザーは `~/.doc-db/doc-db.yaml` の `embedding.dim` を `3072` に更新し、
+  `docdb.sqlite` を削除して DB を再構築する必要がある
+- `chunks.heading_path` カラムのフォーマット変更（`#` プレフィックス除去）。
+  DB 再構築で自動的に新フォーマットになる
+
 ## [0.1.2] - 2026-06-27
 
 ### Changed (アルゴリズムを reference doc-db SKILL と完全同期)
@@ -84,7 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.3
 [0.1.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.2
 [0.1.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.0

@@ -53,9 +53,9 @@ func TestErrorIntegration_EmbedderPartialFailure_SuccessChunksStored(t *testing.
 	h := newHarness(t)
 	// "# A\nalpha section" を失敗、"# B\nbeta section" を成功とする
 	// Embedder には EmbedText (heading breadcrumb + prose) が渡されるため、
-	// failTexts のキーもその形式に合わせる。
+	// failTexts のキーもその形式に合わせる（v0.1.3 で heading の `#` 除去）。
 	h.embedder.failTexts = map[string]bool{
-		"# A\n\nalpha section": true,
+		"A\n\nalpha section": true,
 	}
 	ctx := context.Background()
 
@@ -98,10 +98,10 @@ func TestErrorIntegration_EmbedderPartialFailure_SuccessChunksStored(t *testing.
 func TestErrorIntegration_EmbedderAllFail_TextStillStored(t *testing.T) {
 	h := newHarness(t)
 	// EmbedText 形式 (heading breadcrumb + "\n\n" + prose) で fail 対象を指定。
-	// alpha は最初の chunk なので prose 継承無し、beta は前 chunk の prose も短いので継承無し。
+	// v0.1.3 で heading の `#` 除去後の形式に合わせる。
 	h.embedder.failTexts = map[string]bool{
-		"# A\n\nalpha section": true,
-		"# B\n\nbeta section":  true,
+		"A\n\nalpha section": true,
+		"B\n\nbeta section":  true,
 	}
 	ctx := context.Background()
 

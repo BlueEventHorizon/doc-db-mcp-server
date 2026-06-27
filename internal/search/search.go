@@ -210,7 +210,7 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 	case ModeLex:
 		fusedOrder = lexRank
 	case ModeHybrid, ModeRerank:
-		fusedOrder, rrfScores = fuseScores(embRank, lexRank, embScores, p.cfg)
+		fusedOrder, rrfScores = fuseScores(embRank, lexRank, embScores, lexScores, p.cfg)
 	default:
 		return Output{}, fmt.Errorf("search: unknown mode %q", mode)
 	}
@@ -339,39 +339,33 @@ func (p *Pipeline) rerank(ctx context.Context, query string, chunks []store.Chun
 	return scores, nil
 }
 
-// rerank 候補数を reference doc-db SKILL (llm_rerank.py:choose_candidate_count) と同方針で決める。
-//   - len(fused) ≤ MinRerankCandidates (5) なら全件
-//   - 上限は min(len(fused), MaxRerankCandidates (30), topN × rerankFactor)
-//   - 下限は MinRerankCandidates
+// rerank 候補数を reference doc-db SKILL (search_index.py:232) と同方針で決める。
 //
-// 候補数の context window budget チェック (128k window) は実装簡略化のため省略する
-// （5 docs / 138 chunks 規模では到達しない。大規模化時は再設計）。
+// reference は fused から `max(top_n, MAX_CANDIDATES=30)` 件を切り出して全部 LLM に渡す。
+// top_n が小さくても常に最大 30 候補まで広く LLM に評価させる方針で、言い換えクエリで
+// emb 上位に正解が無い場合でも救えるよう設計されている。
+//
+// 上限 (MAX=30) は context window budget から逆算した安全値（gpt-4o-mini 128k window）。
+// 大規模化時の budget チェックは省略（138 chunks 規模では到達しない）。
 const (
 	minRerankCandidates = 5
 	maxRerankCandidates = 30
 )
 
 func chooseRerankCandidateCount(fusedLen, topN, factor int) int {
+	_ = factor // reference は factor を使わず max(top_n, MAX) で決定する
 	if fusedLen <= 0 {
 		return 0
 	}
 	if fusedLen <= minRerankCandidates {
 		return fusedLen
 	}
-	if factor <= 0 {
-		factor = 3
+	// preferred = max(top_n, MAX_CANDIDATES)
+	preferred := topN
+	if maxRerankCandidates > preferred {
+		preferred = maxRerankCandidates
 	}
-	preferred := topN * factor
-	upper := fusedLen
-	if maxRerankCandidates < upper {
-		upper = maxRerankCandidates
-	}
-	if preferred > upper {
-		preferred = upper
-	}
-	if preferred < minRerankCandidates {
-		preferred = minRerankCandidates
-	}
+	// 上限は fusedLen
 	if preferred > fusedLen {
 		preferred = fusedLen
 	}
@@ -556,32 +550,41 @@ func containsString(haystack []string, needle string) bool {
 // RRF 融合（§6.3）
 // -----------------------------------------------------------------------
 
-// fuseScores は emb / lex の順位を RRF で融合する。
-// EMB フォールバック（lex_hit / emb_hit < ratio）が発動した場合は emb 順をそのまま返す。
-// 通常時は RRF 後に EMB top-K 保証を適用する。
+// fuseScores は emb / lex の順位を RRF で融合する（reference doc-db SKILL hybrid_score.rrf_fuse と同方式）。
+//
+//   - EMB フォールバック: lex_score > 0 の chunk 数 / emb_score > 0 の chunk 数 が
+//     EMB_FALLBACK_LEX_RATIO (0.05) 未満なら emb only モード（CJK 言い換えクエリ等で lex が
+//     ほぼ空振りした場合、RRF のノイズを避けて emb 順をそのまま返す）
+//   - RRF 計算では lex_score > 0 の chunk のみ lex_rank に含める（reference と同方式。
+//     lex_score=0 の chunk が末尾 rank で参加すると systematic noise になるため）
+//   - EMB top-K 保証を適用（スコア書き換え昇格方式）
 //
 // 戻り値:
 //   - order: chunks インデックスを RRF スコア降順に並べた配列
 //   - rrfScores: chunks インデックスに対応する RRF スコア（fusedOrder と並列）
-func fuseScores(embRank, lexRank []int, embScores []float64, cfg Config) ([]int, []float64) {
+func fuseScores(embRank, lexRank []int, embScores, lexScores []float64, cfg Config) ([]int, []float64) {
 	embHits := countNonZero(embScores)
-	lexHits := len(lexRank)
-	// lex 命中ゼロ判定は、lexScores が non-zero な要素数で行うべきだが、
-	// 上位呼出側で embScores しか渡していないため、lexRank 自体ではなくその non-zero 数を別途数える方が正確。
-	// しかし簡略化のため、lex_hit を lexRank の長さで近似する（実装が冗長になるため）。
-	// 実用上、EMB フォールバック判定では「lex がほぼ機能しない」シグナルがあれば良い。
+	lexHits := countNonZero(lexScores)
 
-	// EMB フォールバック判定
+	// EMB フォールバック判定（reference hybrid_score.py:31 と同方式）
 	if embHits > 0 {
 		ratio := float64(lexHits) / float64(embHits)
 		if ratio < cfg.EmbFallbackLexRatio {
 			// EMB スコア降順のみで返す
 			scores := make([]float64, len(embScores))
-			for rank, idx := range embRank {
-				_ = rank
+			for _, idx := range embRank {
 				scores[idx] = embScores[idx]
 			}
 			return embRank, scores
+		}
+	}
+
+	// lex_rank を lex_score > 0 のものだけにフィルタする
+	// （reference の _to_rank_map は score > 0 のみが渡される lex_items を rank 化）
+	filteredLexRank := make([]int, 0, lexHits)
+	for _, idx := range lexRank {
+		if idx >= 0 && idx < len(lexScores) && lexScores[idx] > 0 {
+			filteredLexRank = append(filteredLexRank, idx)
 		}
 	}
 
@@ -596,15 +599,13 @@ func fuseScores(embRank, lexRank []int, embScores []float64, cfg Config) ([]int,
 		}
 	}
 	rankInScores(embRank)
-	rankInScores(lexRank)
+	rankInScores(filteredLexRank)
 
 	order := sortIndicesByScore(rrf)
 
 	// EMB top-K 保証: emb 上位 K 件が fused 上位 K に含まれるよう、必要な分だけ
-	// **スコアを書き換えて昇格** させる（reference doc-db SKILL と同方式）。
-	// この方式は emb 上位の元順位を維持しつつ、それ以外の fused 順位は崩さない。
+	// スコアを書き換えて昇格させる（reference doc-db SKILL と同方式）。
 	rrf = promoteEmbTopKByScore(order, rrf, embRank, cfg.EmbGuaranteeK)
-	// rrf スコアを再ソート
 	order = sortIndicesByScore(rrf)
 
 	return order, rrf
