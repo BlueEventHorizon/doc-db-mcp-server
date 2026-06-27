@@ -1,0 +1,39 @@
+# doc-db MCP Server 設定ファイルサンプル（DES-001 §9.2）。
+#
+# 利用方法:
+#   mkdir -p ~/.doc-db
+#   cp doc-db.yaml.example ~/.doc-db/doc-db.yaml
+#   # 必要に応じて値を編集
+#
+# 全項目必須。未知のキーや型不一致は起動時に fail-fast でエラー（CFG-03）。
+# OpenAI API キーは設定ファイルではなく環境変数 OPENAI_API_DOCDB_KEY（または OPENAI_API_KEY）で渡す。
+
+server:
+  port: 8080                       # HTTP ポート（1〜65535）
+  db_path: "./docdb.sqlite"        # SQLite ファイルパス
+
+embedding:
+  model: "text-embedding-3-small"  # Embedding モデル（変更時は DB 再構築が必要）
+  dim: 1536                        # ベクトル次元数（text-embedding-3-small=1536 / -3-large=3072）
+  timeout_seconds: 60              # API タイムアウト
+
+rerank:
+  model: "gpt-4o-mini"             # LLM Rerank モデル
+  factor: 3                        # top_n × factor 件を Rerank に渡す
+  timeout_seconds: 30              # API タイムアウト
+
+chunker:
+  max_chunk_size: 1500             # チャンクあたり最大文字数（CHK-03 確定値）
+
+bm25:
+  k1: 1.5                          # サチュレーション係数（Robertson 経験則）
+  b: 0.75                          # 文書長正規化係数（0〜1）
+
+fetcher:
+  timeout_seconds: 30              # URL フェッチタイムアウト
+  allow_private: false             # プライベート IP へのフェッチを許可（SSRF 対策無効化）
+
+expiry:
+  ttl_days: 30                     # 未アクセス KEY の自動削除日数（TBD-001）
+  max_chunks: 10000                # システム全体のチャンク上限（TBD-002）
+  interval_seconds: 3600           # 廃棄チェック間隔

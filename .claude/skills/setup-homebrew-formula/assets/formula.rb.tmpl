@@ -1,0 +1,34 @@
+# {{FORMULA_HEADER_COMMENT}}
+#
+# NOTE: Comments in this Formula are intentionally written in English,
+# following the de facto Homebrew ecosystem convention. Project source
+# code follows its own commenting policy; this is a scoped exception.
+
+class {{CLASS_NAME}} < Formula
+  desc "{{DESC}}"
+  homepage "https://github.com/{{OWNER}}/{{REPO}}"
+  url "https://github.com/{{OWNER}}/{{REPO}}.git",
+      tag:      "{{TAG}}",
+      revision: "0000000000000000000000000000000000000000"
+  license "{{LICENSE}}"
+
+  depends_on macos: :{{MACOS_MIN}}
+{{DEPENDS_ON_BUILD}}
+
+  def install
+{{INSTALL_BODY}}
+  end
+
+  def caveats
+    <<~EOS
+{{CAVEATS_BODY}}
+    EOS
+  end
+
+  test do
+    # Smoke test: --version must exit immediately without loading config or
+    # requiring secrets. See language_traps.md T-1 for the underlying rule.
+    output = shell_output("#{bin}/{{BINARY}} --version")
+    assert_match version.to_s, output
+  end
+end

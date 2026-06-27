@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# プロジェクト内のバージョン表記が整合していることを検証する。
+#
+# canonical: {{CANONICAL_LOCATION_DESC}}
+#
+# 検証項目:
+#   - CHANGELOG.md の最新リリースエントリ `## [X.Y.Z]` が canonical と一致
+#   - .version-config.yaml の version_file が canonical を指す
+#   - .version-config.yaml の tag_format が "{{TAG_FORMAT}}"
+#   - Formula/{{BINARY}}.rb の `tag:` が canonical と一致（v prefix を剥がして比較）
+#
+# Formula の revision: は git tag 作成後にしか確認できないため、
+# scripts/verify_release_tag.sh で別途検証する。
+#
+# 全て一致 → exit 0
+# いずれか不一致 → 検出内容を stderr に列挙して exit 1
+#
+# 使用方法:
+#   ./scripts/verify_version_consistency.sh
+
+set -uo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+
+# canonical を抽出（言語アダプタごとに差し替える）
+{{CANONICAL_EXTRACT}}
+
+if [ -z "$canonical" ]; then
+  echo "ERROR: canonical version が空または取得に失敗しました" >&2
+  exit 1
+fi
+echo "canonical: $canonical"
+
+errors=0
+
+# --- CHANGELOG.md の最新リリースエントリ
+changelog_latest=$(grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md 2>/dev/null \
+  | head -1 \
+  | sed -E 's/^## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+if [ -z "$changelog_latest" ]; then
+  echo "ERROR: CHANGELOG.md に [X.Y.Z] 形式のリリースエントリが見つかりません" >&2
+  errors=$((errors + 1))
+elif [ "$changelog_latest" != "$canonical" ]; then
+  echo "ERROR: CHANGELOG.md 最新リリース [$changelog_latest] が canonical ($canonical) と不一致" >&2
+  errors=$((errors + 1))
+else
+  echo "ok    CHANGELOG.md latest release: [$changelog_latest]"
+fi
+
+# --- .version-config.yaml version_file
+version_file=$(grep -E '^\s*version_file:' .version-config.yaml 2>/dev/null \
+  | sed -E 's/.*version_file:[[:space:]]*"?([^"#[:space:]]+)"?.*/\1/' | head -1)
+if [ "$version_file" != "{{VERSION_FILE}}" ]; then
+  echo "ERROR: .version-config.yaml version_file は \"{{VERSION_FILE}}\" であるべき (got: '$version_file')" >&2
+  errors=$((errors + 1))
+else
+  echo "ok    .version-config.yaml version_file: {{VERSION_FILE}}"
+fi
+
+# --- .version-config.yaml tag_format
+tag_format=$(grep -E '^\s*tag_format:' .version-config.yaml 2>/dev/null \
+  | sed -E 's/.*tag_format:[[:space:]]*"?([^"#[:space:]]+)"?.*/\1/' | head -1)
+if [ "$tag_format" != "{{TAG_FORMAT}}" ]; then
+  echo "ERROR: .version-config.yaml tag_format は \"{{TAG_FORMAT}}\" であるべき (got: '$tag_format')" >&2
+  errors=$((errors + 1))
+else
+  echo "ok    .version-config.yaml tag_format: \"{{TAG_FORMAT}}\""
+fi
+
+# --- Formula tag が canonical と一致（v prefix を剥がして比較）
+formula_path="Formula/{{BINARY}}.rb"
+if [ ! -f "$formula_path" ]; then
+  echo "ERROR: $formula_path が見つかりません" >&2
+  errors=$((errors + 1))
+else
+  formula_tag=$(grep -E '^\s*tag:' "$formula_path" \
+    | sed -E 's/.*"v?([^"]+)".*/\1/' | head -1)
+  if [ -z "$formula_tag" ]; then
+    echo "ERROR: $formula_path から tag: を抽出できません" >&2
+    errors=$((errors + 1))
+  elif [ "$formula_tag" != "$canonical" ]; then
+    echo "ERROR: $formula_path tag ($formula_tag) が canonical ($canonical) と不一致" >&2
+    errors=$((errors + 1))
+  else
+    echo "ok    $formula_path tag: $formula_tag"
+  fi
+fi
+
+if [ "$errors" -eq 0 ]; then
+  echo ""
+  echo "✓ 全ての version 表記が canonical ($canonical) と整合している"
+  exit 0
+else
+  echo "" >&2
+  echo "✗ $errors 件の不整合を検出しました" >&2
+  exit 1
+fi
