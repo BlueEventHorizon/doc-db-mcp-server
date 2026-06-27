@@ -22,8 +22,8 @@ class DocDb < Formula
   # Both values must be updated together at release time and validated by
   # scripts/verify_version_consistency.sh and scripts/verify_release_tag.sh.
   url "https://github.com/BlueEventHorizon/doc-db-mcp-server.git",
-      tag:      "v0.1.0",
-      revision: "2b1feb219b5562670a14319ddf4b7fa6d9de8e69"
+      tag:      "v0.1.1",
+      revision: "0000000000000000000000000000000000000000"
   license "MIT"
 
   # macOS 13 (Ventura) minimum (PRE-03).
@@ -61,13 +61,13 @@ class DocDb < Formula
 
       3) Start the server (foreground; use launchd or similar for persistence):
            doc-db
-           # Listens on the port specified in doc-db.yaml (default 8080).
+           # Listens on the port specified in doc-db.yaml (default 58080).
 
       4) Register with Claude Code (Streamable HTTP transport):
            # User scope (all of your projects):
-           claude mcp add --transport http -s user doc-db http://localhost:8080/mcp
+           claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
            # Local scope (this project only):
-           claude mcp add --transport http doc-db http://localhost:8080/mcp
+           claude mcp add --transport http doc-db http://localhost:58080/mcp
 
       5) Register with Claude Desktop. Add to
          ~/Library/Application Support/Claude/claude_desktop_config.json:
@@ -75,7 +75,7 @@ class DocDb < Formula
            {
              "mcpServers": {
                "doc-db": {
-                 "url": "http://localhost:8080/mcp"
+                 "url": "http://localhost:58080/mcp"
                }
              }
            }

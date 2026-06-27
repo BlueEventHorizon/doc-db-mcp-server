@@ -9,7 +9,7 @@
 # OpenAI API キーは設定ファイルではなく環境変数 OPENAI_API_DOCDB_KEY（または OPENAI_API_KEY）で渡す。
 
 server:
-  port: 8080                       # HTTP ポート（1〜65535）
+  port: 58080                      # HTTP ポート（1〜65535）。dynamic range から選定して他 dev server との衝突を回避
   db_path: "./docdb.sqlite"        # SQLite ファイルパス
 
 embedding:

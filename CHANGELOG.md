@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-27
+
+### Added
+
+- `internal/reranker`: OpenAI Chat Completions（gpt-4o-mini 等）を用いた LLM Rerank の具象実装（DES-001 §6.4）。v0.1.0 では interface のみで `cmd/docdb` が nil 注入していたため `mode=rerank` が実質 hybrid と同等にフォールバックしていた問題を解消
+- `cmd/docdb`: Reranker を `search.Pipeline` に配線（API キーは embedder と共通の `OPENAI_API_DOCDB_KEY`）
+
+### Changed
+
+- `doc-db.yaml.example` / Formula caveats / README / 設計書のデフォルト port を `8080` → `58080` に変更（dynamic range から選定。dev server との衝突を回避）
+- `search.Pipeline`: `mode=rerank` で reranker 未注入または API 失敗時、`stats.RerankCandidates` を 0 のままにする（旧: fused 数と同値で誤解を生んでいた）。Rerank 不発を caller が確実に判別可能になる
+
+### Fixed
+
+- `mode=rerank` で `score_breakdown.rerank` が常に 0 になっていた問題（Reranker 未配線が原因）
+
 ## [0.1.0] - 2026-06-27
 
 ### Added
@@ -37,5 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.0

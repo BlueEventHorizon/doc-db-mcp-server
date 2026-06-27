@@ -510,7 +510,7 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 ```yaml
 # ~/.doc-db/doc-db.yaml
 server:
-  port: 8080                       # HTTP ポート
+  port: 58080                      # HTTP ポート（dynamic range から選定）
   db_path: "./docdb.sqlite"        # SQLite ファイルパス
 
 embedding:

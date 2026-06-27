@@ -212,6 +212,9 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 	stats.FusedCandidates = len(fusedOrder)
 
 	// Rerank（mode=rerank のみ）
+	// reranker が未注入、または API 呼び出しが失敗した場合は RRF 順をそのまま使う（RR-02）。
+	// stats.RerankCandidates は「実際に Rerank に投入された候補数」を意味する。
+	// reranker 未注入 or 失敗時は 0 のまま（caller に Rerank 不発を判別可能にするため）。
 	rerankApplied := false
 	if mode == ModeRerank && p.reranker != nil {
 		nCand := topN * p.cfg.RerankFactor
@@ -219,17 +222,14 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 			nCand = len(fusedOrder)
 		}
 		topCandidates := fusedOrder[:nCand]
-		stats.RerankCandidates = len(topCandidates)
 
 		newOrder, err := p.rerank(ctx, query, chunks, topCandidates)
 		if err == nil {
 			fusedOrder = append(newOrder, fusedOrder[nCand:]...)
 			rerankApplied = true
+			stats.RerankCandidates = len(topCandidates)
 		}
-		// 失敗時は RRF 順をそのまま使う（RR-02）
-	} else if mode == ModeRerank {
-		// reranker 未注入の場合: stats.RerankCandidates は fused 数と同値
-		stats.RerankCandidates = stats.FusedCandidates
+		// 失敗時は RerankCandidates=0 のまま（fallback の事実を caller に伝える）
 	}
 
 	// SearchResult を構築（上位 topN 件）

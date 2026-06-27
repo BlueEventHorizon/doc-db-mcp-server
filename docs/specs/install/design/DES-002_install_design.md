@@ -100,13 +100,13 @@ class DocDb < Formula
 
       3) Start the server (foreground; configure launchd or similar for persistence):
            doc-db
-           # Listens on the port specified in doc-db.yaml (default 8080).
+           # Listens on the port specified in doc-db.yaml (default 58080).
 
       4) Register with Claude Code (Streamable HTTP transport):
            # All of your projects (user scope):
-           claude mcp add --transport http -s user doc-db http://localhost:8080/mcp
+           claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
            # This project only (local, default):
-           claude mcp add --transport http doc-db http://localhost:8080/mcp
+           claude mcp add --transport http doc-db http://localhost:58080/mcp
 
       5) Register with Claude Desktop. Add the following to
          ~/Library/Application Support/Claude/claude_desktop_config.json:
@@ -114,7 +114,7 @@ class DocDb < Formula
            {
              "mcpServers": {
                "doc-db": {
-                 "url": "http://localhost:8080/mcp"
+                 "url": "http://localhost:58080/mcp"
                }
              }
            }
@@ -335,7 +335,7 @@ doc-db は HTTP transport で動作するため、Claude Desktop の `mcpServers
 {
   "mcpServers": {
     "doc-db": {
-      "url": "http://localhost:8080/mcp"
+      "url": "http://localhost:58080/mcp"
     }
   }
 }

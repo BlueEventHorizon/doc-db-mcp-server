@@ -21,6 +21,7 @@ import (
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/expiry"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/fetcher"
 	docdbmcp "github.com/BlueEventHorizon/doc-db-mcp-server/internal/mcp"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/reranker"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/search"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/store"
 )
@@ -82,11 +83,18 @@ func run(ctx context.Context) error {
 		AllowPrivate: cfg.Fetcher.AllowPrivate,
 	})
 
-	// Search Pipeline（reranker は未実装のため nil → rerank モードは RRF フォールバック）
+	// LLM Reranker（DES-001 §6.4）。API エラー時は search.Pipeline 側で RRF にフォールバック（RR-02）
+	rr := reranker.New(reranker.Config{
+		APIKey:  apiKey,
+		Model:   cfg.Rerank.Model,
+		Timeout: time.Duration(cfg.Rerank.TimeoutSeconds) * time.Second,
+	})
+
+	// Search Pipeline
 	pipeline := search.New(
 		st,
 		&docdbmcp.SearchEmbedderAdapter{Inner: emb},
-		nil,
+		rr,
 		search.Config{
 			K1:           cfg.BM25.K1,
 			B:            cfg.BM25.B,
