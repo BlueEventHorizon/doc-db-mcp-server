@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -47,7 +45,8 @@ func TestNew_CreatesSchema(t *testing.T) {
 	s := newTestStore(t)
 
 	// 全テーブルが存在することを確認
-	wantTables := []string{"keys", "records", "series_keys", "chunks", "embeddings", "bm25_stats", "bm25_df"}
+	// 注: bm25_stats / bm25_df は v0.1.2 で廃止された（substring match に移行）
+	wantTables := []string{"keys", "records", "series_keys", "chunks", "embeddings"}
 	for _, name := range wantTables {
 		var got string
 		err := s.db.QueryRowContext(context.Background(),
@@ -133,14 +132,7 @@ func TestUpsertRecord_Basic(t *testing.T) {
 		t.Errorf("series_keys count = %d, want 1", n)
 	}
 
-	// bm25_df が記録されている（少なくとも 1 件）
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM bm25_df WHERE key=?`, "FNC-001").Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n == 0 {
-		t.Error("bm25_df should have entries")
-	}
+	// bm25_df / bm25_stats は v0.1.2 で廃止（substring match で都度計算）
 }
 
 func TestFindRecord_FoundAndNotFound(t *testing.T) {
@@ -400,100 +392,12 @@ func TestCleanOtherSeries_DIF03(t *testing.T) {
 
 // -----------------------------------------------------------------------
 // BM25 整合性
+//
+// 注: bm25_stats / bm25_df テーブルは v0.1.2 で廃止された
+// （reference doc-db SKILL と同方式の substring match に移行）。
+// テストはレガシー削除済み。chunks の CASCADE 削除は
+// TestDeleteSeries_RemovesAndPrunes / TestDeleteKey_RemovesEverything でカバー。
 // -----------------------------------------------------------------------
-
-func TestBM25_DfDecreasesOnRecordDelete(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	// 2 record に共通の "shared" タームを含める
-	if _, err := s.UpsertRecord(ctx, Record{
-		Key: "K", Path: "a", ContentHash: "h_a", Series: "s",
-		Chunks: makeChunks("shared apple"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.UpsertRecord(ctx, Record{
-		Key: "K", Path: "b", ContentHash: "h_b", Series: "s",
-		Chunks: makeChunks("shared banana"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// "shared" の df は 2
-	var df int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT df FROM bm25_df WHERE key=? AND term=?`, "K", "shared").Scan(&df); err != nil {
-		t.Fatalf("shared df: %v", err)
-	}
-	if df != 2 {
-		t.Errorf("df(shared) before delete = %d, want 2", df)
-	}
-
-	// path=a を DeleteSeries で削除
-	if err := s.DeleteSeries(ctx, "K", "s", []string{"a"}); err != nil {
-		t.Fatal(err)
-	}
-
-	// df が 1 に減っているはず
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT df FROM bm25_df WHERE key=? AND term=?`, "K", "shared").Scan(&df); err != nil {
-		t.Fatalf("after delete: %v", err)
-	}
-	if df != 1 {
-		t.Errorf("df(shared) after delete = %d, want 1", df)
-	}
-
-	// "apple" は 1 record にしか無く df=1 → 削除後は df=0 で行ごと消える
-	err := s.db.QueryRowContext(ctx,
-		`SELECT df FROM bm25_df WHERE key=? AND term=?`, "K", "apple").Scan(&df)
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Errorf("apple should be pruned (df<=0), got df=%d err=%v", df, err)
-	}
-}
-
-func TestBM25_CascadeOnRecordDelete(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	recID, err := s.UpsertRecord(ctx, Record{
-		Key: "K", Path: "p", ContentHash: "h", Series: "s",
-		Chunks: makeChunks("hello world"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// bm25_stats に行があることを確認
-	var n int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM bm25_stats WHERE chunk_id IN (SELECT id FROM chunks WHERE record_id=?)`,
-		recID).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n == 0 {
-		t.Fatal("bm25_stats should have rows before delete")
-	}
-
-	// DeleteKey で全削除
-	if err := s.DeleteKey(ctx, "K"); err != nil {
-		t.Fatal(err)
-	}
-
-	// bm25_stats が CASCADE で消えている
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bm25_stats`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Errorf("bm25_stats after DeleteKey = %d, want 0", n)
-	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bm25_df`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Errorf("bm25_df after DeleteKey = %d, want 0", n)
-	}
-}
 
 // -----------------------------------------------------------------------
 // DeleteSeries / DeleteKey

@@ -1,10 +1,11 @@
-// Package store — BM25 トークナイザと upsert ヘルパー（DES-001 §6.2 / LEX-01）
+// Package store — テキスト正規化・LEX-01 トークナイザ（DES-001 §6.2）
+//
+// 注: bm25_stats / bm25_df の pre-compute は v0.1.2 で廃止された。
+// reference doc-db SKILL と同方式（query 時に substring match で TF/DF を都度計算）に揃えたため、
+// 本ファイルでは正規化・トークナイザのみを提供する。
 package store
 
 import (
-	"context"
-	"database/sql"
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -20,18 +21,15 @@ var lexTokenRe = regexp.MustCompile(
 		`|\d+`, // 数字列
 )
 
-// Tokenize は LEX-01 に従いテキストをトークン列に変換する（DES-001 §6.2）。
-// upsert 時の BM25 stats 構築・search 時のクエリ解析の両方で使用するため公開する。
-func Tokenize(text string) []string {
-	return tokenize(text)
+// Normalize はテキストに NFKC 正規化 + 小文字化を適用する（LEX-01）。
+// 検索クエリと body 双方に同じ正規化を適用するために公開する。
+func Normalize(text string) string {
+	return strings.ToLower(norm.NFKC.String(text))
 }
 
-// tokenize は LEX-01 に従いテキストをトークン列に変換する（DES-001 §6.2）。
-// 1. NFKC 正規化 + 小文字化
-// 2. 正規表現マッチでトークン分割
-// 3. 空トークンを除外
-func tokenize(text string) []string {
-	normalized := strings.ToLower(norm.NFKC.String(text))
+// Tokenize は LEX-01 に従いテキストをトークン列に変換する（DES-001 §6.2）。
+func Tokenize(text string) []string {
+	normalized := Normalize(text)
 	matches := lexTokenRe.FindAllString(normalized, -1)
 	result := matches[:0]
 	for _, m := range matches {
@@ -40,53 +38,4 @@ func tokenize(text string) []string {
 		}
 	}
 	return result
-}
-
-// calcTF はトークン列からタームごとの TF（term frequency）を計算する。
-// TF = タームの出現回数 / トークン総数。総数が 0 の場合は空 map を返す。
-func calcTF(tokens []string) map[string]float64 {
-	if len(tokens) == 0 {
-		return nil
-	}
-	counts := make(map[string]int, len(tokens))
-	for _, t := range tokens {
-		counts[t]++
-	}
-	total := float64(len(tokens))
-	tf := make(map[string]float64, len(counts))
-	for term, cnt := range counts {
-		tf[term] = float64(cnt) / total
-	}
-	return tf
-}
-
-// insertBM25StatsForChunk はチャンク 1 件分の bm25_stats と bm25_df を upsert する。
-// bm25_stats はチャンク削除時に CASCADE で自動削除される。
-// bm25_df は (key, term) 単位で DF を管理し、新規タームは INSERT、既存は df++ で更新する。
-func insertBM25StatsForChunk(ctx context.Context, tx *sql.Tx, key string, chunkID int64, text string) error {
-	tokens := tokenize(text)
-	tf := calcTF(tokens)
-	if len(tf) == 0 {
-		return nil
-	}
-
-	for term, tfVal := range tf {
-		// bm25_stats: チャンク単位の TF を記録
-		if _, err := tx.ExecContext(ctx,
-			`INSERT OR REPLACE INTO bm25_stats (key, chunk_id, term, tf) VALUES (?, ?, ?, ?)`,
-			key, chunkID, term, tfVal,
-		); err != nil {
-			return fmt.Errorf("store.insertBM25StatsForChunk: insert bm25_stats: %w", err)
-		}
-
-		// bm25_df: (key, term) 単位の DF をインクリメント
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO bm25_df (key, term, df) VALUES (?, ?, 1)
-             ON CONFLICT(key, term) DO UPDATE SET df = df + 1`,
-			key, term,
-		); err != nil {
-			return fmt.Errorf("store.insertBM25StatsForChunk: upsert bm25_df: %w", err)
-		}
-	}
-	return nil
 }

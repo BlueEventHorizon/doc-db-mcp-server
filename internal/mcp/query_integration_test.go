@@ -21,13 +21,16 @@ import (
 // テスト用 Reranker
 // -----------------------------------------------------------------------
 
-// reverseReranker は候補の並びを反転させて返す（順序差を観測しやすくするため）。
+// reverseReranker は候補のスコアを逆順 (index 大 ほど高 score) に返し、
+// 結果順位が反転する効果を生む。
 type reverseReranker struct{}
 
-func (reverseReranker) Rerank(_ context.Context, _ string, cands []search.RerankCandidate) ([]int, error) {
-	out := make([]int, len(cands))
+func (reverseReranker) Rerank(_ context.Context, _ string, cands []search.RerankCandidate) ([]float64, error) {
+	out := make([]float64, len(cands))
+	n := len(cands)
 	for i := range cands {
-		out[i] = len(cands) - 1 - i
+		// 末尾候補ほど高スコア → 末尾候補が top1 になる
+		out[i] = float64(i+1) / float64(n)
 	}
 	return out, nil
 }
@@ -35,7 +38,7 @@ func (reverseReranker) Rerank(_ context.Context, _ string, cands []search.Rerank
 // errReranker は常にエラーを返す（フォールバック確認用）。
 type errReranker struct{}
 
-func (errReranker) Rerank(_ context.Context, _ string, _ []search.RerankCandidate) ([]int, error) {
+func (errReranker) Rerank(_ context.Context, _ string, _ []search.RerankCandidate) ([]float64, error) {
 	return nil, errors.New("rerank service unavailable")
 }
 

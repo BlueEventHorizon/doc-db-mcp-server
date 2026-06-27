@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-27
+
+### Changed (アルゴリズムを reference doc-db SKILL と完全同期)
+
+ユーザー指摘により、reference doc-db SKILL (Python 実装、`reference/doc-db/scripts/`) との
+アルゴリズム差異を全項目修正した。これらは設計書上は同等仕様だが、実装上の細部で
+精度に影響する差があった。
+
+- **chunker**: chunk に `EmbedText` フィールドを追加。Embedding API に渡すテキストは
+  `<heading breadcrumb>\n\n<prose 本文 (見出し行除去)>` 形式とし、prose < 50 chars の
+  短文 chunk は同一 path の前 chunk から prose を継承する（reference の
+  `_enrich_embed_texts` と同等）。これにより heading-only chunk でも階層コンテキストが
+  ベクトル化され、言い換えクエリでの精度が向上
+- **chunker**: `MAX_CHUNK_CHARS` のデフォルトを `1500` → `8192` に変更（reference と同値）。
+  小さすぎる chunk が乱立してノイズ化していたのを解消
+- **lex (search)**: BM25 を tokenize-list 比較から **substring match**（`strings.Count(body, token)`）
+  に変更。文字数ベースの dl/avgdl で正規化。reference の `lexical_search.py` と同等。
+  CJK で形態素解析器なしで部分マッチが効くようになる
+- **EMB top-K 保証**: 「emb top-K を fused 先頭に連結」から「侵入者の最高スコアを
+  超えるよう RRF スコアを書き換えて昇格」に変更。emb 内の相対順位を保ったまま fused
+  の他順位も崩さない（reference `hybrid_score.py:49-66` と同等）
+- **Reranker interface**: 戻り値を `[]int (順位)` から `[]float64 (scores)` に変更。
+  search.Pipeline 側で `(-rerank_score, -original_score, chunk_id)` のブレンドソートを実施。
+  欠落 ID は `-1.0` で末尾扱い（reference `llm_rerank.py` と同等）
+- **reranker**: 出力スキーマを `{"ranked":[id]}` から `{"ranking":[{"id","score":0..1}]}` に
+  変更。preview は `heading_path + body` を空白区切り 200 tokens に切り詰め（reference の
+  `build_preview` と同等）。候補数は `min(len(fused), 30, top_n × factor)` で動的決定
+- **store**: `bm25_stats` / `bm25_df` テーブルを廃止。substring match に移行したため
+  事前 token 集計は不要。schema に `DROP TABLE IF EXISTS` を追加（既存 DB は次回起動時に
+  自動マイグレーション）。`insertBM25StatsForChunk` / 削除時の DF 減算ロジックも除去
+
 ## [0.1.1] - 2026-06-27
 
 ### Added
@@ -53,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.2
 [0.1.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.0

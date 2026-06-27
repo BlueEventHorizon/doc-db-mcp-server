@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/search"
 )
 
-// withServer はモック OpenAI Chat Completions サーバーを立て、エンドポイントを差し替える。
 func withServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(h)
@@ -32,34 +32,46 @@ func cands(n int) []search.RerankCandidate {
 	return out
 }
 
-// レスポンスを {"ranked":[...]} 形で返すヘルパ。
-func respondWith(ranked []int) http.HandlerFunc {
+// rankingRow は {"ranking":[{"id","score"}]} 形式の 1 行分。
+type rankingRow struct {
+	ID    string  `json:"id"`
+	Score float64 `json:"score"`
+}
+
+// respondWithRanking は LLM の返答として {"ranking":[{"id","score"}]} を返す。
+func respondWithRanking(rows []rankingRow) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		bodyJSON, _ := json.Marshal(struct {
-			Ranked []int `json:"ranked"`
-		}{Ranked: ranked})
+		body, _ := json.Marshal(struct {
+			Ranking []rankingRow `json:"ranking"`
+		}{Ranking: rows})
 		resp := chatResponse{
 			Choices: []struct {
 				Message chatMessage `json:"message"`
-			}{
-				{Message: chatMessage{Role: "assistant", Content: string(bodyJSON)}},
-			},
+			}{{Message: chatMessage{Role: "assistant", Content: string(body)}}},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 
-func TestRerank_HappyPath(t *testing.T) {
-	withServer(t, respondWith([]int{2, 0, 1}))
-	r := New(Config{APIKey: "k", Model: "gpt-4o-mini", Timeout: time.Second})
+func TestRerank_ScoresReturnedInCandidateOrder(t *testing.T) {
+	withServer(t, respondWithRanking([]rankingRow{
+		{ID: "0", Score: 0.3}, {ID: "1", Score: 0.9}, {ID: "2", Score: 0.1},
+	}))
+	r := New(Config{APIKey: "k", Model: "x", Timeout: time.Second})
 
-	order, err := r.Rerank(context.Background(), "q", cands(3))
+	scores, err := r.Rerank(context.Background(), "q", cands(3))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int{2, 0, 1}; !equal(order, want) {
-		t.Errorf("order = %v, want %v", order, want)
+	want := []float64{0.3, 0.9, 0.1}
+	if len(scores) != 3 {
+		t.Fatalf("len = %d, want 3", len(scores))
+	}
+	for i, s := range scores {
+		if s != want[i] {
+			t.Errorf("scores[%d] = %v, want %v", i, s, want[i])
+		}
 	}
 }
 
@@ -70,9 +82,9 @@ func TestRerank_EmptyCandidates_NoCall(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	r := New(Config{APIKey: "k", Model: "x", Timeout: time.Second})
-	order, err := r.Rerank(context.Background(), "q", nil)
-	if err != nil || order != nil {
-		t.Fatalf("got %v / %v", order, err)
+	scores, err := r.Rerank(context.Background(), "q", nil)
+	if err != nil || scores != nil {
+		t.Fatalf("got scores=%v err=%v", scores, err)
 	}
 	if calls != 0 {
 		t.Errorf("API should not be called for empty input; calls=%d", calls)
@@ -80,46 +92,46 @@ func TestRerank_EmptyCandidates_NoCall(t *testing.T) {
 }
 
 func TestRerank_OutOfRangeID_Error(t *testing.T) {
-	withServer(t, respondWith([]int{99}))
+	withServer(t, respondWithRanking([]rankingRow{{ID: "99", Score: 0.5}}))
 	r := New(Config{APIKey: "k", Model: "x", Timeout: time.Second})
 	if _, err := r.Rerank(context.Background(), "q", cands(3)); err == nil {
 		t.Fatal("want error for out-of-range id")
 	}
 }
 
-func TestRerank_MissingIDs_AppendedAtEnd(t *testing.T) {
-	// モデルが id=0 と id=2 だけ返した → id=1 は末尾に補完される
-	withServer(t, respondWith([]int{2, 0}))
+func TestRerank_MissingIDs_GetSentinelScore(t *testing.T) {
+	// id=1 だけ返した → 0 と 2 は -1.0 が入る (reference doc-db SKILL と同方式)
+	withServer(t, respondWithRanking([]rankingRow{{ID: "1", Score: 0.7}}))
 	r := New(Config{APIKey: "k", Model: "x", Timeout: time.Second})
 
-	order, err := r.Rerank(context.Background(), "q", cands(3))
+	scores, err := r.Rerank(context.Background(), "q", cands(3))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int{2, 0, 1}; !equal(order, want) {
-		t.Errorf("order = %v, want %v (missing id at tail)", order, want)
+	if scores[0] != -1.0 || scores[2] != -1.0 || scores[1] != 0.7 {
+		t.Errorf("scores = %v, want [-1.0, 0.7, -1.0]", scores)
 	}
 }
 
-func TestRerank_DuplicateIDs_Deduplicated(t *testing.T) {
-	withServer(t, respondWith([]int{1, 1, 0, 2}))
+func TestRerank_DuplicateIDs_LastWriteWins(t *testing.T) {
+	withServer(t, respondWithRanking([]rankingRow{
+		{ID: "1", Score: 0.3}, {ID: "1", Score: 0.8},
+	}))
 	r := New(Config{APIKey: "k", Model: "x", Timeout: time.Second})
-	order, err := r.Rerank(context.Background(), "q", cands(3))
+	scores, err := r.Rerank(context.Background(), "q", cands(3))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int{1, 0, 2}; !equal(order, want) {
-		t.Errorf("order = %v, want %v", order, want)
+	if scores[1] != 0.8 {
+		t.Errorf("scores[1] = %v, want 0.8 (last write wins)", scores[1])
 	}
 }
 
 func TestRerank_InvalidJSON_Error(t *testing.T) {
 	withServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		resp := chatResponse{
-			Choices: []struct {
-				Message chatMessage `json:"message"`
-			}{{Message: chatMessage{Content: "not json"}}},
-		}
+		resp := chatResponse{Choices: []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Content: "not json"}}}}
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	r := New(Config{APIKey: "k", Model: "x", Timeout: time.Second})
@@ -142,13 +154,13 @@ func TestRerank_APIError(t *testing.T) {
 	}
 }
 
-func TestRerank_RequestShape(t *testing.T) {
+func TestRerank_RequestShape_PreviewAndPayload(t *testing.T) {
 	var got chatRequest
 	withServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Errorf("decode req: %v", err)
 		}
-		respondWith([]int{0, 1})(w, r)
+		respondWithRanking([]rankingRow{{ID: "0", Score: 1.0}, {ID: "1", Score: 0.5}})(w, r)
 	})
 
 	r := New(Config{APIKey: "k", Model: "gpt-4o-mini", Timeout: time.Second})
@@ -167,16 +179,23 @@ func TestRerank_RequestShape(t *testing.T) {
 	if got.Temperature != 0 {
 		t.Errorf("temperature = %v, want 0", got.Temperature)
 	}
+	// user payload に id, preview が入っているか
+	if !strings.Contains(got.Messages[1].Content, `"id":"0"`) {
+		t.Errorf("user payload should contain id 0: %s", got.Messages[1].Content)
+	}
+	if !strings.Contains(got.Messages[1].Content, `"preview":`) {
+		t.Errorf("user payload should contain preview field: %s", got.Messages[1].Content)
+	}
 }
 
-func equal(a, b []int) bool {
-	if len(a) != len(b) {
-		return false
+func TestTruncateTokens(t *testing.T) {
+	long := strings.Repeat("word ", 250)
+	out := truncateTokens(long, 200)
+	if len(strings.Fields(out)) != 200 {
+		t.Errorf("token count = %d, want 200", len(strings.Fields(out)))
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
+	short := "hello world"
+	if truncateTokens(short, 100) != short {
+		t.Errorf("short input should pass through unchanged")
 	}
-	return true
 }

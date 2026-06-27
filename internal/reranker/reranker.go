@@ -1,10 +1,12 @@
 // Package reranker は OpenAI Chat Completions API を呼んで候補チャンクを並べ替える
 // 実装を提供する（DES-001 §6.4 LLM Rerank）。
 //
-// 設計:
-//   - search.Reranker インターフェースの具象実装
-//   - gpt-4o-mini 等にクエリと候補リストを渡し、関連度順の ID 配列を返させる
-//   - JSON 出力を強制（response_format=json_object）
+// reference doc-db SKILL (llm_rerank.py) と同方式:
+//   - candidates ごとに preview = `heading_path + body` を ~200 tokens に切り詰める
+//   - LLM へは {"query","candidates":[{"id","preview"}]} を渡し、
+//     {"ranking":[{"id","score":0..1}]} を要求する（response_format=json_object）
+//   - 戻り値は candidates と同長の scores（欠落 ID は -1.0、search.Pipeline 側で
+//     ブレンドソートに使われる）
 //   - タイムアウト・API エラー時は呼び出し元（search.Pipeline）が RRF 順にフォールバック（RR-02）
 package reranker
 
@@ -15,6 +17,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/search"
@@ -50,10 +54,13 @@ func New(cfg Config) *OpenAIReranker {
 	}
 }
 
-// Rerank は候補チャンクを LLM に並べ替えさせ、cands 配列内の relevance 降順インデックスを返す。
-// LLM 出力が解釈できない場合や API エラー時は error を返し、search.Pipeline 側で RRF 順
-// フォールバックされる（RR-02）。
-func (r *OpenAIReranker) Rerank(ctx context.Context, query string, cands []search.RerankCandidate) ([]int, error) {
+// previewMaxTokens は 1 candidate に渡す preview の最大 token 数（reference doc-db SKILL と同値）。
+const previewMaxTokens = 200
+
+// Rerank は候補チャンクを LLM に並べ替えさせ、candidates と同じ長さの score 配列を返す。
+// scores[i] は cands[i] に対する LLM の関連度 (0..1)。LLM が出力しなかった id は -1.0。
+// API エラーや JSON パース失敗時は error を返し、呼び出し元 (search.Pipeline) で RRF にフォールバック（RR-02）。
+func (r *OpenAIReranker) Rerank(ctx context.Context, query string, cands []search.RerankCandidate) ([]float64, error) {
 	if len(cands) == 0 {
 		return nil, nil
 	}
@@ -112,33 +119,30 @@ func (r *OpenAIReranker) Rerank(ctx context.Context, query string, cands []searc
 		return nil, fmt.Errorf("reranker: empty choices in response")
 	}
 
-	order, err := parseRankedIDs(apiResp.Choices[0].Message.Content, len(cands))
+	scores, err := parseRankingScores(apiResp.Choices[0].Message.Content, len(cands))
 	if err != nil {
 		return nil, fmt.Errorf("reranker: parse model output: %w", err)
 	}
-	return order, nil
+	return scores, nil
 }
 
 // -----------------------------------------------------------------------
-// プロンプト構築
+// プロンプト構築（reference llm_rerank.py と同方式）
 // -----------------------------------------------------------------------
 
-const systemPrompt = `You are a document search reranker. The user gives you a query and a list of candidate snippets, each with an integer id. Reorder the candidates by their relevance to the query, most relevant first. Reply with JSON only, in this exact shape:
-
-{"ranked": [<id>, <id>, ...]}
-
-Include every id from the input exactly once. Do not invent ids. Do not add commentary.`
+const systemPrompt = `You rerank candidates by relevance to the query. ` +
+	`Return JSON: {"ranking":[{"id":"...","score":0..1}, ...]} ` +
+	`with all ids included exactly once.`
 
 // userPayload はモデルに渡す候補リストの JSON 形。
 type userPayload struct {
-	Query      string              `json:"query"`
-	Candidates []userPayloadCand   `json:"candidates"`
+	Query      string            `json:"query"`
+	Candidates []userPayloadCand `json:"candidates"`
 }
 
 type userPayloadCand struct {
-	ID          int    `json:"id"`
-	HeadingPath string `json:"heading_path,omitempty"`
-	Text        string `json:"text"`
+	ID      string `json:"id"`
+	Preview string `json:"preview"`
 }
 
 func buildUserMessage(query string, cands []search.RerankCandidate) (string, error) {
@@ -148,9 +152,8 @@ func buildUserMessage(query string, cands []search.RerankCandidate) (string, err
 	}
 	for i, c := range cands {
 		pl.Candidates[i] = userPayloadCand{
-			ID:          i, // cands 配列内の局所 ID（chunks index ではない）
-			HeadingPath: c.HeadingPath,
-			Text:        c.Text,
+			ID:      fmt.Sprintf("%d", i), // cands 内の局所 ID（chunks index ではない）
+			Preview: buildPreview(c),
 		}
 	}
 	b, err := json.Marshal(pl)
@@ -160,39 +163,69 @@ func buildUserMessage(query string, cands []search.RerankCandidate) (string, err
 	return string(b), nil
 }
 
-// parseRankedIDs はモデル応答の JSON から ranked 配列を取り出し、検証して返す。
+// buildPreview は heading_path + body を空白区切りでつないだ後、tokens を上限まで切り詰める。
+// reference doc-db SKILL の build_preview と同方式（200 tokens 上限）。
+func buildPreview(c search.RerankCandidate) string {
+	text := strings.TrimSpace(c.HeadingPath + "\n" + c.Text)
+	return truncateTokens(text, previewMaxTokens)
+}
+
+// whitespaceTokenRe は空白区切りの token 列。reference の `re.findall(r"\S+", text)` と同等。
+var whitespaceTokenRe = regexp.MustCompile(`\S+`)
+
+func truncateTokens(text string, maxTokens int) string {
+	tokens := whitespaceTokenRe.FindAllString(text, -1)
+	if len(tokens) <= maxTokens {
+		return text
+	}
+	return strings.Join(tokens[:maxTokens], " ")
+}
+
+// parseRankingScores はモデル応答の JSON から ranking 配列を取り出し、
+// candidates と同じ長さのスコア配列に展開する。
 // 検証ルール:
-//   - すべての ID が [0, n) の範囲内
-//   - 重複なし
-//   - 不足は許容（モデルが id を一部落とした場合は、末尾に欠落 id を昇順で補う）
-//   - 余分は許容しない（範囲外 id があればエラー）
-func parseRankedIDs(content string, n int) ([]int, error) {
+//   - 範囲外 ID はエラー
+//   - 重複 ID は最後の値を採用
+//   - 欠落 ID のスコアは -1.0（reference llm_rerank.py の `-rank_map.get(id, -1.0)` 相当）
+//   - 余分なフィールドは無視
+func parseRankingScores(content string, n int) ([]float64, error) {
 	var out struct {
-		Ranked []int `json:"ranked"`
+		Ranking []struct {
+			ID    json.RawMessage `json:"id"`
+			Score float64         `json:"score"`
+		} `json:"ranking"`
 	}
 	if err := json.Unmarshal([]byte(content), &out); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
+	scores := make([]float64, n)
 	seen := make([]bool, n)
-	order := make([]int, 0, n)
-	for _, id := range out.Ranked {
+	for i := range scores {
+		scores[i] = -1.0
+	}
+
+	for _, row := range out.Ranking {
+		// id は "0" / "1" のような数値文字列、または数値リテラルの両方を許容
+		var idStr string
+		if err := json.Unmarshal(row.ID, &idStr); err != nil {
+			var idNum int
+			if err2 := json.Unmarshal(row.ID, &idNum); err2 != nil {
+				return nil, fmt.Errorf("invalid id field %s", string(row.ID))
+			}
+			idStr = fmt.Sprintf("%d", idNum)
+		}
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+			return nil, fmt.Errorf("non-numeric id %q", idStr)
+		}
 		if id < 0 || id >= n {
-			return nil, fmt.Errorf("ranked id %d out of range [0,%d)", id, n)
+			return nil, fmt.Errorf("ranking id %d out of range [0,%d)", id, n)
 		}
-		if seen[id] {
-			continue // 重複は無視
-		}
+		scores[id] = row.Score
 		seen[id] = true
-		order = append(order, id)
 	}
-	// 欠落補完: モデルが落とした id を末尾に昇順で追加
-	for id := 0; id < n; id++ {
-		if !seen[id] {
-			order = append(order, id)
-		}
-	}
-	return order, nil
+	return scores, nil
 }
 
 // -----------------------------------------------------------------------

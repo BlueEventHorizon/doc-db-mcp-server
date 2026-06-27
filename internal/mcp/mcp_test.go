@@ -271,8 +271,9 @@ func TestUpsert_ValidationErrors(t *testing.T) {
 func TestUpsert_PartialEmbeddingFailure(t *testing.T) {
 	h := newHarness(t)
 	h.embedder.failTexts = map[string]bool{
-		// チャンク本文と一致させる。chunker は H1 をそのままチャンクテキストに含める。
-		"# A\nalpha section": true,
+		// chunker は Embedding API には EmbedText (heading breadcrumb + prose) を渡す。
+		// 短文 prose は前 chunk から継承されることがあるが、ここでは最初の chunk なので継承されない。
+		"# A\n\nalpha section": true,
 	}
 	ctx := context.Background()
 

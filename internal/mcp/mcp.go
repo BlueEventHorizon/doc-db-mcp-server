@@ -202,9 +202,15 @@ func (h *Handlers) upsertOne(
 		result.Errors = append(result.Errors, UpsertError{Path: doc.Path, Error: "chunk: " + err.Error()})
 		return err
 	}
+	// Embedding API には EmbedText（heading breadcrumb + prose）を渡す。
+	// EmbedText が空の場合のみ Text にフォールバック（reference doc-db SKILL と同方式）。
 	texts := make([]string, len(chunks))
 	for i, c := range chunks {
-		texts[i] = c.Text
+		if c.EmbedText != "" {
+			texts[i] = c.EmbedText
+		} else {
+			texts[i] = c.Text
+		}
 	}
 
 	vecs, skipped, embErr := h.embedder.Embed(ctx, texts)

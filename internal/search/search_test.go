@@ -39,13 +39,15 @@ func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, []
 	return out, nil, nil
 }
 
+// mockReranker は scores を直接返す（candidates と同じ長さ）。
+// reference doc-db SKILL llm_rerank.py 同方式に合わせた interface。
 type mockReranker struct {
-	order []int // 候補内順位
-	err   error
+	scores []float64
+	err    error
 }
 
-func (m *mockReranker) Rerank(_ context.Context, _ string, _ []RerankCandidate) ([]int, error) {
-	return m.order, m.err
+func (m *mockReranker) Rerank(_ context.Context, _ string, _ []RerankCandidate) ([]float64, error) {
+	return m.scores, m.err
 }
 
 // makeChunk はテスト用にシンプルな store.Chunk を作る。
@@ -298,8 +300,9 @@ func TestRun_RerankSuccess(t *testing.T) {
 		makeChunk(2, "b", "doc b foo", []float32{0.8, 0.2, 0}),
 		makeChunk(3, "c", "doc c foo", []float32{0.5, 0.5, 0}),
 	}
-	// Reranker は逆順 [2, 1, 0] を返す（候補内 index）
-	reranker := &mockReranker{order: []int{2, 1, 0}}
+	// Reranker は候補 0 を最高、2 を最低スコアにする
+	// → reverse 効果（[2, 1, 0] の rank マッピング → score 0.1, 0.5, 0.9）
+	reranker := &mockReranker{scores: []float64{0.1, 0.5, 0.9}}
 	p := New(&mockStore{chunks: chunks}, &mockEmbedder{queryVec: q}, reranker, Config{RerankFactor: 3})
 
 	out, err := p.Run(context.Background(), "K", "", "foo", ModeRerank, 3)

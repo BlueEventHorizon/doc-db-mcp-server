@@ -52,8 +52,10 @@ func TestErrorIntegration_FetcherTimeout(t *testing.T) {
 func TestErrorIntegration_EmbedderPartialFailure_SuccessChunksStored(t *testing.T) {
 	h := newHarness(t)
 	// "# A\nalpha section" を失敗、"# B\nbeta section" を成功とする
+	// Embedder には EmbedText (heading breadcrumb + prose) が渡されるため、
+	// failTexts のキーもその形式に合わせる。
 	h.embedder.failTexts = map[string]bool{
-		"# A\nalpha section": true,
+		"# A\n\nalpha section": true,
 	}
 	ctx := context.Background()
 
@@ -95,9 +97,11 @@ func TestErrorIntegration_EmbedderPartialFailure_SuccessChunksStored(t *testing.
 // 全チャンク Embedding 失敗時: Processed=1（テキストは保存）+ errors に skipped_chunks 全件。
 func TestErrorIntegration_EmbedderAllFail_TextStillStored(t *testing.T) {
 	h := newHarness(t)
+	// EmbedText 形式 (heading breadcrumb + "\n\n" + prose) で fail 対象を指定。
+	// alpha は最初の chunk なので prose 継承無し、beta は前 chunk の prose も短いので継承無し。
 	h.embedder.failTexts = map[string]bool{
-		"# A\nalpha section": true,
-		"# B\nbeta section":  true,
+		"# A\n\nalpha section": true,
+		"# B\n\nbeta section":  true,
 	}
 	ctx := context.Background()
 

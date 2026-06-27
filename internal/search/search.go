@@ -79,8 +79,13 @@ type Embedder interface {
 
 // Reranker は LLM Rerank（mode=rerank 時のみ呼ばれる）。
 // Rerank 失敗時は呼び出し元が RRF 順にフォールバックする（RR-02）。
+//
+// 戻り値の scores は candidates と同じ長さで、scores[i] は candidates[i] に対する
+// 関連度スコア (0..1)。呼び出し元は (-rerank_score, -original_score, chunk_id) の順で
+// ブレンドソートする（reference doc-db SKILL llm_rerank.py と同方式）。
+// 欠落 ID は -1.0 として扱う想定 → reference のように「末尾に追いやる」効果。
 type Reranker interface {
-	Rerank(ctx context.Context, query string, candidates []RerankCandidate) (orderedIndices []int, err error)
+	Rerank(ctx context.Context, query string, candidates []RerankCandidate) (scores []float64, err error)
 }
 
 // RerankCandidate は Reranker に渡す候補情報。
@@ -213,23 +218,51 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 
 	// Rerank（mode=rerank のみ）
 	// reranker が未注入、または API 呼び出しが失敗した場合は RRF 順をそのまま使う（RR-02）。
-	// stats.RerankCandidates は「実際に Rerank に投入された候補数」を意味する。
-	// reranker 未注入 or 失敗時は 0 のまま（caller に Rerank 不発を判別可能にするため）。
+	// reference doc-db SKILL と同方式:
+	//   - 候補は top-N (= min(MAX, len(fused), top_n * factor)) を採用
+	//   - LLM が返す score 0..1 と元 RRF/emb スコアを (-rerank, -orig, idx) でブレンドソート
+	//   - 欠落 ID の rerank_score = -1.0 → 末尾扱い
 	rerankApplied := false
+	rerankScoreMap := make(map[int]float64) // chunk index -> rerank score
 	if mode == ModeRerank && p.reranker != nil {
-		nCand := topN * p.cfg.RerankFactor
-		if nCand > len(fusedOrder) {
-			nCand = len(fusedOrder)
-		}
+		nCand := chooseRerankCandidateCount(len(fusedOrder), topN, p.cfg.RerankFactor)
 		topCandidates := fusedOrder[:nCand]
 
-		newOrder, err := p.rerank(ctx, query, chunks, topCandidates)
-		if err == nil {
-			fusedOrder = append(newOrder, fusedOrder[nCand:]...)
+		scores, err := p.rerank(ctx, query, chunks, topCandidates)
+		if err == nil && len(scores) == len(topCandidates) {
+			// rerank スコアを chunk index にマッピング
+			for i, ci := range topCandidates {
+				rerankScoreMap[ci] = scores[i]
+			}
+			// 元の RRF / emb スコアを取得する補助関数
+			origScore := func(idx int) float64 {
+				if len(rrfScores) > 0 {
+					return rrfScores[idx]
+				}
+				if len(embScores) > 0 {
+					return embScores[idx]
+				}
+				return 0
+			}
+			// reranked = top候補を (-rerank, -orig, idx) でソート
+			rerankedTop := make([]int, len(topCandidates))
+			copy(rerankedTop, topCandidates)
+			sort.SliceStable(rerankedTop, func(i, j int) bool {
+				ri, rj := rerankScoreMap[rerankedTop[i]], rerankScoreMap[rerankedTop[j]]
+				if ri != rj {
+					return ri > rj
+				}
+				oi, oj := origScore(rerankedTop[i]), origScore(rerankedTop[j])
+				if oi != oj {
+					return oi > oj
+				}
+				return rerankedTop[i] < rerankedTop[j]
+			})
+			fusedOrder = append(rerankedTop, fusedOrder[nCand:]...)
 			rerankApplied = true
 			stats.RerankCandidates = len(topCandidates)
 		}
-		// 失敗時は RerankCandidates=0 のまま（fallback の事実を caller に伝える）
+		// 失敗 / 件数不一致時は RerankCandidates=0 のままで RRF 順をそのまま使う
 	}
 
 	// SearchResult を構築（上位 topN 件）
@@ -238,7 +271,7 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 		resultCount = len(fusedOrder)
 	}
 	results := make([]SearchResult, 0, resultCount)
-	for rank, idx := range fusedOrder[:resultCount] {
+	for _, idx := range fusedOrder[:resultCount] {
 		c := chunks[idx]
 		var (
 			embS, lexS, rrfS, rerankS float64
@@ -253,8 +286,11 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 			rrfS = rrfScores[idx]
 		}
 		if rerankApplied {
-			// rerank 後の順位を逆順スコアで表現（高い順位ほど大きい）
-			rerankS = float64(resultCount - rank)
+			// Rerank が適用された chunk は LLM の返した 0..1 スコアを記録。
+			// rerank に渡されなかった末尾候補は 0 のまま。
+			if v, ok := rerankScoreMap[idx]; ok {
+				rerankS = v
+			}
 		}
 		results = append(results, SearchResult{
 			Path:        c.Path,
@@ -286,25 +322,60 @@ func (p *Pipeline) embedQuery(ctx context.Context, query string) ([]float32, err
 	return vecs[0], nil
 }
 
-// rerank は LLM Reranker を呼ぶ。
-func (p *Pipeline) rerank(ctx context.Context, query string, chunks []store.Chunk, idxs []int) ([]int, error) {
+// rerank は LLM Reranker を呼び、candidates と同じ長さの score slice を返す。
+// scores[i] は cands[i] (= chunks[idxs[i]]) に対する LLM の関連度スコア。
+func (p *Pipeline) rerank(ctx context.Context, query string, chunks []store.Chunk, idxs []int) ([]float64, error) {
 	cands := make([]RerankCandidate, len(idxs))
 	for i, ci := range idxs {
 		cands[i] = RerankCandidate{Index: ci, Text: chunks[ci].Text, HeadingPath: chunks[ci].HeadingPath}
 	}
-	order, err := p.reranker.Rerank(ctx, query, cands)
+	scores, err := p.reranker.Rerank(ctx, query, cands)
 	if err != nil {
 		return nil, err
 	}
-	// order は cands 内の rank 順インデックス。chunks 上のインデックスに変換する。
-	out := make([]int, 0, len(order))
-	for _, candIdx := range order {
-		if candIdx < 0 || candIdx >= len(cands) {
-			return nil, fmt.Errorf("rerank: invalid candidate index %d", candIdx)
-		}
-		out = append(out, cands[candIdx].Index)
+	if len(scores) != len(cands) {
+		return nil, fmt.Errorf("rerank: scores length %d != candidates %d", len(scores), len(cands))
 	}
-	return out, nil
+	return scores, nil
+}
+
+// rerank 候補数を reference doc-db SKILL (llm_rerank.py:choose_candidate_count) と同方針で決める。
+//   - len(fused) ≤ MinRerankCandidates (5) なら全件
+//   - 上限は min(len(fused), MaxRerankCandidates (30), topN × rerankFactor)
+//   - 下限は MinRerankCandidates
+//
+// 候補数の context window budget チェック (128k window) は実装簡略化のため省略する
+// （5 docs / 138 chunks 規模では到達しない。大規模化時は再設計）。
+const (
+	minRerankCandidates = 5
+	maxRerankCandidates = 30
+)
+
+func chooseRerankCandidateCount(fusedLen, topN, factor int) int {
+	if fusedLen <= 0 {
+		return 0
+	}
+	if fusedLen <= minRerankCandidates {
+		return fusedLen
+	}
+	if factor <= 0 {
+		factor = 3
+	}
+	preferred := topN * factor
+	upper := fusedLen
+	if maxRerankCandidates < upper {
+		upper = maxRerankCandidates
+	}
+	if preferred > upper {
+		preferred = upper
+	}
+	if preferred < minRerankCandidates {
+		preferred = minRerankCandidates
+	}
+	if preferred > fusedLen {
+		preferred = fusedLen
+	}
+	return preferred
 }
 
 // primaryScore は表示用の代表スコアを選ぶ。
@@ -365,83 +436,92 @@ func computeCosineScores(queryVec []float32, chunks []store.Chunk) []float64 {
 var idBonusPattern = regexp.MustCompile(`[A-Z]+-\d+`)
 
 // computeLexScores は各チャンクの BM25 スコア + ボーナスを返す。
+// reference doc-db SKILL (lexical_search.py) と同一アルゴリズム:
 //
-// BM25 計算:
-//   - クエリと全チャンクをトークナイズし、各 term の DF を計算
-//   - 各チャンクごとに query term の合計 BM25 スコアを求める
+//   - TF は **substring match**（normalized body 内の token 出現回数）
+//   - DF も substring match（token を含む body 数）
+//   - dl / avgdl は **文字数**（rune 単位ではなく len() 互換のバイト数 — Python str と同等）
+//   - IDF は Robertson 形式: log((N - df + 0.5) / (df + 0.5) + 1)
 //
 // ボーナス:
-//   - クエリ内 ID パターン（[A-Z]+-\d+）がチャンク本文に含まれる → +10
-//   - 正規化クエリ全体がチャンク本文に含まれる → +2
+//   - クエリ内 ID パターン（[A-Z]+-\d+）が body に含まれる → +10
+//   - 正規化クエリ全体が body に含まれる → +2
+//
+// substring 方式は形態素解析器なしで CJK の連続文字列を部分マッチでき、
+// 「廃棄ポリシー」というクエリで token が「廃棄」「ポリシー」「廃棄ポリシー」
+// と複数粒度で TF を稼げる（reference の評価で実用品質が確認されている）。
 func computeLexScores(query string, chunks []store.Chunk, k1, b float64) []float64 {
 	scores := make([]float64, len(chunks))
 
+	normalizedQuery := store.Normalize(query)
 	queryTerms := store.Tokenize(query)
 	if len(queryTerms) == 0 {
 		return scores
 	}
+	uniqQueryTerms := uniqueStrings(queryTerms)
 
-	// 各チャンクのトークン化とドキュメント長を計算
-	chunkTokens := make([][]string, len(chunks))
+	// 各 chunk の正規化済み body を事前計算（reference: normalized_bodies）
+	normBodies := make([]string, len(chunks))
+	for i, c := range chunks {
+		normBodies[i] = store.Normalize(c.Text)
+	}
+
+	// 文書長 = body の文字数（Python の len(str) 相当 = 内部 UTF-16 単位だが
+	// reference は CJK で安定動作するので、ここでは UTF-8 バイト数で代用しても
+	// 比例関係が保たれる。厳密に揃えるため rune 単位で計測する）
 	docLens := make([]int, len(chunks))
 	var totalLen int
-	for i, c := range chunks {
-		toks := store.Tokenize(c.Text)
-		chunkTokens[i] = toks
-		docLens[i] = len(toks)
-		totalLen += len(toks)
-	}
-	avgDocLen := 0.0
-	if len(chunks) > 0 {
-		avgDocLen = float64(totalLen) / float64(len(chunks))
-	}
-
-	// query term ごとに DF を計算
-	df := make(map[string]int, len(queryTerms))
-	uniqQueryTerms := uniqueStrings(queryTerms)
-	for _, t := range uniqQueryTerms {
-		df[t] = 0
-		for _, toks := range chunkTokens {
-			if containsString(toks, t) {
-				df[t]++
-			}
+	for i, b := range normBodies {
+		l := 0
+		for range b {
+			l++
 		}
+		docLens[i] = l
+		totalLen += l
 	}
-
 	N := float64(len(chunks))
+	avgDocLen := 1.0
+	if N > 0 {
+		avgDocLen = float64(totalLen) / N
+	}
+
+	// IDF: substring DF を unique query token ごとに計算
+	idf := make(map[string]float64, len(uniqQueryTerms))
+	for _, t := range uniqQueryTerms {
+		df := 0
+		for _, body := range normBodies {
+			if strings.Contains(body, t) {
+				df++
+			}
+		}
+		idf[t] = math.Log((N-float64(df)+0.5)/(float64(df)+0.5) + 1.0)
+	}
+
+	// ID パターンは大文字版で抽出して lowercase の body と比較する
+	idTokensUpper := idBonusPattern.FindAllString(strings.ToUpper(normalizedQuery), -1)
+
 	for i := range chunks {
-		// term frequency in this chunk
-		tf := make(map[string]int)
-		for _, tok := range chunkTokens[i] {
-			tf[tok]++
-		}
-
+		body := normBodies[i]
+		dl := float64(docLens[i])
 		var score float64
+
 		for _, t := range queryTerms {
-			f := float64(tf[t])
-			if f == 0 {
+			tf := float64(strings.Count(body, t))
+			if tf == 0 {
 				continue
 			}
-			n := float64(df[t])
-			if n == 0 {
-				continue
-			}
-			// IDF: log((N - n + 0.5) / (n + 0.5) + 1)  ← Lucene-flavor BM25 (正値保証)
-			idf := math.Log((N-n+0.5)/(n+0.5) + 1.0)
-			dl := float64(docLens[i])
-			norm := 1 - b + b*(dl/avgDocLen)
-			score += idf * (f * (k1 + 1)) / (f + k1*norm)
+			tfNorm := tf * (k1 + 1) / (tf + k1*(1-b+b*dl/avgDocLen))
+			score += idf[t] * tfNorm
 		}
 
-		// ID パターンボーナス
-		for _, m := range idBonusPattern.FindAllString(query, -1) {
-			if strings.Contains(chunks[i].Text, m) {
+		// ID パターンボーナス（lowercase で比較）
+		for _, m := range idTokensUpper {
+			if strings.Contains(body, strings.ToLower(m)) {
 				score += 10.0
 			}
 		}
 		// 全文一致ボーナス
-		normQuery := strings.ToLower(query)
-		if normQuery != "" && strings.Contains(strings.ToLower(chunks[i].Text), normQuery) {
+		if normalizedQuery != "" && strings.Contains(body, normalizedQuery) {
 			score += 2.0
 		}
 
@@ -520,15 +600,74 @@ func fuseScores(embRank, lexRank []int, embScores []float64, cfg Config) ([]int,
 
 	order := sortIndicesByScore(rrf)
 
-	// EMB top-K 保証: emb 上位 K 件が fused 上位 K' に含まれるよう昇格
-	order = promoteEmbTopK(order, embRank, cfg.EmbGuaranteeK)
+	// EMB top-K 保証: emb 上位 K 件が fused 上位 K に含まれるよう、必要な分だけ
+	// **スコアを書き換えて昇格** させる（reference doc-db SKILL と同方式）。
+	// この方式は emb 上位の元順位を維持しつつ、それ以外の fused 順位は崩さない。
+	rrf = promoteEmbTopKByScore(order, rrf, embRank, cfg.EmbGuaranteeK)
+	// rrf スコアを再ソート
+	order = sortIndicesByScore(rrf)
 
 	return order, rrf
 }
 
-// promoteEmbTopK は emb 上位 K 件を fused 上位 K に昇格させる（SC-01）。
-// 戦略: emb-top を先頭にコピーし、残りの fused 要素を後続に連結する（emb-top の
-// 元の相対順を保持）。fused 全体の長さは保たれる。
+// promoteEmbTopKByScore は EMB 上位 K 件のスコアを「侵入者 (= emb top-K に
+// 含まれない fused 上位) の最高スコアを超える値」に書き換えて昇格させる。
+// emb 内の相対順位を保つため、rank に応じた微小オフセット (1e-9 単位) を加える。
+// reference doc-db SKILL (hybrid_score.py:49-66) と同等。
+func promoteEmbTopKByScore(fusedOrder []int, rrfScores []float64, embRank []int, K int) []float64 {
+	if K <= 0 || len(embRank) == 0 || len(fusedOrder) == 0 {
+		return rrfScores
+	}
+	if K > len(embRank) {
+		K = len(embRank)
+	}
+	topEmb := embRank[:K]
+	topEmbSet := make(map[int]struct{}, len(topEmb))
+	for _, idx := range topEmb {
+		topEmbSet[idx] = struct{}{}
+	}
+
+	upper := K
+	if upper > len(fusedOrder) {
+		upper = len(fusedOrder)
+	}
+
+	// fused 上位 K のうち emb-top に含まれない侵入者を抽出
+	var intruders []int
+	for _, idx := range fusedOrder[:upper] {
+		if _, ok := topEmbSet[idx]; !ok {
+			intruders = append(intruders, idx)
+		}
+	}
+	if len(intruders) == 0 {
+		return rrfScores
+	}
+
+	// 侵入者の最高スコアを取得
+	threshold := rrfScores[intruders[0]]
+	for _, idx := range intruders[1:] {
+		if rrfScores[idx] > threshold {
+			threshold = rrfScores[idx]
+		}
+	}
+
+	// emb-top のうち fused 上位 K に未到達の chunk のスコアを書き換える
+	inTopFused := make(map[int]struct{}, upper)
+	for _, idx := range fusedOrder[:upper] {
+		inTopFused[idx] = struct{}{}
+	}
+	for rankIdx, idx := range topEmb {
+		if _, ok := inTopFused[idx]; ok {
+			continue // 既に fused 上位にいる
+		}
+		// rank_idx に応じた微小オフセットを加えて emb 内の相対順位を保つ
+		rrfScores[idx] = threshold + float64(K-rankIdx)*1e-9
+	}
+	return rrfScores
+}
+
+// promoteEmbTopK は legacy 実装（後方互換用に残す。新コードからは呼ばない）。
+// 戦略: emb-top を先頭にコピーし、残りの fused 要素を後続に連結する。
 func promoteEmbTopK(fused, embRank []int, K int) []int {
 	if K <= 0 || len(embRank) == 0 {
 		return fused

@@ -181,20 +181,12 @@ CREATE TABLE IF NOT EXISTS embeddings (
     dim      INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS bm25_stats (
-    key      TEXT NOT NULL,
-    chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
-    term     TEXT NOT NULL,
-    tf       REAL NOT NULL,
-    PRIMARY KEY (key, chunk_id, term)
-);
-
-CREATE TABLE IF NOT EXISTS bm25_df (
-    key  TEXT NOT NULL,
-    term TEXT NOT NULL,
-    df   INTEGER NOT NULL,
-    PRIMARY KEY (key, term)
-);
+-- bm25_stats / bm25_df は廃止された（v0.1.2 で削除）。
+-- reference doc-db SKILL と同方式で query 時に substring match で TF/DF を都度計算するため、
+-- 事前 token 集計テーブルは不要になった。CASCADE 不要のため schema からも除去する。
+-- 既存 DB に残っている場合は次の DROP で除去する（IF EXISTS で冪等）。
+DROP TABLE IF EXISTS bm25_stats;
+DROP TABLE IF EXISTS bm25_df;
 `
 	_, err := s.db.ExecContext(ctx, ddl)
 	return err
@@ -617,10 +609,7 @@ func (s *Store) UpsertRecord(ctx context.Context, rec Record) (int64, error) {
 			}
 		}
 
-		// BM25 統計を記録（LEX-01 / DES-001 §6.2）
-		if err := insertBM25StatsForChunk(ctx, tx, rec.Key, chunkID, chunk.Text); err != nil {
-			return 0, fmt.Errorf("store.UpsertRecord: %w", err)
-		}
+		_ = chunkID // BM25 統計は廃止（v0.1.2: search 時に substring match で都度計算）
 	}
 
 	// keys テーブルを upsert
@@ -890,130 +879,30 @@ type dbExecer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// deleteRecordWithBM25Tx は BM25 の整合性を保ちながら record を削除する共通ヘルパー。
-// §6.2 の手順:
-//  1. CASCADE 前に削除対象 chunk_id の term 一覧を bm25_stats から取得
-//  2. チャンク（CASCADE で bm25_stats も削除）・record を削除
-//  3. bm25_df.df を 1 減算
-//  4. df <= 0 の行を bm25_df から削除
-//
-// exec には *sql.DB または *sql.Tx を渡せる。
+// deleteRecordWithBM25Tx は record を削除する共通ヘルパー。
+// bm25_stats / bm25_df 廃止 (v0.1.2) 後は CASCADE のみで完結する。
+// 命名は履歴上の互換性のため残す。
 // 呼び出し元が既に Mutex を保持していること前提。
 func (s *Store) deleteRecordWithBM25Tx(ctx context.Context, exec dbExecer, recordID int64) error {
-	// 1. CASCADE 前に chunk_id と term を取得
-	type termEntry struct {
-		chunkID int64
-		key     string
-		term    string
-	}
-	termRows, err := exec.QueryContext(ctx,
-		`SELECT bs.chunk_id, r.key, bs.term
-         FROM bm25_stats bs
-         JOIN chunks c ON c.id = bs.chunk_id
-         JOIN records r ON r.id = c.record_id
-         WHERE c.record_id = ?`,
-		recordID,
-	)
-	if err != nil {
-		return fmt.Errorf("store.deleteRecordWithBM25Tx: fetch terms: %w", err)
-	}
-	var terms []termEntry
-	for termRows.Next() {
-		var te termEntry
-		if err := termRows.Scan(&te.chunkID, &te.key, &te.term); err != nil {
-			termRows.Close()
-			return err
-		}
-		terms = append(terms, te)
-	}
-	termRows.Close()
-	if err := termRows.Err(); err != nil {
-		return err
-	}
-
-	// 2. record を削除（CASCADE で chunks・embeddings・bm25_stats・series_keys も削除）
+	// CASCADE で chunks・embeddings・series_keys も削除される
 	if _, err := exec.ExecContext(ctx,
 		`DELETE FROM records WHERE id=?`, recordID,
 	); err != nil {
-		return fmt.Errorf("store.deleteRecordWithBM25Tx: delete record: %w", err)
+		return fmt.Errorf("store.deleteRecord: %w", err)
 	}
-
-	// 3 & 4. bm25_df を更新（key+term ごとに df を減算し 0 以下なら削除）
-	// key+term でユニーク化して df を 1 ずつ減算する
-	type ktKey struct{ key, term string }
-	seen := make(map[ktKey]struct{})
-	for _, te := range terms {
-		k := ktKey{te.key, te.term}
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-
-		if _, err := exec.ExecContext(ctx,
-			`UPDATE bm25_df SET df = df - 1 WHERE key=? AND term=?`,
-			te.key, te.term,
-		); err != nil {
-			return fmt.Errorf("store.deleteRecordWithBM25Tx: update bm25_df: %w", err)
-		}
-	}
-
-	// df <= 0 の行を削除
-	if _, err := exec.ExecContext(ctx,
-		`DELETE FROM bm25_df WHERE df <= 0`,
-	); err != nil {
-		return fmt.Errorf("store.deleteRecordWithBM25Tx: prune bm25_df: %w", err)
-	}
-
 	return nil
 }
 
-// deleteChunksForRecordTx はトランザクション内で record のチャンクを削除し
-// BM25 の整合性を保つ（UpsertRecord の既存チャンク入れ替え時に使用）。
+// deleteChunksForRecordTx はトランザクション内で record のチャンクを削除する
+// （UpsertRecord の既存チャンク入れ替え時に使用）。
+// bm25_stats / bm25_df 廃止後は CASCADE で完結する。
 func (s *Store) deleteChunksForRecordTx(ctx context.Context, tx *sql.Tx, key string, recordID int64) error {
-	// 1. CASCADE 前に term 一覧を取得
-	termRows, err := tx.QueryContext(ctx,
-		`SELECT bs.term FROM bm25_stats bs
-         JOIN chunks c ON c.id = bs.chunk_id
-         WHERE c.record_id = ?`,
-		recordID,
-	)
-	if err != nil {
-		return fmt.Errorf("store.deleteChunksForRecordTx: fetch terms: %w", err)
-	}
-	termSet := make(map[string]struct{})
-	for termRows.Next() {
-		var term string
-		if err := termRows.Scan(&term); err != nil {
-			termRows.Close()
-			return err
-		}
-		termSet[term] = struct{}{}
-	}
-	termRows.Close()
-	if err := termRows.Err(); err != nil {
-		return err
-	}
-
-	// 2. チャンクを削除（CASCADE で embeddings・bm25_stats も削除）
+	_ = key // bm25_df 廃止により未使用（API 互換性のため引数は残す）
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM chunks WHERE record_id=?`, recordID,
 	); err != nil {
-		return fmt.Errorf("store.deleteChunksForRecordTx: delete chunks: %w", err)
+		return fmt.Errorf("store.deleteChunksForRecordTx: %w", err)
 	}
-
-	// 3 & 4. bm25_df を更新（DF はレコード単位なので 1 record 削除時は df -= 1）
-	for term := range termSet {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE bm25_df SET df = df - 1 WHERE key=? AND term=?`,
-			key, term,
-		); err != nil {
-			return fmt.Errorf("store.deleteChunksForRecordTx: update bm25_df: %w", err)
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM bm25_df WHERE df <= 0`); err != nil {
-		return fmt.Errorf("store.deleteChunksForRecordTx: prune bm25_df: %w", err)
-	}
-
 	return nil
 }
 

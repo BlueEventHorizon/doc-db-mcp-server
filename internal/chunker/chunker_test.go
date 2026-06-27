@@ -117,7 +117,7 @@ func TestSplit_MaxChunkSize_Splits(t *testing.T) {
 }
 
 func TestSplit_MaxChunkSize_DefaultFallback(t *testing.T) {
-	// 0 or negative → defaultMaxChunkSize (1500)
+	// 0 or negative → defaultMaxChunkSize (8192)
 	c := New(0)
 	if c.effectiveMaxChunkSize() != defaultMaxChunkSize {
 		t.Errorf("effective = %d, want %d", c.effectiveMaxChunkSize(), defaultMaxChunkSize)
@@ -125,6 +125,78 @@ func TestSplit_MaxChunkSize_DefaultFallback(t *testing.T) {
 	c2 := New(-5)
 	if c2.effectiveMaxChunkSize() != defaultMaxChunkSize {
 		t.Errorf("effective(-5) = %d, want %d", c2.effectiveMaxChunkSize(), defaultMaxChunkSize)
+	}
+}
+
+// -----------------------------------------------------------------------
+// EmbedText 生成（reference doc-db SKILL の _enrich_embed_texts と同等）
+// -----------------------------------------------------------------------
+
+func TestSplit_EmbedText_HeadingBreadcrumbAndProse(t *testing.T) {
+	c := New(0)
+	md := "# A\n## B\n## 6.2 BM25 語彙検索\n本文プローズの一行目\n本文プローズの二行目\n"
+	chunks, err := c.Split("doc.md", md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 最後の chunk は heading_path に "# A > ## 6.2 BM25 語彙検索" を含むはず
+	last := chunks[len(chunks)-1]
+	if !strings.Contains(last.HeadingPath, "BM25") {
+		t.Fatalf("heading_path = %q", last.HeadingPath)
+	}
+	// EmbedText は breadcrumb + prose で始まり、見出し行を含まない
+	if !strings.HasPrefix(last.EmbedText, last.HeadingPath) {
+		t.Errorf("EmbedText should begin with heading breadcrumb: got %q", last.EmbedText)
+	}
+	if strings.Contains(last.EmbedText, "# A") || strings.Contains(last.EmbedText, "## 6.2") {
+		// 「# A」や「## 6.2」のような raw heading 行は EmbedText 本体に入っていてはならない
+		// （breadcrumb 部に含まれるのは可）。breadcrumb 部の "> ## 6.2" は許容される。
+		// 厳密チェック: prose 部に raw heading が残っていないこと
+		idx := strings.Index(last.EmbedText, "\n\n")
+		if idx >= 0 {
+			prose := last.EmbedText[idx+2:]
+			if strings.Contains(prose, "# A") || strings.Contains(prose, "## 6.2") {
+				t.Errorf("prose 部に raw heading が残っている: %q", prose)
+			}
+		}
+	}
+	if !strings.Contains(last.EmbedText, "本文プローズ") {
+		t.Errorf("prose 部が EmbedText に含まれていない: %q", last.EmbedText)
+	}
+}
+
+func TestSplit_EmbedText_InheritsProseFromPreviousChunkIfShort(t *testing.T) {
+	c := New(0)
+	// 1 つ目の chunk には十分長い prose、2 つ目は heading のみ
+	longProse := strings.Repeat("これは本文のサンプルです。", 5) // 60+ chars
+	md := "# A\n" + longProse + "\n## B\n"
+	chunks, err := c.Split("doc.md", md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) < 2 {
+		t.Fatalf("len = %d, want >=2", len(chunks))
+	}
+	// 2 つ目 (## B) は prose < 50 → 前 chunk から継承するはず
+	second := chunks[1]
+	if !strings.Contains(second.EmbedText, "本文のサンプル") {
+		t.Errorf("短文 chunk の EmbedText が前 chunk から prose を継承していない: %q", second.EmbedText)
+	}
+}
+
+func TestSplit_EmbedText_DoesNotInheritAcrossPaths(t *testing.T) {
+	c := New(0)
+	chunksA, _ := c.Split("a.md", "# A\n"+strings.Repeat("aaaaaaaaaa", 10)+"\n")
+	chunksB, _ := c.Split("b.md", "# B\n")
+	// 別 path 同士で同一スライスに混ぜたうえで enrichEmbedTexts したらどうなるかは
+	// 実装上 Split は path 単位で呼ばれるので、混ざることは無い。
+	// しかし enrichEmbedTexts は将来的に複数 path を受け取る可能性を考慮し、
+	// 関数自体は path 境界をまたいで継承しない仕様。
+	combined := append(chunksA, chunksB...)
+	enrichEmbedTexts(combined)
+	b := combined[len(chunksA)]
+	if strings.Contains(b.EmbedText, "aaaaaaaaaa") {
+		t.Errorf("path 境界をまたいで継承してはならない: %q", b.EmbedText)
 	}
 }
 
