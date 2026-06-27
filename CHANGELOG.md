@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-27
+
+### Fixed (Q3/Q7 silent rerank failure 究明 + 修正)
+
+v0.1.3 評価で Q3 ("automatic cleanup of stale indexes") と Q7 ("DIF-03") のみ
+`stage_stats.rerank_candidates=0` となる現象を究明した結果、**gpt-4o-mini が
+30 candidates (id 0-29) に対し id=30 を含むランキングを返す** off-by-one が
+判明。我々の parseRankingScores が範囲外 id を error 扱いしていたため rerank
+全体が破棄されていた。
+
+- `reranker.parseRankingScores`: 範囲外/不正な id を error → graceful skip に変更。
+  reference llm_rerank.py:115 と同方針（rank_map に登録するだけで lookup 時に
+  見つからず無視）。silent failure 禁止のため、skip した id は `dropped_ids` として
+  `slog.Warn` に記録（観測可能）
+
+### Changed (silent failure 全箇所を検出可能化)
+
+ユーザー指摘「エラーはログだけではダメ。caller が明確に捕まえられないと気づかない」を
+受け、全 silent failure サイトを propagate 可能な形に修正。
+
+- **`store.go`**: `defer tx.Rollback() //nolint:errcheck` × 4 箇所を `rollbackErrInto`
+  ヘルパに置換。named return + `errors.Join` で Rollback 失敗を caller の error 返り値に伝達。
+  `sql.ErrTxDone` (benign) は除外
+- **`embedder.go`**: 複数バッチ失敗時の `firstErr` のみ保持を `errors.Join(batchErrs...)` に
+  変更。全 batch エラーを caller に伝達
+- **`mcp.go` `QueryResult`**: `Warnings []string` フィールド追加。TouchKey 失敗を
+  log だけでなく MCP レスポンスにも含める
+- **`search.go` `Output`**: `Warnings []string` フィールド追加。Rerank API 失敗 /
+  EMB フォールバック発動を caller に伝達。`fuseScores` 戻り値に `embFallback bool` 追加
+- **`expiry.go` `Worker`**: `Stats()` メソッドで `KeyDeleteError` リスト・`LastRunErr` ・
+  `TotalRuns` ・`LastRunAtRF` を公開。個別 KEY 削除失敗をログだけでなく構造化状態として保持
+- 全変更で対応するテスト追加（dropped_ids / Stats.LastKeyErrors / EMB fallback bool 等）
+
+### Memory
+
+- 新規 feedback: `silent failure 禁止` をプロジェクト memory に記録
+  ([feedback_no_silent_failure.md](https://github.com/BlueEventHorizon/doc-db-mcp-server/blob/main/.claude/memory/feedback_no_silent_failure.md))
+
 ## [0.1.3] - 2026-06-27
 
 ### Changed (reference doc-db SKILL との追加同期 — 残存差異 5 件)
@@ -117,7 +155,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.4
 [0.1.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.3
 [0.1.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.2
 [0.1.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.1

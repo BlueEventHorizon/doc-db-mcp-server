@@ -162,7 +162,7 @@ func TestFuseScores_RRFBasic(t *testing.T) {
 	cfg := Config{}
 	cfg.applyDefaults()
 
-	order, rrf := fuseScores(embRank, lexRank, embScores, lexScores, cfg)
+	order, rrf, _ := fuseScores(embRank, lexRank, embScores, lexScores, cfg)
 
 	if len(order) != 3 {
 		t.Fatalf("order len = %d, want 3", len(order))
@@ -189,9 +189,12 @@ func TestFuseScores_EmbFallback(t *testing.T) {
 	cfg := Config{}
 	cfg.applyDefaults()
 
-	order, _ := fuseScores(embRank, lexRank, embScores, lexScores, cfg)
+	order, _, fb := fuseScores(embRank, lexRank, embScores, lexScores, cfg)
 	if !reflect.DeepEqual(order, embRank) {
 		t.Errorf("EMB フォールバック: order = %v, want %v", order, embRank)
+	}
+	if !fb {
+		t.Error("EMB フォールバック発動を caller に伝達するため第3戻り値 true が必要")
 	}
 }
 

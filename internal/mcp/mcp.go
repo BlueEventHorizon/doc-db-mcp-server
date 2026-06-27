@@ -339,9 +339,13 @@ type QueryHit struct {
 }
 
 // QueryResult は query の出力（QRY-OUT-02）。
+//
+// Warnings: 致命的でない異常（TouchKey 失敗・Rerank フォールバック等）を caller に伝達する。
+// silent failure 禁止方針に従い、log にしか出ない情報は警告メッセージとして含める。
 type QueryResult struct {
 	Results    []QueryHit        `json:"results"`
 	StageStats search.StageStats `json:"stage_stats"`
+	Warnings   []string          `json:"warnings,omitempty"`
 }
 
 func (h *Handlers) handleQuery(
@@ -367,15 +371,22 @@ func (h *Handlers) handleQuery(
 		return nil, QueryResult{}, fmt.Errorf("key %q が存在しません", in.Key)
 	}
 
-	// TouchKey（last_accessed_at 更新）
+	var warnings []string
+
+	// TouchKey（last_accessed_at 更新）。致命的ではないが caller に観測可能化する。
 	if err := h.store.TouchKey(ctx, in.Key); err != nil {
 		slog.Warn("query: TouchKey failed", "key", in.Key, "error", err)
-		// 致命ではないため継続
+		warnings = append(warnings, fmt.Sprintf("TouchKey failed for key %q: %v", in.Key, err))
 	}
 
 	out, err := h.search.Run(ctx, in.Key, in.Series, in.Query, mode, in.TopN)
 	if err != nil {
 		return nil, QueryResult{}, fmt.Errorf("search: %w", err)
+	}
+
+	// search.Pipeline が記録した Rerank フォールバック等の警告を取り込む
+	if out.Warnings != nil {
+		warnings = append(warnings, out.Warnings...)
 	}
 
 	hits := make([]QueryHit, len(out.Results))
@@ -389,7 +400,7 @@ func (h *Handlers) handleQuery(
 			SeriesKeys:     r.SeriesKeys,
 		}
 	}
-	return nil, QueryResult{Results: hits, StageStats: out.Stats}, nil
+	return nil, QueryResult{Results: hits, StageStats: out.Stats, Warnings: warnings}, nil
 }
 
 // -----------------------------------------------------------------------

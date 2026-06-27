@@ -133,6 +133,31 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// rollbackErrInto は defer 内で呼び、tx.Rollback() を実行する。
+// Commit 後の sql.ErrTxDone は無視し、それ以外のエラーは named return error に join する。
+// silent failure 禁止方針に従い、Rollback 失敗を確実に caller へ伝達するための共通ヘルパ。
+//
+// Usage:
+//
+//	func (s *Store) X(...) (retErr error) {
+//	    tx, err := s.db.BeginTx(...)
+//	    if err != nil { return ... }
+//	    defer rollbackErrInto(tx, &retErr)
+//	    ...
+//	}
+func rollbackErrInto(tx *sql.Tx, retErr *error) {
+	rbErr := tx.Rollback()
+	if rbErr == nil || errors.Is(rbErr, sql.ErrTxDone) {
+		return
+	}
+	wrapped := fmt.Errorf("store: tx rollback: %w", rbErr)
+	if *retErr == nil {
+		*retErr = wrapped
+	} else {
+		*retErr = errors.Join(*retErr, wrapped)
+	}
+}
+
 // -----------------------------------------------------------------------
 // スキーマ初期化
 // -----------------------------------------------------------------------
@@ -474,12 +499,12 @@ func (s *Store) AppendAndCleanSeries(ctx context.Context, recordID int64, key, p
 // cleanOtherSeriesLocked は Mutex 取得済みの状態で呼ばれる内部実装。
 // CleanOtherSeries（公開メソッド）から呼ばれる。
 // DES-001 §6.2 の原子性要件を満たすため、全操作を単一トランザクションで実行する。
-func (s *Store) cleanOtherSeriesLocked(ctx context.Context, key, path, series string, exceptRecordID int64) error {
+func (s *Store) cleanOtherSeriesLocked(ctx context.Context, key, path, series string, exceptRecordID int64) (retErr error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store.CleanOtherSeries: begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer rollbackErrInto(tx, &retErr)
 
 	// 対象 record_id 一覧を取得（except 以外の同一 key+path で series を持つ record）
 	rows, err := tx.QueryContext(ctx,
@@ -530,7 +555,7 @@ func (s *Store) cleanOtherSeriesLocked(ctx context.Context, key, path, series st
 // UpsertRecord は key+path の embedding record を新規作成または更新する（DIF-03 経路）。
 // 1トランザクションで records・series_keys・chunks・embeddings・bm25_stats/bm25_df・keys を操作する。
 // Mutex を取得して直列化する。
-func (s *Store) UpsertRecord(ctx context.Context, rec Record) (int64, error) {
+func (s *Store) UpsertRecord(ctx context.Context, rec Record) (recordID int64, retErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -538,7 +563,7 @@ func (s *Store) UpsertRecord(ctx context.Context, rec Record) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("store.UpsertRecord: begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer rollbackErrInto(tx, &retErr)
 
 	now := nowRFC3339()
 
@@ -553,7 +578,7 @@ func (s *Store) UpsertRecord(ctx context.Context, rec Record) (int64, error) {
 		return 0, fmt.Errorf("store.UpsertRecord: insert record: %w", err)
 	}
 
-	recordID, err := result.LastInsertId()
+	recordID, err = result.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("store.UpsertRecord: LastInsertId: %w", err)
 	}
@@ -636,7 +661,7 @@ func (s *Store) UpsertRecord(ctx context.Context, rec Record) (int64, error) {
 // DES-001 §6.2 の原子性要件を満たすため、削除ループ全体を単一トランザクションで実行する。
 // doc_count 更新は Commit 後に Mutex を保持したまま実行する（DES-001 §4.2）。
 // Mutex を取得して直列化する。
-func (s *Store) DeleteSeries(ctx context.Context, key, series string, paths []string) error {
+func (s *Store) DeleteSeries(ctx context.Context, key, series string, paths []string) (retErr error) {
 	s.mu.Lock()
 	// defer ではなく明示的に Unlock する。updateDocCountLocked 呼び出しまで Mutex を保持する。
 	defer s.mu.Unlock()
@@ -645,7 +670,7 @@ func (s *Store) DeleteSeries(ctx context.Context, key, series string, paths []st
 	if err != nil {
 		return fmt.Errorf("store.DeleteSeries: begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer rollbackErrInto(tx, &retErr)
 
 	for _, path := range paths {
 		// path に対応する record 一覧を取得
@@ -707,7 +732,7 @@ func (s *Store) DeleteSeries(ctx context.Context, key, series string, paths []st
 // DeleteKey は指定 KEY のすべてのデータを削除する（MNG-02 対応）。
 // DES-001 §6.2 の原子性要件を満たすため、全操作を単一トランザクションで実行する。
 // Mutex を取得して直列化する。
-func (s *Store) DeleteKey(ctx context.Context, key string) error {
+func (s *Store) DeleteKey(ctx context.Context, key string) (retErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -715,7 +740,7 @@ func (s *Store) DeleteKey(ctx context.Context, key string) error {
 	if err != nil {
 		return fmt.Errorf("store.DeleteKey: begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer rollbackErrInto(tx, &retErr)
 
 	// record 一覧を取得してから削除（BM25 整合性を保つため）
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM records WHERE key=?`, key)

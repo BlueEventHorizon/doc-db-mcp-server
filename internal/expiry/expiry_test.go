@@ -134,6 +134,16 @@ func TestRunTTL_PartialDeleteFailure_Continues(t *testing.T) {
 	if got, want := m.deletedKeys, []string{"K1", "K3"}; !equalSlice(got, want) {
 		t.Errorf("deleted = %v, want %v", got, want)
 	}
+
+	// silent failure 禁止: 個別 KEY 失敗が Stats.LastKeyErrors で観測可能
+	stats := w.Stats()
+	if len(stats.LastKeyErrors) != 1 {
+		t.Fatalf("LastKeyErrors len = %d, want 1", len(stats.LastKeyErrors))
+	}
+	got := stats.LastKeyErrors[0]
+	if got.Key != "K2" || got.Phase != "ttl" || got.Err == "" {
+		t.Errorf("LastKeyErrors[0] = %+v, want {Key=K2 Phase=ttl Err=...}", got)
+	}
 }
 
 func TestRunTTL_ListError_Propagates(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/store"
@@ -35,10 +36,39 @@ type storeForExpiry interface {
 	DeleteKey(ctx context.Context, key string) error
 }
 
+// KeyDeleteError は個別 KEY の削除失敗を記録する（silent failure 禁止方針）。
+type KeyDeleteError struct {
+	Key       string
+	Phase     string // "ttl" | "lru"
+	Err       string
+	OccurAtRF string // RFC3339 タイムスタンプ
+}
+
+// Stats はワーカーの稼働状態スナップショット。caller (cmd/docdb の health check 等) から
+// 観測できるよう公開する。silent failure 禁止方針 (memory: no-silent-failure) に従い、
+// 個別失敗をログのみで終わらせずプログラム的に取得可能にする。
+type Stats struct {
+	// LastRunErr は最後の runOnce が返したエラー（nil なら正常）。
+	// runOnce 内のループでは個別 KEY 失敗は LastKeyErrors に記録され、
+	// runOnce 自体は nil を返すため、本フィールドは TTL/LRU リスト取得失敗等の
+	// "ループに入る前" の致命的エラーのみ。
+	LastRunErr string
+	// LastKeyErrors は直近の runOnce で発生した個別 KEY 削除失敗のリスト。
+	// 次の runOnce 開始時にクリアされる。
+	LastKeyErrors []KeyDeleteError
+	// TotalRuns は Start 起動後の runOnce 累積実行回数。
+	TotalRuns int
+	// LastRunAtRF は最後の runOnce 完了時刻（RFC3339）。
+	LastRunAtRF string
+}
+
 // Worker は TTL/LRU 廃棄ワーカー。
 type Worker struct {
 	st  storeForExpiry
 	cfg Config
+
+	mu    sync.Mutex
+	stats Stats
 }
 
 // New は Config を使って Worker を生成する。
@@ -53,6 +83,47 @@ func New(st storeForExpiry, cfg Config) *Worker {
 		cfg.MaxChunks = 10000
 	}
 	return &Worker{st: st, cfg: cfg}
+}
+
+// Stats はワーカー稼働状態のスナップショットを返す。
+// 個別 KEY 失敗を含む全エラー情報が観測可能（silent failure 禁止）。
+func (w *Worker) Stats() Stats {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	cp := w.stats
+	if cp.LastKeyErrors != nil {
+		cp.LastKeyErrors = append([]KeyDeleteError(nil), cp.LastKeyErrors...)
+	}
+	return cp
+}
+
+func (w *Worker) recordKeyError(phase, key string, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stats.LastKeyErrors = append(w.stats.LastKeyErrors, KeyDeleteError{
+		Key:       key,
+		Phase:     phase,
+		Err:       err.Error(),
+		OccurAtRF: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (w *Worker) resetKeyErrors() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stats.LastKeyErrors = nil
+}
+
+func (w *Worker) markRun(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stats.TotalRuns++
+	w.stats.LastRunAtRF = time.Now().UTC().Format(time.RFC3339)
+	if err != nil {
+		w.stats.LastRunErr = err.Error()
+	} else {
+		w.stats.LastRunErr = ""
+	}
 }
 
 // Start はバックグラウンドゴルーチンとして廃棄チェックを定期実行する。
@@ -71,8 +142,9 @@ func (w *Worker) Start(ctx context.Context) {
 			slog.Info("expiry: ワーカー停止")
 			return
 		case <-ticker.C:
-			if err := w.runOnce(ctx); err != nil {
-				// エラーはログ出力して次回チェックまで継続（DES-001 §10 ExpiryWorker 方針）
+			err := w.runOnce(ctx)
+			w.markRun(err)
+			if err != nil {
 				slog.Error("expiry: チェック失敗", "error", err)
 			}
 		}
@@ -80,7 +152,10 @@ func (w *Worker) Start(ctx context.Context) {
 }
 
 // runOnce は TTL チェックと LRU チェックを 1 回実行する。
+// 個別 KEY 失敗は Stats.LastKeyErrors に記録され、本関数の戻り値には含まれない
+// （TTL/LRU 全体の継続性のため）。caller は Worker.Stats() で詳細を観測できる。
 func (w *Worker) runOnce(ctx context.Context) error {
+	w.resetKeyErrors()
 	if err := w.runTTL(ctx); err != nil {
 		return fmt.Errorf("expiry: TTL チェック失敗: %w", err)
 	}
@@ -104,8 +179,9 @@ func (w *Worker) runTTL(ctx context.Context) error {
 
 	for _, key := range keys {
 		if err := w.st.DeleteKey(ctx, key); err != nil {
-			// 個別の削除失敗はログ出力して継続（他の KEY を巻き込まないため）
+			// 個別の削除失敗はログ + Stats に記録して継続（silent failure 禁止）
 			slog.Error("expiry: TTL 削除失敗", "key", key, "error", err)
+			w.recordKeyError("ttl", key, err)
 			continue
 		}
 		slog.Info("expiry: TTL で KEY を削除", "key", key)
@@ -138,7 +214,9 @@ func (w *Worker) runLRU(ctx context.Context) error {
 			break
 		}
 		if err := w.st.DeleteKey(ctx, info.Key); err != nil {
+			// 個別の削除失敗はログ + Stats に記録して継続（silent failure 禁止）
 			slog.Error("expiry: LRU 削除失敗", "key", info.Key, "error", err)
+			w.recordKeyError("lru", info.Key, err)
 			continue
 		}
 		total -= info.ChunkCount

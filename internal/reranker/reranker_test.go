@@ -91,11 +91,22 @@ func TestRerank_EmptyCandidates_NoCall(t *testing.T) {
 	}
 }
 
-func TestRerank_OutOfRangeID_Error(t *testing.T) {
-	withServer(t, respondWithRanking([]rankingRow{{ID: "99", Score: 0.5}}))
+func TestRerank_OutOfRangeID_DroppedNotError(t *testing.T) {
+	// reference doc-db SKILL と同様、範囲外 id は無視して残りで処理続行（silent failure
+	// 禁止のため log warn は出るが、API として scores は返る）。
+	// 実観測: gpt-4o-mini は 30 candidates に対し id=30 を含むことがある。
+	withServer(t, respondWithRanking([]rankingRow{
+		{ID: "0", Score: 0.9},
+		{ID: "99", Score: 0.5}, // 範囲外 → 無視
+		{ID: "2", Score: 0.3},
+	}))
 	r := New(Config{APIKey: "k", Model: "x", Timeout: time.Second})
-	if _, err := r.Rerank(context.Background(), "q", cands(3)); err == nil {
-		t.Fatal("want error for out-of-range id")
+	scores, err := r.Rerank(context.Background(), "q", cands(3))
+	if err != nil {
+		t.Fatalf("out-of-range id should be dropped, not error: %v", err)
+	}
+	if scores[0] != 0.9 || scores[2] != 0.3 || scores[1] != -1.0 {
+		t.Errorf("scores = %v, want [0.9, -1.0, 0.3]", scores)
 	}
 }
 

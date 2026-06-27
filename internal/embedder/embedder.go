@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -102,6 +103,10 @@ func New(cfg Config) Embedder {
 // Embed は texts をバッチ分割して Embedding API に送り、ベクトルのスライスを返す。
 // 戻り値の vecs は texts と同じ長さであり、vecs[i] は texts[i] に対応する。
 // バッチ失敗時は該当インデックスの vecs[i] を nil にし、skipped に追加して処理を継続する（部分成功 M2）。
+//
+// silent failure 禁止方針 (feedback memory: no-silent-failure):
+// 複数バッチで失敗した場合は全てのバッチエラーを errors.Join で集約して返す。
+// v0.1.2 以前は firstErr のみ保持して 2 件目以降の error を破棄していた。
 func (e *openAIEmbedder) Embed(ctx context.Context, texts []string) ([]Vector, []int, error) {
 	if len(texts) == 0 {
 		return nil, nil, nil
@@ -109,7 +114,7 @@ func (e *openAIEmbedder) Embed(ctx context.Context, texts []string) ([]Vector, [
 
 	results := make([]Vector, len(texts)) // texts と同長: 失敗インデックスは nil のまま
 	var skipped []int
-	var firstErr error
+	var batchErrs []error
 
 	for start := 0; start < len(texts); start += e.cfg.BatchSize {
 		end := start + e.cfg.BatchSize
@@ -120,9 +125,7 @@ func (e *openAIEmbedder) Embed(ctx context.Context, texts []string) ([]Vector, [
 
 		vecs, err := e.embedBatchWithRetry(ctx, batch)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			batchErrs = append(batchErrs, fmt.Errorf("batch [%d,%d): %w", start, end, err))
 			// 部分成功方針（M2）: 失敗バッチのインデックスを skipped に記録して処理継続
 			for i := start; i < end; i++ {
 				skipped = append(skipped, i)
@@ -135,7 +138,7 @@ func (e *openAIEmbedder) Embed(ctx context.Context, texts []string) ([]Vector, [
 		}
 	}
 
-	return results, skipped, firstErr
+	return results, skipped, errors.Join(batchErrs...)
 }
 
 // embedBatchWithRetry は 1 バッチに対して指数バックオフリトライを行う。

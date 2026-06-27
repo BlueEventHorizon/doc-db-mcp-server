@@ -9,6 +9,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"regexp"
 	"sort"
@@ -58,9 +59,14 @@ type StageStats struct {
 }
 
 // Output は Pipeline.Run の戻り値。
+//
+// Warnings: 致命的でない異常（Rerank API 失敗→RRF フォールバック、EMB フォールバック発動等）を
+// caller (handler) に伝達する。silent failure 禁止方針 (no-silent-failure memory) に従い、
+// 観測可能性をログ以外の経路でも担保する。
 type Output struct {
-	Results []SearchResult
-	Stats   StageStats
+	Results  []SearchResult
+	Stats    StageStats
+	Warnings []string
 }
 
 // -----------------------------------------------------------------------
@@ -167,6 +173,8 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 		topN = 10
 	}
 
+	var warnings []string
+
 	chunks, err := p.store.GetChunksForSearch(ctx, key, series)
 	if err != nil {
 		return Output{}, fmt.Errorf("search: load chunks: %w", err)
@@ -210,7 +218,12 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 	case ModeLex:
 		fusedOrder = lexRank
 	case ModeHybrid, ModeRerank:
-		fusedOrder, rrfScores = fuseScores(embRank, lexRank, embScores, lexScores, p.cfg)
+		var embFallback bool
+		fusedOrder, rrfScores, embFallback = fuseScores(embRank, lexRank, embScores, lexScores, p.cfg)
+		if embFallback {
+			warnings = append(warnings, fmt.Sprintf("emb fallback triggered (lex_hits=%d / emb_hits=%d < %.2f)",
+				countNonZero(lexScores), countNonZero(embScores), p.cfg.EmbFallbackLexRatio))
+		}
 	default:
 		return Output{}, fmt.Errorf("search: unknown mode %q", mode)
 	}
@@ -229,6 +242,15 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 		topCandidates := fusedOrder[:nCand]
 
 		scores, err := p.rerank(ctx, query, chunks, topCandidates)
+		if err != nil {
+			slog.Warn("rerank: API 呼び出し失敗、RRF 順にフォールバック (RR-02)",
+				"error", err, "candidates", len(topCandidates), "query", query)
+			warnings = append(warnings, fmt.Sprintf("rerank fallback to RRF: %v", err))
+		} else if len(scores) != len(topCandidates) {
+			slog.Warn("rerank: scores 件数不一致、RRF 順にフォールバック",
+				"got", len(scores), "want", len(topCandidates), "query", query)
+			warnings = append(warnings, fmt.Sprintf("rerank fallback: scores length mismatch (got %d, want %d)", len(scores), len(topCandidates)))
+		}
 		if err == nil && len(scores) == len(topCandidates) {
 			// rerank スコアを chunk index にマッピング
 			for i, ci := range topCandidates {
@@ -307,7 +329,7 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 		})
 	}
 
-	return Output{Results: results, Stats: stats}, nil
+	return Output{Results: results, Stats: stats, Warnings: warnings}, nil
 }
 
 // embedQuery はクエリテキストを 1 ベクトルに変換する。
@@ -553,16 +575,15 @@ func containsString(haystack []string, needle string) bool {
 // fuseScores は emb / lex の順位を RRF で融合する（reference doc-db SKILL hybrid_score.rrf_fuse と同方式）。
 //
 //   - EMB フォールバック: lex_score > 0 の chunk 数 / emb_score > 0 の chunk 数 が
-//     EMB_FALLBACK_LEX_RATIO (0.05) 未満なら emb only モード（CJK 言い換えクエリ等で lex が
-//     ほぼ空振りした場合、RRF のノイズを避けて emb 順をそのまま返す）
-//   - RRF 計算では lex_score > 0 の chunk のみ lex_rank に含める（reference と同方式。
-//     lex_score=0 の chunk が末尾 rank で参加すると systematic noise になるため）
+//     EMB_FALLBACK_LEX_RATIO (0.05) 未満なら emb only モード
+//   - RRF 計算では lex_score > 0 の chunk のみ lex_rank に含める
 //   - EMB top-K 保証を適用（スコア書き換え昇格方式）
 //
 // 戻り値:
 //   - order: chunks インデックスを RRF スコア降順に並べた配列
-//   - rrfScores: chunks インデックスに対応する RRF スコア（fusedOrder と並列）
-func fuseScores(embRank, lexRank []int, embScores, lexScores []float64, cfg Config) ([]int, []float64) {
+//   - rrfScores: chunks インデックスに対応する RRF スコア
+//   - embFallback: EMB フォールバックが発動した場合 true（caller が warnings に記録する用）
+func fuseScores(embRank, lexRank []int, embScores, lexScores []float64, cfg Config) ([]int, []float64, bool) {
 	embHits := countNonZero(embScores)
 	lexHits := countNonZero(lexScores)
 
@@ -575,7 +596,7 @@ func fuseScores(embRank, lexRank []int, embScores, lexScores []float64, cfg Conf
 			for _, idx := range embRank {
 				scores[idx] = embScores[idx]
 			}
-			return embRank, scores
+			return embRank, scores, true
 		}
 	}
 
@@ -608,7 +629,7 @@ func fuseScores(embRank, lexRank []int, embScores, lexScores []float64, cfg Conf
 	rrf = promoteEmbTopKByScore(order, rrf, embRank, cfg.EmbGuaranteeK)
 	order = sortIndicesByScore(rrf)
 
-	return order, rrf
+	return order, rrf, false
 }
 
 // promoteEmbTopKByScore は EMB 上位 K 件のスコアを「侵入者 (= emb top-K に
