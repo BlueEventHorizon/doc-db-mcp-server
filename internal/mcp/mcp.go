@@ -402,7 +402,7 @@ func (h *Handlers) handleDelete(
 
 // QueryInput は query の入力。
 type QueryInput struct {
-	Query  string `json:"query"`
+	Query  string `json:"query" jsonschema:"検索クエリ。自然言語の質問でも、ID/固有名詞/関数名のような literal 文字列でも可。3 signal (emb/lex/grep) が並列で処理するため、両方の性質を持つクエリ (例: 'FNC-001 の仕様') にも有効。"`
 	Key    string `json:"key" jsonschema:"検索対象の KEY。list_indexes で確認できる。"`
 	Series string `json:"series,omitempty" jsonschema:"絞り込む series。省略時は KEY 内の全 series を横断検索する。"`
 	Mode   string `json:"mode,omitempty" jsonschema:"検索方式。'all' (デフォルト、推奨) = emb+lex+grep 3 signal 並列 (PHIL-01 over-recall)。'rerank' = all + LLM ranking 最適化。'emb' = 意味類似のみ。'lex' = BM25 のみ。'grep' = literal 一致のみ (固有 ID/特殊用語向け)。'hybrid' = emb+lex RRF (legacy、grep なし)。"`

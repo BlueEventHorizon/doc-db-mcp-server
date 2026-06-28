@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-29
+
+### Fixed
+
+- `query` ツールの `query` field に jsonschema description が抜けていた問題を修正。
+  v0.1.6 の tools/list 実検証で発見。`tools/list` レスポンスで `query` field が
+  `(no description)` 状態だったのを「検索クエリ。自然言語の質問でも、ID/固有名詞/
+  関数名のような literal 文字列でも可」と明示するよう修正
+
 ## [0.1.6] - 2026-06-28
 
 ### Added (AI consumer 向けドキュメント拡充)
@@ -231,7 +240,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.7
 [0.1.6]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.6
 [0.1.5]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.5
 [0.1.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.4
