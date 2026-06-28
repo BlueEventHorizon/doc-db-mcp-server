@@ -2,9 +2,34 @@
 
 ## 概要
 
-Markdown テキストを受け取り、ハイブリッド検索（ベクトル + 語彙一致 + LLM Rerank）を提供する汎用ドキュメント MCP サーバー。
+Markdown テキストを受け取り、複数 signal の併用検索（ベクトル + 語彙一致 + 全文 GREP + 任意 LLM Rerank）を提供する汎用ドキュメント MCP サーバー。
 サーバーは Git・文書構造を知らない。クライアントがドキュメントのテキスト内容（または取得元 URL）・識別キー（KEY）・時系列キー（series）を渡し、サーバーは KEY 単位でチャンクのベクトルデータを管理する。同一内容（同一ハッシュ）のドキュメントは embedding を共有し、series タグのみを追記することで重複 Embedding を排除する。
 チームの複数メンバーが任意のドキュメントセットを共有 MCP サーバーに登録し、自然言語クエリで検索できる。
+
+## 設計思想 — 二層検索アーキテクチャ (PHIL-01)
+
+開発文書検索においては「**取りこぼし (recall miss)**」が precision 低下より致命的である。
+本サーバーは検索パイプラインの最終目的を「正解 top-N の ranking」ではなく、
+「**呼び出し側 (上位 AI agent) が本文を読み判定できるだけの候補プールを取りこぼし無く返すこと**」と
+定義する。
+
+このため検索は以下の二層構造を想定する:
+
+1. **Layer 1: 候補収集 (本サーバーの責務)**
+   - 異なる種類の取りこぼしを埋め合う 3 signal を併用する:
+     - Embedding（意味類似） — 言い換え・抽象概念に強い
+     - BM25 等の語彙検索 — トークン頻度に基づく確実性
+     - **全文 GREP（literal 一致）** — 特殊用語・固有 ID・低頻度トークンを必ず捕捉
+   - これらの signal は **互いに代替できない**。Embedding は固有 ID を散らかし、BM25 はトークナイザ境界で割れ、GREP は意味類似を解さない
+   - LLM Rerank は ranking の最適化手段であり、recall を広げるものではないことに留意
+2. **Layer 2: 内容判定 (呼び出し側 = 上位 AI agent の責務)**
+   - Layer 1 が返す候補プールに対し、本文を読んで関連性を判断する
+   - 親 Claude / SKILL / その他クライアント側で実施
+
+| ID       | 要件 |
+|----------|------|
+| PHIL-01  | サーバーは「ranking」ではなく「取りこぼしの無い候補収集」を最優先する。検索パイプラインに Embedding / BM25 / 全文 GREP の 3 signal を並列に組み込み、これらの結果を合算して呼び出し側に渡せること |
+| PHIL-02  | LLM Rerank は ranking 最適化のオプションであり、recall を広げる手段ではない。Rerank 未使用時でも上記 3 signal の併用結果が返ること |
 
 ## 前提条件
 
@@ -87,24 +112,28 @@ Markdown テキストを受け取り、ハイブリッド検索（ベクトル +
 | query | string | ✓ | 検索クエリ（自然言語、または ID・固有名詞を含むテキスト） |
 | key | string | ✓ | 検索対象の KEY |
 | series | string | - | 絞り込む時系列キー。省略時は全 series を横断検索する |
-| mode | string | - | 検索方式。`emb` / `lex` / `hybrid` / `rerank`（デフォルト: `rerank`） |
-| top_n | integer | - | 取得結果数の上限（デフォルト: 10） |
+| mode | string | - | 検索方式。`emb` / `lex` / `grep` / `hybrid` / `rerank` / `all`（デフォルト: `all`、PHIL-01 に従い全 signal を併用） |
+| top_n | integer | - | 取得結果数の上限（デフォルト: 10。`all` モードでは各 signal ごとに top_n を返すため候補プール総数は最大 3×top_n） |
 
 #### 検索処理
 
 | ID     | 要件 |
 |--------|------|
 | LEX-01 | クエリ語に基づき登録済みチャンクテキストに対して語彙一致スコアを算出する。ID パターン（例: `FNC-001`）や固有名詞の完全一致を高スコアとして扱う。詳細アルゴリズムおよびパラメータは設計書で確定 |
+| **GRP-01** | **クエリ文字列を含むチャンクを literal 一致で検出する全文 GREP signal を提供する（PHIL-01）。NFKC 正規化＋大小無視の部分一致でマッチさせ、ヒットしたチャンクを返す。スコアは出現回数に比例する単純な値とする** |
+| **GRP-02** | **GREP signal は Embedding/BM25 で取りこぼされる特殊用語・固有 ID・低頻度トークンを必ず捕捉することを目的とする。意味類似は解さない** |
 | SC-01  | Embedding スコアと語彙スコアを統合して候補をソートする。統合方式は設計書で確定 |
 | RR-01  | 統合スコア上位の候補を LLM Rerank に渡し、関連度順に並び替える。`mode=rerank` のときのみ実行する。使用モデルは設計書で確定 |
 | RR-02  | LLM Rerank が失敗した場合は Rerank をスキップし、統合スコア順の結果を返す（フォールバック） |
+| **ALL-01** | **`mode=all`（デフォルト）では Embedding / BM25 / GREP の 3 signal を並列実行し、各 signal の top_n 件を合算した候補プールを返す（PHIL-01）。重複チャンクは origin signal を全て記録した 1 件にまとめる** |
 
 #### 出力
 
 | ID         | 要件 |
 |------------|------|
-| QRY-OUT-01 | 検索結果には文書パス・見出し階層パス・チャンクテキスト・スコア・スコア内訳（embedding / lexical / rerank）・所属 series_keys を含める |
-| QRY-OUT-02 | 各検索ステージ（embedding フィルタ / lexical フィルタ / rerank）を通過した候補数と、各チャンクがどのステージで残留したかを結果に含める |
+| QRY-OUT-01 | 検索結果には文書パス・見出し階層パス・チャンクテキスト・スコア・スコア内訳（embedding / lexical / **grep** / rerank）・所属 series_keys を含める |
+| QRY-OUT-02 | 各検索ステージ（embedding / lexical / **grep** / rerank）を通過した候補数と、各チャンクがどのステージで残留したかを結果に含める |
+| **QRY-OUT-03** | **各チャンクが「どの signal でヒットしたか」を `origin_signals: [emb,lex,grep]` のような配列で明示する（PHIL-01 の二層アーキにおいて上位 AI agent が判定材料にする）** |
 
 ### FNC-004 インデックス管理
 
@@ -196,3 +225,4 @@ MCP ツールとして提供する。ツール名は TBD-008 で確定する。
 | 2026-06-19 | k2moons | documents 要素に url フィールド追加（content/url 排他）、path をドキュメント識別子として明確化 |
 | 2026-06-19 | k2moons | series パラメータ追加（upsert/delete/query）、embedding record の series_keys 共有モデル導入（DIF-01〜03）、hash フィールド追加 |
 | 2026-06-20 | k2moons | TBD-009 追加: series 廃棄ポリシーの意思決定未確定を明示 |
+| 2026-06-28 | k2moons | 設計思想「二層検索アーキ」(PHIL-01/02) と GREP signal (GRP-01/02 / ALL-01) を追加。query 出力に origin_signals 必須化 (QRY-OUT-03)。reference doc-db / Forge / DocAdvisor で実証済みの方針を本サーバーにも採用 |

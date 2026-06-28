@@ -28,8 +28,10 @@ type Mode string
 const (
 	ModeEmb    Mode = "emb"    // ベクトル検索のみ
 	ModeLex    Mode = "lex"    // 語彙検索のみ
-	ModeHybrid Mode = "hybrid" // ベクトル + 語彙の RRF 融合
-	ModeRerank Mode = "rerank" // hybrid + LLM Rerank
+	ModeGrep   Mode = "grep"   // 全文 GREP (literal 一致) のみ — DES-001 §6.4
+	ModeHybrid Mode = "hybrid" // emb + lex の RRF 融合 (grep 含まず、legacy)
+	ModeAll    Mode = "all"    // emb + lex + grep の 3 signal 並列 merge — PHIL-01 デフォルト
+	ModeRerank Mode = "rerank" // all + LLM Rerank
 )
 
 // SearchResult は 1 件の検索結果。
@@ -40,12 +42,18 @@ type SearchResult struct {
 	Score          float64
 	ScoreBreakdown ScoreBreakdown
 	SeriesKeys     []string
+	// OriginSignals はこの chunk がヒットした signal のリスト (PHIL-01 / QRY-OUT-03)。
+	// 例: ["emb", "grep"] — emb と grep の両方で見つかった
+	// mode=all/rerank で複数 signal が並行実行される場合に意味を持つ。
+	// 単一 signal モード (emb/lex/grep) では当該 signal のみが入る。
+	OriginSignals []string
 }
 
 // ScoreBreakdown はスコアの内訳（クライアントに返す）。
 type ScoreBreakdown struct {
 	Emb    float64 `json:"emb"`
 	Lex    float64 `json:"lex"`
+	Grep   float64 `json:"grep"` // 全文 GREP signal score (出現回数)
 	RRF    float64 `json:"rrf"`
 	Rerank float64 `json:"rerank"`
 }
@@ -54,7 +62,9 @@ type ScoreBreakdown struct {
 type StageStats struct {
 	EmbCandidates    int `json:"emb_candidates"`
 	LexCandidates    int `json:"lex_candidates"`
-	FusedCandidates  int `json:"fused_candidates"`
+	GrepCandidates   int `json:"grep_candidates"`   // GREP signal でヒットした候補数
+	FusedCandidates  int `json:"fused_candidates"`  // emb+lex RRF 後の候補数 (ModeHybrid のみ)
+	MergedCandidates int `json:"merged_candidates"` // 3 signal merge 後のユニーク候補数 (ModeAll/ModeRerank)
 	RerankCandidates int `json:"rerank_candidates"`
 }
 
@@ -183,10 +193,16 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 		return Output{Results: nil, Stats: StageStats{}}, nil
 	}
 
-	// emb スコア計算（lex モード以外で必要）
-	var embScores []float64 // chunks と同長
-	var embRank []int       // chunks 内の emb 降順インデックス
-	if mode != ModeLex {
+	// 各 signal の必要性を判定して並列計算する。
+	// PHIL-01: mode=all/rerank では 3 signal を全て実行 (over-recall)。
+	needEmb := mode == ModeEmb || mode == ModeHybrid || mode == ModeAll || mode == ModeRerank
+	needLex := mode == ModeLex || mode == ModeHybrid || mode == ModeAll || mode == ModeRerank
+	needGrep := mode == ModeGrep || mode == ModeAll || mode == ModeRerank
+
+	var embScores, lexScores, grepScores []float64
+	var embRank, lexRank, grepRank []int
+
+	if needEmb {
 		queryVec, err := p.embedQuery(ctx, query)
 		if err != nil {
 			return Output{}, fmt.Errorf("search: embed query: %w", err)
@@ -194,40 +210,79 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 		embScores = computeCosineScores(queryVec, chunks)
 		embRank = sortIndicesByScore(embScores)
 	}
-
-	// lex スコア計算（emb モード以外で必要）
-	var lexScores []float64
-	var lexRank []int
-	if mode != ModeEmb {
+	if needLex {
 		lexScores = computeLexScores(query, chunks, p.cfg.K1, p.cfg.B)
 		lexRank = sortIndicesByScore(lexScores)
+	}
+	if needGrep {
+		grepScores = computeGrepScores(query, chunks)
+		grepRank = sortIndicesByScore(grepScores)
 	}
 
 	// ステージ統計
 	stats := StageStats{
-		EmbCandidates: countNonZero(embScores),
-		LexCandidates: countNonZero(lexScores),
+		EmbCandidates:  countNonZero(embScores),
+		LexCandidates:  countNonZero(lexScores),
+		GrepCandidates: countNonZero(grepScores),
 	}
+
+	// 各 chunk index → origin signals のマップ (PHIL-01 / QRY-OUT-03)。
+	// 単一 signal モードでは当該 signal のみ、merge モードでは複数 signal が記録される。
+	originSignals := make(map[int][]string)
 
 	// 融合 / 単一モード選択
 	var fusedOrder []int // chunks 内インデックスを順位付き降順で並べたもの
 	var rrfScores []float64
 	switch mode {
 	case ModeEmb:
+		// reference doc-db SKILL に合わせ、emb は全 chunk を cos 降順で返す (negative も含む)。
+		// cos<=0 もユーザーが「emb モード」を明示している以上は判断材料として残す。
 		fusedOrder = embRank
+		for _, idx := range fusedOrder {
+			originSignals[idx] = []string{"emb"}
+		}
 	case ModeLex:
-		fusedOrder = lexRank
-	case ModeHybrid, ModeRerank:
+		// lex は score>0 のみ (reference lexical_search.py:84)。
+		fusedOrder = filterPositiveRank(lexRank, lexScores)
+		for _, idx := range fusedOrder {
+			originSignals[idx] = []string{"lex"}
+		}
+	case ModeGrep:
+		// grep は score>0 のみ (literal 一致が無い chunk を返す意味はない)。
+		fusedOrder = filterPositiveRank(grepRank, grepScores)
+		for _, idx := range fusedOrder {
+			originSignals[idx] = []string{"grep"}
+		}
+	case ModeHybrid:
 		var embFallback bool
 		fusedOrder, rrfScores, embFallback = fuseScores(embRank, lexRank, embScores, lexScores, p.cfg)
 		if embFallback {
 			warnings = append(warnings, fmt.Sprintf("emb fallback triggered (lex_hits=%d / emb_hits=%d < %.2f)",
 				countNonZero(lexScores), countNonZero(embScores), p.cfg.EmbFallbackLexRatio))
 		}
+		stats.FusedCandidates = len(fusedOrder)
+		// hybrid では emb と lex の組み合わせ。各 chunk の score 内訳から signals を導出。
+		for _, idx := range fusedOrder {
+			var sigs []string
+			if idx < len(embScores) && embScores[idx] > 0 {
+				sigs = append(sigs, "emb")
+			}
+			if idx < len(lexScores) && lexScores[idx] > 0 {
+				sigs = append(sigs, "lex")
+			}
+			originSignals[idx] = sigs
+		}
+	case ModeAll, ModeRerank:
+		// PHIL-01: 3 signal merge。各 signal の top max(topN, MAX) を合算 + grep 全件。
+		fusedOrder, originSignals = mergeThreeSignals(
+			embRank, lexRank, grepRank,
+			embScores, lexScores, grepScores,
+			topN, maxRerankCandidates,
+		)
+		stats.MergedCandidates = len(fusedOrder)
 	default:
 		return Output{}, fmt.Errorf("search: unknown mode %q", mode)
 	}
-	stats.FusedCandidates = len(fusedOrder)
 
 	// Rerank（mode=rerank のみ）
 	// reranker が未注入、または API 呼び出しが失敗した場合は RRF 順をそのまま使う（RR-02）。
@@ -296,13 +351,16 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 	for _, idx := range fusedOrder[:resultCount] {
 		c := chunks[idx]
 		var (
-			embS, lexS, rrfS, rerankS float64
+			embS, lexS, grepS, rrfS, rerankS float64
 		)
 		if embScores != nil {
 			embS = embScores[idx]
 		}
 		if lexScores != nil {
 			lexS = lexScores[idx]
+		}
+		if grepScores != nil {
+			grepS = grepScores[idx]
 		}
 		if rrfScores != nil {
 			rrfS = rrfScores[idx]
@@ -318,10 +376,12 @@ func (p *Pipeline) Run(ctx context.Context, key, series, query string, mode Mode
 			Path:        c.Path,
 			HeadingPath: c.HeadingPath,
 			Text:        c.Text,
-			Score:       primaryScore(mode, embS, lexS, rrfS, rerankS),
+			Score:       primaryScore(mode, embS, lexS, grepS, rrfS, rerankS),
+			OriginSignals: originSignals[idx],
 			ScoreBreakdown: ScoreBreakdown{
 				Emb:    embS,
 				Lex:    lexS,
+				Grep:   grepS,
 				RRF:    rrfS,
 				Rerank: rerankS,
 			},
@@ -395,7 +455,8 @@ func chooseRerankCandidateCount(fusedLen, topN, factor int) int {
 }
 
 // primaryScore は表示用の代表スコアを選ぶ。
-func primaryScore(mode Mode, emb, lex, rrf, rerank float64) float64 {
+// rerank が適用された候補は LLM の score を優先。それ以外は mode に応じた signal score。
+func primaryScore(mode Mode, emb, lex, grep, rrf, rerank float64) float64 {
 	if rerank > 0 {
 		return rerank
 	}
@@ -404,6 +465,19 @@ func primaryScore(mode Mode, emb, lex, rrf, rerank float64) float64 {
 		return emb
 	case ModeLex:
 		return lex
+	case ModeGrep:
+		return grep
+	case ModeAll:
+		// mode=all では複数 signal の最大値を代表として返す
+		// (PHIL-01 の二層アーキで「強い signal で見つかった」順位付けの目安)
+		s := emb
+		if lex > s {
+			s = lex
+		}
+		if grep > s {
+			s = grep
+		}
+		return s
 	default:
 		return rrf
 	}
@@ -768,4 +842,105 @@ func maxLen[T any](a, b []T) int {
 		return len(a)
 	}
 	return len(b)
+}
+
+// filterPositiveRank は rank 配列を score > 0 の chunk のみに絞り込む。
+// 単一 signal モード (emb / lex / grep) で「ヒットしなかった chunk」を結果から除外する用途。
+func filterPositiveRank(rank []int, scores []float64) []int {
+	out := make([]int, 0, len(rank))
+	for _, idx := range rank {
+		if idx >= 0 && idx < len(scores) && scores[idx] > 0 {
+			out = append(out, idx)
+		}
+	}
+	return out
+}
+
+// mergeThreeSignals は emb / lex / grep の 3 signal を合算した候補プールを返す
+// （DES-001 §6.5 / PHIL-01）。
+//
+// 戦略:
+//   - emb と lex は top max(topN, perSignalCap) 件を採用（recall を広げる）
+//   - grep はヒット全件採用（literal 一致は元々件数が少ないため絞らない）
+//   - chunk index 単位で重複を排除し、各 chunk の origin_signals を記録
+//   - ソートキー: (signal hit 数 降順, emb_score 降順, chunk index 昇順)
+//     → 複数 signal で見つかった chunk を上位に集約
+//
+// 戻り値:
+//   - order: 合算後の chunk index リスト (上位ほど multi-signal hit & 高 emb_score)
+//   - signals: chunk index → origin_signals マップ
+func mergeThreeSignals(
+	embRank, lexRank, grepRank []int,
+	embScores, lexScores, grepScores []float64,
+	topN, perSignalCap int,
+) ([]int, map[int][]string) {
+	cap := perSignalCap
+	if topN > cap {
+		cap = topN
+	}
+
+	signals := make(map[int][]string)
+	addSignal := func(idx int, sig string) {
+		signals[idx] = append(signals[idx], sig)
+	}
+
+	// emb top K (score > 0 のみ)
+	{
+		n := 0
+		for _, idx := range embRank {
+			if idx < 0 || idx >= len(embScores) || embScores[idx] <= 0 {
+				continue
+			}
+			addSignal(idx, "emb")
+			n++
+			if n >= cap {
+				break
+			}
+		}
+	}
+	// lex top K (score > 0 のみ)
+	{
+		n := 0
+		for _, idx := range lexRank {
+			if idx < 0 || idx >= len(lexScores) || lexScores[idx] <= 0 {
+				continue
+			}
+			addSignal(idx, "lex")
+			n++
+			if n >= cap {
+				break
+			}
+		}
+	}
+	// grep 全件 (score > 0)。reference doc-db SKILL の方針: literal 一致は希少なため全件採用。
+	for _, idx := range grepRank {
+		if idx < 0 || idx >= len(grepScores) || grepScores[idx] <= 0 {
+			continue
+		}
+		addSignal(idx, "grep")
+	}
+
+	// 順序付き出力 (signal count, emb_score, index でソート)
+	order := make([]int, 0, len(signals))
+	for idx := range signals {
+		order = append(order, idx)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		ci, cj := len(signals[order[i]]), len(signals[order[j]])
+		if ci != cj {
+			return ci > cj
+		}
+		ei, ej := 0.0, 0.0
+		if order[i] < len(embScores) {
+			ei = embScores[order[i]]
+		}
+		if order[j] < len(embScores) {
+			ej = embScores[order[j]]
+		}
+		if ei != ej {
+			return ei > ej
+		}
+		return order[i] < order[j]
+	})
+	return order, signals
 }

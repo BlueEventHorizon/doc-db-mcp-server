@@ -324,16 +324,22 @@ type QueryInput struct {
 	Query  string `json:"query"`
 	Key    string `json:"key"`
 	Series string `json:"series,omitempty"`
-	Mode   string `json:"mode,omitempty"`  // emb / lex / hybrid / rerank (default: rerank)
-	TopN   int    `json:"top_n,omitempty"` // default 10
+	// Mode は検索方式。emb / lex / grep / hybrid / all / rerank。
+	// デフォルトは "all" (PHIL-01: 3 signal 並列 over-recall)。
+	Mode string `json:"mode,omitempty"`
+	TopN int    `json:"top_n,omitempty"` // default 10
 }
 
-// QueryHit は検索結果 1 件（QRY-OUT-01）。
+// QueryHit は検索結果 1 件（QRY-OUT-01 / QRY-OUT-03）。
 type QueryHit struct {
-	Path           string                `json:"path"`
-	HeadingPath    string                `json:"heading_path"`
-	Text           string                `json:"text"`
-	Score          float64               `json:"score"`
+	Path        string `json:"path"`
+	HeadingPath string `json:"heading_path"`
+	Text        string `json:"text"`
+	Score       float64 `json:"score"`
+	// OriginSignals は chunk がヒットした signal リスト (PHIL-01 / QRY-OUT-03)。
+	// 例: ["emb", "grep"]。上位 AI agent が「複数 signal で見つかった信頼度の高い候補」を
+	// 識別する材料として使う。
+	OriginSignals  []string              `json:"origin_signals,omitempty"`
 	ScoreBreakdown search.ScoreBreakdown `json:"score_breakdown"`
 	SeriesKeys     []string              `json:"series_keys"`
 }
@@ -356,7 +362,9 @@ func (h *Handlers) handleQuery(
 	}
 	mode := search.Mode(in.Mode)
 	if mode == "" {
-		mode = search.ModeRerank
+		// PHIL-01: デフォルトは all (3 signal 並列 over-recall)。
+		// v0.1.4 以前は rerank がデフォルトだったが PHIL-01/02 に従い変更。
+		mode = search.ModeAll
 	}
 	if in.TopN <= 0 {
 		in.TopN = 10
@@ -396,6 +404,7 @@ func (h *Handlers) handleQuery(
 			HeadingPath:    r.HeadingPath,
 			Text:           r.Text,
 			Score:          r.Score,
+			OriginSignals:  r.OriginSignals,
 			ScoreBreakdown: r.ScoreBreakdown,
 			SeriesKeys:     r.SeriesKeys,
 		}

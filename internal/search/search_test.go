@@ -391,6 +391,139 @@ func TestRun_TopNCappedToAvailable(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
+// GREP signal + mode=all (PHIL-01 / DES-001 §6.4 / §6.5)
+// -----------------------------------------------------------------------
+
+func TestComputeGrepScores_BasicHit(t *testing.T) {
+	chunks := []store.Chunk{
+		{Text: "FNC-001 仕様の説明"},
+		{Text: "別の章 — FNC-001 は ここでも 出てくる FNC-001"},
+		{Text: "全く関係ない章"},
+	}
+	scores := computeGrepScores("FNC-001", chunks)
+	if len(scores) != 3 {
+		t.Fatalf("scores len = %d", len(scores))
+	}
+	if scores[0] != 1 {
+		t.Errorf("chunks[0] score = %v, want 1", scores[0])
+	}
+	if scores[1] != 2 {
+		t.Errorf("chunks[1] score = %v, want 2 (出現回数)", scores[1])
+	}
+	if scores[2] != 0 {
+		t.Errorf("chunks[2] score = %v, want 0 (hit なし)", scores[2])
+	}
+}
+
+func TestComputeGrepScores_NFKCAndLowerCase(t *testing.T) {
+	// "FNC-001" (NFKC normalized) と body の全角 "ＦＮＣ-001" は同一視されるべき。
+	chunks := []store.Chunk{{Text: "ＦＮＣ-001 全角識別子"}}
+	scores := computeGrepScores("FNC-001", chunks)
+	if scores[0] == 0 {
+		t.Errorf("NFKC 正規化で全角→半角の literal 一致が成立すべき: scores=%v", scores)
+	}
+}
+
+func TestComputeGrepScores_EmptyQuery(t *testing.T) {
+	chunks := []store.Chunk{{Text: "anything"}}
+	scores := computeGrepScores("", chunks)
+	if scores[0] != 0 {
+		t.Errorf("empty query → all score=0: scores=%v", scores)
+	}
+}
+
+func TestRun_GrepMode(t *testing.T) {
+	chunks := []store.Chunk{
+		makeChunk(1, "a", "DIF-03 を含む", nil),
+		makeChunk(2, "b", "DIF-03 が 2 回 — DIF-03", nil),
+		makeChunk(3, "c", "関係ない章", nil),
+	}
+	p := New(&mockStore{chunks: chunks}, &mockEmbedder{queryVec: []float32{1, 0, 0}}, nil, Config{})
+
+	out, err := p.Run(context.Background(), "K", "", "DIF-03", ModeGrep, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// hit なしの chunk[2] は除外され、2 件のみ
+	if len(out.Results) != 2 {
+		t.Fatalf("len = %d, want 2 (hit のみ)", len(out.Results))
+	}
+	if out.Results[0].Path != "b" {
+		t.Errorf("top = %q, want b (出現回数 2 で上位)", out.Results[0].Path)
+	}
+	// stats.GrepCandidates
+	if out.Stats.GrepCandidates != 2 {
+		t.Errorf("GrepCandidates = %d, want 2", out.Stats.GrepCandidates)
+	}
+	// origin_signals は ["grep"] のみ
+	for _, r := range out.Results {
+		if len(r.OriginSignals) != 1 || r.OriginSignals[0] != "grep" {
+			t.Errorf("origin_signals = %v, want [grep]", r.OriginSignals)
+		}
+	}
+}
+
+func TestRun_AllMode_MergesThreeSignals(t *testing.T) {
+	chunks := []store.Chunk{
+		makeChunk(1, "a", "FNC-001 説明", []float32{1, 0, 0}),       // emb top + grep hit
+		makeChunk(2, "b", "別の章 関係ない", []float32{0.8, 0.2, 0}), // emb のみ
+		makeChunk(3, "c", "FNC-001 が再登場", []float32{0, 1, 0}),    // grep のみ
+	}
+	p := New(&mockStore{chunks: chunks}, &mockEmbedder{queryVec: []float32{1, 0, 0}}, nil, Config{})
+
+	out, err := p.Run(context.Background(), "K", "", "FNC-001", ModeAll, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 全 3 chunk が候補プールに含まれる
+	if len(out.Results) != 3 {
+		t.Fatalf("len = %d, want 3 (all merge)", len(out.Results))
+	}
+	// chunks[0] は emb + lex + grep 3 signal でヒット → 最上位
+	top := out.Results[0]
+	if top.Path != "a" {
+		t.Errorf("top.Path = %q, want a (multi-signal hit)", top.Path)
+	}
+	if len(top.OriginSignals) < 2 {
+		t.Errorf("top.OriginSignals = %v, want multi-signal", top.OriginSignals)
+	}
+	// stats
+	if out.Stats.MergedCandidates != 3 {
+		t.Errorf("MergedCandidates = %d, want 3", out.Stats.MergedCandidates)
+	}
+	if out.Stats.GrepCandidates == 0 {
+		t.Errorf("GrepCandidates = 0, want > 0")
+	}
+}
+
+func TestMergeThreeSignals_OriginSignalsRecorded(t *testing.T) {
+	embScores := []float64{0.9, 0.5, 0}    // emb hit: chunk 0, 1
+	lexScores := []float64{0.7, 0, 0}      // lex hit: chunk 0
+	grepScores := []float64{0, 0, 3}       // grep hit: chunk 2
+	embRank := sortIndicesByScore(embScores)
+	lexRank := sortIndicesByScore(lexScores)
+	grepRank := sortIndicesByScore(grepScores)
+
+	order, signals := mergeThreeSignals(embRank, lexRank, grepRank,
+		embScores, lexScores, grepScores, 5, 30)
+
+	if len(order) != 3 {
+		t.Fatalf("merged order len = %d, want 3", len(order))
+	}
+	// chunk 0 は emb + lex (2 signal hit) → 最上位
+	if order[0] != 0 {
+		t.Errorf("order[0] = %d, want 0 (2-signal hit)", order[0])
+	}
+	if want := []string{"emb", "lex"}; len(signals[0]) != 2 ||
+		signals[0][0] != want[0] || signals[0][1] != want[1] {
+		t.Errorf("signals[0] = %v, want %v", signals[0], want)
+	}
+	if got := signals[2]; len(got) != 1 || got[0] != "grep" {
+		t.Errorf("signals[2] = %v, want [grep]", got)
+	}
+}
+
+// -----------------------------------------------------------------------
 // applyDefaults
 // -----------------------------------------------------------------------
 

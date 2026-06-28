@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-28
+
+### Added (PHIL-01 二層検索アーキ + 全文 GREP signal)
+
+ユーザー指摘「文書検索では取りこぼし回避が最重要、Forge/DocAdvisor は Embedding + BM25 +
+GREP の併用で over-recall して AI agent に判定を委ねる」を受け、本サーバーにも 3 signal
+並列検索を導入。APP-001 / DES-001 を改訂し、新規実装。
+
+- **設計書改訂** ([APP-001](docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md) / [DES-001](docs/specs/base/design/DES-001_doc_db_mcp_server_design.md)):
+  - PHIL-01: 二層検索アーキ (Layer 1=本サーバー候補収集 / Layer 2=上位 AI agent 内容判定)
+  - PHIL-02: LLM Rerank は ranking 最適化オプションであり recall を広げる手段ではない
+  - GRP-01/GRP-02: 全文 GREP signal の必須化
+  - ALL-01: `mode=all` で 3 signal 並列実行
+  - QRY-OUT-03: 各 chunk の `origin_signals: [emb,lex,grep]` を出力
+- **`internal/search/grep.go`** 新設: `computeGrepScores` (NFKC + lowercase の substring 一致、出現回数 score)
+- **`internal/search/search.go`**:
+  - `ModeGrep` / `ModeAll` 定数追加
+  - `SearchResult.OriginSignals []string` 追加
+  - `ScoreBreakdown.Grep float64` 追加
+  - `StageStats.GrepCandidates` / `MergedCandidates` 追加
+  - `mergeThreeSignals` 関数で 3 signal 合算 (signal hit 数 → emb_score → chunk index でソート)
+  - `filterPositiveRank` で lex/grep モードの score>0 絞り込み
+- **`internal/mcp/mcp.go`**:
+  - `QueryHit.OriginSignals` フィールド追加 (QRY-OUT-03)
+  - クエリ `mode` のデフォルトを `rerank` → **`all`** に変更 (PHIL-01)
+
+### Changed (Breaking)
+
+- **`query` ツールのデフォルト `mode` を `rerank` から `all` に変更**。
+  既存クライアントが `mode` 省略時、3 signal 並列実行 + GREP 結果込みの候補プールが
+  返るようになる。従来の rerank 動作が必要な場合は明示的に `mode: "rerank"` を指定。
+
+### Notes
+
+- `mode=rerank` は内部実装が「emb+lex RRF → rerank」から「3 signal merge → rerank」に
+  変更された。LLM Rerank の入力候補に GREP hit も含まれる
+- `mode=hybrid` は legacy 互換として emb+lex RRF のまま保持 (grep を含まない)
+- `score_breakdown.grep` 追加、`stage_stats.grep_candidates` / `merged_candidates` 追加
+- 全テスト pass (chunker / store / search / mcp / reranker / expiry / embedder / fetcher、race 通過)
+
 ## [0.1.4] - 2026-06-27
 
 ### Fixed (Q3/Q7 silent rerank failure 究明 + 修正)
@@ -155,7 +195,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.5
 [0.1.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.4
 [0.1.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.3
 [0.1.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.2
