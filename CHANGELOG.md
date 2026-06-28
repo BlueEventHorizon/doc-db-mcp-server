@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-28
+
+### Added (AI consumer 向けドキュメント拡充)
+
+「AI skill から呼び出して使う」観点でユーザーが指摘した不足箇所を解消。
+`tools/list` だけで AI agent が doc-db を使いこなせるよう、説明を厚くした。
+
+- **MCP tool descriptions の大幅拡充** (6 tool すべて):
+  - 概念モデル (KEY / series / path) を tool description 内に明記
+  - `query` には PHIL-01 二層アーキ・mode の使い分け・origin_signals 解釈を含める
+  - `upsert_documents` の content/url 排他・部分失敗の扱いを明記
+  - `manage_index` の TTL/max_chunks 仕様を明記
+- **jsonschema field tags の全付与**:
+  - `UpsertInput` / `UpsertDocument` / `UpsertResult` / `UpsertError`
+  - `DeleteInput` / `DeleteResult`
+  - `QueryInput` / `QueryHit` / `QueryResult`
+  - `ListIndexesResult` / `DeleteIndexInput` / `DeleteIndexResult`
+  - `ManageIndexInput` / `ManageIndexResult`
+  - `tools/list` レスポンスで全 field に `description` が含まれるようになり、
+    AI agent が input/output の意味を schema だけで理解できる
+- **`docs/AI_INTEGRATION_GUIDE.md`** 新設:
+  - 設計思想 (PHIL-01 二層アーキ・PHIL-02 Rerank の位置付け)
+  - 概念モデル (KEY 設計・series 戦略・path)
+  - 6 tool の使い分け
+  - `mode` 別の選択指針 (all/rerank/emb/lex/grep/hybrid)
+  - `origin_signals` / `stage_stats` / `warnings` の解釈
+  - 典型フロー (セットアップ/検索/branch 更新)
+  - エラー処理ベストプラクティス
+  - FAQ
+- **README.md**: ドキュメント表に AI 統合ガイドを追加 (最上位)
+
+### Notes
+
+実装ロジックの変更は無し。コードコメントの追加 + jsonschema タグ追加 + 新規ドキュメント。
+全テスト pass (go test ./... / -race)。
+
 ## [0.1.5] - 2026-06-28
 
 ### Added (PHIL-01 二層検索アーキ + 全文 GREP signal)
@@ -195,7 +231,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.6
 [0.1.5]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.5
 [0.1.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.4
 [0.1.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.3

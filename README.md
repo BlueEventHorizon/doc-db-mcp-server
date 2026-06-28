@@ -239,6 +239,7 @@ key: "myrepo"
 
 | 文書 | 内容 |
 |------|------|
+| **`docs/AI_INTEGRATION_GUIDE.md`** | **AI skill / agent から doc-db を使う開発者向け統合ガイド (PHIL-01 二層アーキ・mode の使い分け・origin_signals 解釈・典型フロー)** |
 | `docs/specs/base/requirements/APP-001` | 基本機能要件定義書 |
 | `docs/specs/base/design/DES-001` | 基本設計書（アーキテクチャ・データモデル・検索・YAML 設定方式） |
 | `docs/specs/install/requirements/APP-002` | インストール要件定義書（Homebrew 自家 tap） |
