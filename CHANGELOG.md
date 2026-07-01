@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-07-01
+
+### Added
+
+- **`upsert_documents` に `local_path` フィールド追加**。ローカル運用時にファイル本文を
+  MCP payload で送らずに、doc-db サーバー側で絶対パスから直接読み込むための経路。
+  `content` / `url` / `local_path` は排他 (exactly-one)。
+  - 安全制約: 絶対パスのみ、`..` 要素 reject、シンボリックリンク解決後の実パスも再検証、
+    10MB サイズ上限、regular file 限定
+  - MCP payload 削減の効果大 (大容量 Markdown を content で送ると 100KB+ になるが
+    local_path なら数十バイトで済む)
+- `internal/mcp/mcp.go` に `readLocalDocument` ヘルパを追加、対応するテスト 6 件追加
+  (ReadsFile / RelativePathRejected / TraversalRejected / NotFound /
+   ThreeSourcesMutuallyExclusive / ContentURL 両指定は既存維持)
+
+### Changed
+
+- `.claude/skills/{update,query}-db-{specs,rules}/scripts/resolve_docs.py` を拡張:
+  出力 JSON に `entries: [{path, local_path}, ...]` を追加 (相対 path + 絶対 local_path)
+- `.claude/skills/update-db-{specs,rules}/SKILL.md` を local_path 経路使用に更新
+  (従来の `content` 送信から切替、payload 大幅削減)
+- `docs/AI_INTEGRATION_GUIDE.md` に 3 経路 (content/url/local_path) の使い分け例を追加
+- APP-001 FNC-001 documents フィールド説明を 3 経路対応に更新 (改定履歴: 2026-07-01 エントリ)
+- DES-001 §5.2 upsert シーケンス冒頭に 3 経路の表と local_path の安全性制約を追記 (v0.6)
+
 ## [0.1.7] - 2026-06-29
 
 ### Fixed
@@ -240,7 +265,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.8
 [0.1.7]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.7
 [0.1.6]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.6
 [0.1.5]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.5

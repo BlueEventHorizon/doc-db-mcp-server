@@ -259,6 +259,18 @@ flowchart TB
 
 ### 5.2 upsert_documents シーケンス
 
+**content 取得の 3 経路 (exactly-one 排他)**:
+
+| フィールド | 取得元 | 用途 |
+|---|---|---|
+| `content` | クライアント payload | 任意のテキストを直接投入 (旧来の使い方) |
+| `url` | Fetcher が HTTP GET | リモート文書の取り込み |
+| `local_path` | doc-db が `os.ReadFile` | **ローカル運用推奨**。大容量文書を MCP payload に載せずに済む |
+
+`local_path` の安全性: 絶対パスのみ、`..` 要素禁止、シンボリックリンク解決後のパスも再検証、
+サイズ上限 10 MB、regular file 限定。`path` フィールド (search 表示用の識別子) と分離
+されており、任意の相対パスを付けられる (例: `path="docs/api.md"` / `local_path="/abs/.../api.md"`)。
+
 ```mermaid
 sequenceDiagram
     participant C as MCP クライアント
@@ -657,3 +669,4 @@ expiry:
 | 2026-06-20 | 0.3        | レビュー対応(追補): M1(ハッシュ正規化規則追加)・M2(部分 Embed 失敗方針を部分保存に確定)・§4.1(dim 検査の動作主体を明示)・§3.1(internal/mcp の embedder 依存を追記) |
 | 2026-06-24 | 0.4        | §9 を YAML 設定ファイル方式に変更（`~/.doc-db/doc-db.yaml` 固定パス・環境変数オーバーライド不採用・API キーのみ環境変数）。本文中の `DOCDB_*` 環境変数参照を設定ファイルキー参照に更新 |
 | 2026-06-28 | 0.5        | APP-001 PHIL-01/02 (二層検索アーキ) に対応: §2.1 アーキテクチャ概要に Layer 1/2 説明と更新 mermaid 図を追加。§6.4 全文 GREP signal の設計を新規追加 (substring 一致・origin_signals 記録)。§6.5 Candidate Merge を新規追加 (3 signal 合算ロジック)。§6.6 LLM Rerank を従来の §6.4 から番号変更 + PHIL-02 (Rerank は optional) を明記。§10 エラーハンドリングを silent failure 禁止方針 (memory: no-silent-failure) に整合させ Embedder の `errors.Join` / Reranker の warnings / Expiry の Stats() 公開を反映 |
+| 2026-07-01 | 0.6        | §5.2 upsert_documents シーケンス冒頭に content 取得 3 経路 (content / url / **local_path**) の表を追加。local_path はローカル運用時の payload 削減用途で、doc-db が絶対パスから直接ディスク読み込みする。安全性制約 (絶対パス必須・`..` 禁止・symlink 解決後再検証・10MB 上限・regular file 限定) を明記 |

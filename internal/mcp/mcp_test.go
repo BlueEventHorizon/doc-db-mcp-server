@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/chunker"
@@ -244,6 +246,106 @@ func TestUpsert_ContentURLBothSet_Fails(t *testing.T) {
 	}
 	if out.Failed != 1 {
 		t.Errorf("content + url 両指定は失敗、got %+v", out)
+	}
+}
+
+// -----------------------------------------------------------------------
+// local_path (v0.1.8+): サーバー側でローカルファイルを読む経路
+// -----------------------------------------------------------------------
+
+func TestUpsert_LocalPath_ReadsFile(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "sample.md")
+	if err := os.WriteFile(tmp, []byte("# H\nローカルファイルから読んだ内容"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t)
+	_, out, err := h.handlers.handleUpsert(context.Background(), nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "sample.md", LocalPath: tmp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Processed != 1 {
+		t.Fatalf("expected processed=1 via local_path, got %+v", out)
+	}
+	// 保存されたチャンクに実際の本文が含まれる
+	chunks, err := h.store.GetChunksForSearch(context.Background(), "K", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) == 0 || !strings.Contains(chunks[0].Text, "ローカルファイルから") {
+		t.Errorf("chunks should contain local file content: %v", chunks)
+	}
+}
+
+func TestUpsert_LocalPath_RelativePathRejected(t *testing.T) {
+	h := newHarness(t)
+	_, out, err := h.handlers.handleUpsert(context.Background(), nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", LocalPath: "docs/api.md"}}, // 相対パス
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Failed != 1 {
+		t.Errorf("relative path should be rejected, got %+v", out)
+	}
+}
+
+func TestUpsert_LocalPath_TraversalRejected(t *testing.T) {
+	h := newHarness(t)
+	_, out, err := h.handlers.handleUpsert(context.Background(), nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", LocalPath: "/etc/../etc/passwd"}}, // .. 含む
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Failed != 1 {
+		t.Errorf("path traversal should be rejected, got %+v", out)
+	}
+}
+
+func TestUpsert_LocalPath_NotFound(t *testing.T) {
+	h := newHarness(t)
+	_, out, err := h.handlers.handleUpsert(context.Background(), nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", LocalPath: "/tmp/nonexistent-doc-db-test-xxx.md"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Failed != 1 {
+		t.Errorf("missing file should fail, got %+v", out)
+	}
+}
+
+func TestUpsert_ThreeSourcesMutuallyExclusive(t *testing.T) {
+	h := newHarness(t)
+	// content + local_path 同時指定
+	_, out, _ := h.handlers.handleUpsert(context.Background(), nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "x", LocalPath: "/tmp/x.md"}},
+	})
+	if out.Failed != 1 {
+		t.Errorf("content + local_path 併用は failed 扱いとなるべき, got %+v", out)
+	}
+	// url + local_path 同時指定
+	_, out2, _ := h.handlers.handleUpsert(context.Background(), nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", URL: "http://x", LocalPath: "/tmp/x.md"}},
+	})
+	if out2.Failed != 1 {
+		t.Errorf("url + local_path 併用は failed 扱いとなるべき, got %+v", out2)
+	}
+	// 3 つ全部指定
+	_, out3, _ := h.handlers.handleUpsert(context.Background(), nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "x", URL: "http://x", LocalPath: "/tmp/x.md"}},
+	})
+	if out3.Failed != 1 {
+		t.Errorf("三重指定は failed 扱いとなるべき, got %+v", out3)
 	}
 }
 

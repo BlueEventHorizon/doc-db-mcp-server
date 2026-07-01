@@ -50,7 +50,7 @@ Markdown テキストを受け取り、複数 signal の併用検索（ベクト
 |-----------|-----|------|------|
 | key | string | ✓ | インデックスを識別する opaque 文字列。クライアントが自由に定義する（例: "myrepo"） |
 | series | string | ✓ | 時系列を識別する opaque 文字列。クライアントが自由に定義する（例: "main", "feature-x", "v1.2.3"）。同一 key・path で series が異なる場合、内容が同じなら embedding を共有し series_keys に追記する |
-| documents | array | ✓ | 登録するドキュメントのリスト。各要素は以下のいずれか（`content` と `url` は排他）:<br>・`{path: string, content: string, hash?: string}` — クライアントがテキストを直接送付。`hash` はコンテンツ全体の SHA-256（省略時はサーバーが算出）<br>・`{path: string, url: string}` — サーバーが URL からコンテンツを取得しハッシュを算出<br>`path` はクライアントが自由に定義するドキュメント識別子（固定フォーマットなし。例: "README.md", "src/api.md"） |
+| documents | array | ✓ | 登録するドキュメントのリスト。各要素は以下のいずれか（`content` / `url` / `local_path` は排他、exactly-one）:<br>・`{path: string, content: string, hash?: string}` — クライアントがテキストを直接送付。`hash` はコンテンツ全体の SHA-256（省略時はサーバーが算出）<br>・`{path: string, url: string}` — サーバーが URL からコンテンツを取得しハッシュを算出<br>・`{path: string, local_path: string}` — **ローカル運用時推奨**。`local_path` は絶対パスで、doc-db サーバーが直接ディスクから読む。payload 削減 (大容量ファイルを MCP で送らずに済む)。`..` やシンボリックリンク越しの相対パスは reject、10MB 上限<br>`path` はクライアントが自由に定義するドキュメント識別子（固定フォーマットなし。例: "README.md", "src/api.md"）で search 結果に表示される。`local_path` はファイル読み込み専用で保存されない |
 
 #### チャンク分割
 
@@ -226,3 +226,4 @@ MCP ツールとして提供する。ツール名は TBD-008 で確定する。
 | 2026-06-19 | k2moons | series パラメータ追加（upsert/delete/query）、embedding record の series_keys 共有モデル導入（DIF-01〜03）、hash フィールド追加 |
 | 2026-06-20 | k2moons | TBD-009 追加: series 廃棄ポリシーの意思決定未確定を明示 |
 | 2026-06-28 | k2moons | 設計思想「二層検索アーキ」(PHIL-01/02) と GREP signal (GRP-01/02 / ALL-01) を追加。query 出力に origin_signals 必須化 (QRY-OUT-03)。reference doc-db / Forge / DocAdvisor で実証済みの方針を本サーバーにも採用 |
+| 2026-07-01 | k2moons | upsert_documents の documents に `local_path` フィールドを追加 (v0.1.8)。ローカル運用時に大容量ドキュメントを content で送らずにサーバー側で直接ディスクから読める。content / url / local_path は exactly-one 排他 |
