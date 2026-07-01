@@ -8,11 +8,21 @@ Usage:
     python3 resolve_docs.py --type {rules|specs}
 
 出力 (stdout):
-    {"status":"ok", "type":"specs", "files":["docs/specs/.../a.md", ...]}
+    {"status":"ok", "type":"specs",
+     "project_root":"...", "project_name":"...", "git_branch":"main",
+     "files":[...], "entries":[{"path":..., "local_path":...}, ...], "count": N}
     {"status":"error", "message":"..."}
 
-exclude 判定は forge SKILL と同じ「パスの任意階層の bare-name マッチ」を採用
-（例: exclude=[plan] は docs/specs/xxx/plan/... を除外）。
+依存: Python 3.9+ stdlib のみ (PyYAML は使わない)。
+
+YAML parser は forge の `resolve_doc_structure.py::parse_config` (行ベース) と
+同アプローチ。`.doc_structure.yaml` v3.0 のサブセット (コメント / indent map /
+`- item` list / `[a, b]` inline list / bare & quoted 文字列) のみ扱う。
+anchor / merge / multiline scalar 等は非対応 (使われたら明示的にエラーとせず
+そのまま無視されるので、`.doc_structure.yaml` の schema は forge が保証する)。
+
+exclude 判定は「パスの任意階層の bare-name マッチ」を採用
+(例: exclude=[plan] は docs/specs/xxx/plan/... を除外)。
 """
 from __future__ import annotations
 
@@ -24,22 +34,120 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    import yaml  # type: ignore
-except ImportError:
-    print(json.dumps({
-        "status": "error",
-        "message": "pyyaml が必要です。`pip install pyyaml` でインストールしてください。",
-    }))
-    sys.exit(1)
 
+# ---------------------------------------------------------------------------
+# stdlib-only YAML parser (`.doc_structure.yaml` v3.0 サブセット)
+# forge の resolve_doc_structure.py::parse_config と互換。
+# ---------------------------------------------------------------------------
+
+def _parse_value(value: str):
+    """YAML 値をパース (文字列 / 数値 / bool / インライン配列)。"""
+    value = value.strip()
+    if not value.startswith('"') and '  #' in value:
+        value = value[: value.index('  #')].strip()
+    if value.startswith('[') and value.endswith(']'):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [item.strip().strip('"\'') for item in inner.split(',')]
+    value = value.strip('"\'')
+    if value.lower() == 'true':
+        return True
+    if value.lower() == 'false':
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _lookahead_is_list(lines, start_idx: int, parent_indent: int = 4) -> bool:
+    for i in range(start_idx, min(start_idx + 10, len(lines))):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= parent_indent:
+            break
+        if stripped.startswith('- '):
+            return True
+        if ':' in stripped:
+            return False
+    return True
+
+
+def parse_config(content: str) -> dict:
+    """.doc_structure.yaml v3.0 を行ベースで dict にパースする。"""
+    result: dict = {}
+    current_section = None
+    current_subsection = None
+    current_list = None
+    current_dict = None
+    lines = content.split('\n')
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = len(line) - len(line.lstrip())
+
+        if ':' in stripped and not stripped.startswith('- '):
+            key, _, value = stripped.partition(':')
+            key = key.strip().strip('"\'')
+            value = value.strip()
+
+            if indent == 0:
+                current_section = key
+                result[key] = {}
+                current_subsection = None
+                current_list = None
+                current_dict = None
+            elif indent == 2 and current_section:
+                current_subsection = key
+                if value:
+                    result[current_section][key] = _parse_value(value)
+                    current_list = None
+                else:
+                    if _lookahead_is_list(lines, i + 1, parent_indent=2):
+                        result[current_section][key] = []
+                        current_list = result[current_section][key]
+                    else:
+                        result[current_section][key] = {}
+                        current_list = None
+                current_dict = None
+            elif indent == 4 and current_section and current_subsection:
+                if value:
+                    result[current_section][current_subsection][key] = _parse_value(value)
+                    current_list = None
+                    current_dict = None
+                else:
+                    if _lookahead_is_list(lines, i + 1):
+                        result[current_section][current_subsection][key] = []
+                        current_list = result[current_section][current_subsection][key]
+                        current_dict = None
+                    else:
+                        result[current_section][current_subsection][key] = {}
+                        current_dict = result[current_section][current_subsection][key]
+                        current_list = None
+            elif indent == 6 and current_dict is not None:
+                current_dict[key] = _parse_value(value) if value else ''
+        elif stripped.startswith('- ') and current_list is not None:
+            item = stripped[2:].strip().strip('"\'')
+            if '  #' in item and not item.startswith('"'):
+                item = item[: item.index('  #')].strip()
+            current_list.append(item)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# doc-db 固有: git branch 検出 / 出力
+# ---------------------------------------------------------------------------
 
 def detect_git_branch(project_root: Path) -> str:
-    """現在の Git branch 名を返す。git repo 外 / detached HEAD / 実行失敗時は "main" を返す。
-
-    series として使うため、path で使えない文字 (typically slashes) はそのまま残す
-    (doc-db 側で opaque 文字列として扱われ、slash 含みでも許容される)。
-    """
+    """現在の Git branch 名を返す。git repo 外 / detached HEAD / 実行失敗時は "main"。"""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -52,7 +160,6 @@ def detect_git_branch(project_root: Path) -> str:
             return "main"
         branch = result.stdout.strip()
         if not branch or branch == "HEAD":
-            # detached HEAD 状態 → fallback
             return "main"
         return branch
     except (OSError, subprocess.TimeoutExpired):
@@ -72,8 +179,7 @@ def resolve(type_key: str, project_root: Path) -> list[str]:
             "message": f".doc_structure.yaml が {project_root} に存在しません。/forge:setup-doc-structure で生成してください。",
         }, code=2)
 
-    with open(cfg_path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg = parse_config(cfg_path.read_text(encoding="utf-8")) or {}
 
     section = cfg.get(type_key)
     if not section:
@@ -84,20 +190,16 @@ def resolve(type_key: str, project_root: Path) -> list[str]:
 
     root_dirs = section.get("root_dirs", []) or []
     patterns = section.get("patterns", {}) or {}
-    target_glob = patterns.get("target_glob", "**/*.md")
     excludes = patterns.get("exclude", []) or []
 
     files: set[str] = set()
     for root_pattern in root_dirs:
-        # root_pattern はグロブを含む可能性 (例: "docs/specs/**/design/")
-        # 末尾スラッシュを除去して glob するとディレクトリマッチ
         rp = root_pattern.rstrip("/")
         for match in glob.glob(str(project_root / rp), recursive=True):
             p = Path(match)
             if not p.exists():
                 continue
             if p.is_dir():
-                # target_glob (通常 **/*.md) で再帰列挙
                 for md in p.rglob("*.md"):
                     if md.is_file():
                         rel = md.relative_to(project_root)
@@ -106,7 +208,6 @@ def resolve(type_key: str, project_root: Path) -> list[str]:
                 rel = p.relative_to(project_root)
                 files.add(str(rel))
 
-    # exclude 適用: bare-name パスセグメント一致
     def is_excluded(rel_path: str) -> bool:
         parts = Path(rel_path).parts
         for ex in excludes:
@@ -119,8 +220,7 @@ def resolve(type_key: str, project_root: Path) -> list[str]:
                     return True
         return False
 
-    result = sorted(f for f in files if not is_excluded(f))
-    return result
+    return sorted(f for f in files if not is_excluded(f))
 
 
 def main() -> int:
@@ -140,10 +240,6 @@ def main() -> int:
             "message": f"resolve error: {e}",
         }, code=1)
 
-    # 相対パスと絶対パスの両方を返す。upsert_documents では
-    #   path       = 相対 (search 結果の表示用識別子)
-    #   local_path = 絶対 (doc-db がディスクから読む)
-    # として使い分ける。
     entries = [
         {"path": rel, "local_path": str(project_root / rel)}
         for rel in files
@@ -155,11 +251,12 @@ def main() -> int:
         "type": args.type,
         "project_root": str(project_root),
         "project_name": project_root.name,
-        "git_branch": branch,    # 現在の Git branch (upsert 時の series として使う推奨値)
-        "files": files,          # 後方互換: 相対パスのみのリスト
-        "entries": entries,      # 新: {path, local_path} オブジェクトのリスト
+        "git_branch": branch,
+        "files": files,
+        "entries": entries,
         "count": len(files),
     })
+    return 0
 
 
 if __name__ == "__main__":

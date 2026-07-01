@@ -51,6 +51,7 @@ mcp__doc-db__query({
 **Step A-3: 結果の整形**
 
 戻り値 `results[*]` から以下を抽出:
+
 - `path`
 - `origin_signals` (どの signal でヒットしたか - 複数 signal 一致は信頼度高)
 - `heading_path` (どの章か)

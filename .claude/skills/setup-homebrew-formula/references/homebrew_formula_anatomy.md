@@ -4,13 +4,13 @@
 
 ## 必須セクション
 
-| セクション | 役割 | 例 |
-|-----------|------|-----|
-| `class <Name> < Formula` | クラス定義。`Name` は PascalCase（`doc-db.rb` → `DocDb`） | `class DocDb < Formula` |
-| `desc` | 1 行説明（80 文字以内推奨） | `"Hybrid search MCP server for Markdown documents"` |
-| `homepage` | プロジェクト URL（**実リポジトリ URL を使う**） | `"https://github.com/BlueEventHorizon/doc-db-mcp-server"` |
-| `url` + `tag` + `revision` | ソース pin（次節で詳述） | git URL + 値 |
-| `license` | SPDX 識別子 | `"MIT"`、`"Apache-2.0"` |
+| セクション                 | 役割                                                      | 例                                                        |
+| -------------------------- | --------------------------------------------------------- | --------------------------------------------------------- |
+| `class <Name> < Formula`   | クラス定義。`Name` は PascalCase（`doc-db.rb` → `DocDb`） | `class DocDb < Formula`                                   |
+| `desc`                     | 1 行説明（80 文字以内推奨）                               | `"Hybrid search MCP server for Markdown documents"`       |
+| `homepage`                 | プロジェクト URL（**実リポジトリ URL を使う**）           | `"https://github.com/BlueEventHorizon/doc-db-mcp-server"` |
+| `url` + `tag` + `revision` | ソース pin（次節で詳述）                                  | git URL + 値                                              |
+| `license`                  | SPDX 識別子                                               | `"MIT"`、`"Apache-2.0"`                                   |
 
 ## url / tag / revision の三位一体
 
@@ -86,10 +86,10 @@ end
 
 ### transport 別の登録形式
 
-| transport | Claude Code 登録例 | Claude Desktop |
-|-----------|-------------------|----------------|
-| Streamable HTTP | `claude mcp add --transport http <name> http://localhost:<port>/mcp` | `{"url": "http://localhost:<port>/mcp"}` |
-| stdio (subprocess) | `claude mcp add <name> -- <binary>` | `{"command": "<absolute-path>"}` |
+| transport          | Claude Code 登録例                                                   | Claude Desktop                           |
+| ------------------ | -------------------------------------------------------------------- | ---------------------------------------- |
+| Streamable HTTP    | `claude mcp add --transport http <name> http://localhost:<port>/mcp` | `{"url": "http://localhost:<port>/mcp"}` |
+| stdio (subprocess) | `claude mcp add <name> -- <binary>`                                  | `{"command": "<absolute-path>"}`         |
 
 サーバー本体が HTTP transport なら `command` 形式は **使わない**（矛盾）。
 
@@ -118,12 +118,12 @@ end
 
 ## 命名規則
 
-| 対象 | 規則 | 例 |
-|------|------|-----|
-| Formula ファイル名 | lowercase kebab-case | `doc-db.rb`, `swift-selena.rb` |
-| Formula クラス名 | PascalCase（ハイフンは取り除く） | `DocDb`, `SwiftSelena` |
-| tap 名 | lowercase | `blueeventhorizon/doc-db` |
-| バイナリ名 | lowercase kebab-case（プロジェクト慣習に合わせる） | `doc-db`, `swift-selena` |
+| 対象               | 規則                                               | 例                             |
+| ------------------ | -------------------------------------------------- | ------------------------------ |
+| Formula ファイル名 | lowercase kebab-case                               | `doc-db.rb`, `swift-selena.rb` |
+| Formula クラス名   | PascalCase（ハイフンは取り除く）                   | `DocDb`, `SwiftSelena`         |
+| tap 名             | lowercase                                          | `blueeventhorizon/doc-db`      |
+| バイナリ名         | lowercase kebab-case（プロジェクト慣習に合わせる） | `doc-db`, `swift-selena`       |
 
 ## 参考にすべき実装
 

@@ -38,6 +38,7 @@ python3 .claude/skills/delete-db-series/scripts/resolve_docs.py --type specs
 ```
 
 出力 JSON の `project_name` を取得し、対象 2 KEY を決める:
+
 - `<project_name>-specs`
 - `<project_name>-rules`
 

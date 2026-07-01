@@ -8,13 +8,13 @@ Swift プロジェクト（SwiftPM ベース）の Homebrew Formula 化に必要
 
 ## 決定値
 
-| 項目 | 値 |
-|------|-----|
-| canonical 戦略 | B: ソースコード内の定数（例: `Sources/<name>/Constants.swift` の `static let version`） |
-| バージョン埋め込み | 不要（const をそのまま参照） |
-| ビルドコマンド | `swift build --disable-sandbox -c release -Xswiftc -Osize --product <ProductName>` |
-| Formula `depends_on` | `depends_on macos: :ventura` のみ。Swift toolchain は CLT で足りる前提 |
-| tag 形式 | プロジェクトの慣習に合わせる（Swift-Selena は `{version}` を採用） |
+| 項目                 | 値                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------- |
+| canonical 戦略       | B: ソースコード内の定数（例: `Sources/<name>/Constants.swift` の `static let version`） |
+| バージョン埋め込み   | 不要（const をそのまま参照）                                                            |
+| ビルドコマンド       | `swift build --disable-sandbox -c release -Xswiftc -Osize --product <ProductName>`      |
+| Formula `depends_on` | `depends_on macos: :ventura` のみ。Swift toolchain は CLT で足りる前提                  |
+| tag 形式             | プロジェクトの慣習に合わせる（Swift-Selena は `{version}` を採用）                      |
 
 ## Formula install メソッド例
 
@@ -81,14 +81,14 @@ canonical=$(grep -E 'static let version = ' Sources/<Name>/Constants.swift \
 targets:
   - name: <project-name>
     version_file: Sources/<Name>/Constants.swift
-    version_path: ""           # plain text 扱い（後述）
+    version_path: "" # plain text 扱い（後述）
     sync_files:
       - path: Formula/<binary>.rb
         pattern: 'tag:      "{version}"'
-        filter: 'tag:'
+        filter: "tag:"
 
 git:
-  tag_format: "{version}"       # Swift-Selena は v なし
+  tag_format: "{version}" # Swift-Selena は v なし
   commit_message: "chore: bump to {version}"
   auto_tag: false
   auto_commit: false

@@ -4,7 +4,7 @@
 MCP tool ラッパー ("mcp__doc-db__*") を経由せず、http://localhost:<port>/mcp に
 JSON-RPC で initialize → notifications/initialized → tools/call を送る。
 
-依存: Python 3.9+ stdlib のみ (yaml が無くても port 抽出は正規表現で fallback)。
+依存: Python 3.9+ stdlib のみ。
 
 サブコマンド:
     query          KEY に検索クエリを投げ、hits を JSON で stdout に返す

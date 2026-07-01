@@ -50,6 +50,7 @@ AI の判断に委ねる。
 **Step A-3: 結果の整形**
 
 戻り値 `results[*]` から以下を抽出:
+
 - `path`
 - `origin_signals` (どの signal でヒットしたか)
 - `heading_path`

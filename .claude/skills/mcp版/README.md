@@ -5,12 +5,12 @@
 [doc-db MCP サーバー](https://github.com/BlueEventHorizon/doc-db-mcp-server) になっている
 ものです。
 
-| SKILL | 目的 |
-|---|---|
-| `/update-db-specs` | `.doc_structure.yaml` の specs 対象文書を doc-db に登録 (embedding 更新) |
-| `/update-db-rules` | 同 rules 対象文書を doc-db に登録 |
-| `/query-db-specs` | specs 対象文書を doc-db で検索 (未接続時は grep フォールバック) |
-| `/query-db-rules` | rules 対象文書を doc-db で検索 (同上) |
+| SKILL                      | 目的                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `/update-db-specs`         | `.doc_structure.yaml` の specs 対象文書を doc-db に登録 (embedding 更新)        |
+| `/update-db-rules`         | 同 rules 対象文書を doc-db に登録                                               |
+| `/query-db-specs`          | specs 対象文書を doc-db で検索 (未接続時は grep フォールバック)                 |
+| `/query-db-rules`          | rules 対象文書を doc-db で検索 (同上)                                           |
 | `/delete-db-series <name>` | 指定 series (Git branch 等) を specs/rules 両 KEY から一括除去 (branch cleanup) |
 
 ## 他プロジェクトへの配布
@@ -23,6 +23,7 @@ rsync -av <src>/.claude/skills/{update,query}-db-{rules,specs}/ .claude/skills/
 ```
 
 前提:
+
 1. コピー先プロジェクトに `.doc_structure.yaml` が存在すること (`/forge:setup-doc-structure` で生成)
 2. `python3` + `pyyaml` が利用可能なこと (`pip install pyyaml` or `brew install python-yaml`)
 3. doc-db MCP サーバーがローカルに稼働 + Claude Code に登録されていること (下記手順)
@@ -56,14 +57,15 @@ claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 
 各 SKILL は以下の自動命名を採用する:
 
-- **KEY**: `<project-dir-basename>-<specs|rules>`  
+- **KEY**: `<project-dir-basename>-<specs|rules>`\
   例: `/Users/moons/data/dev/myrepo` から呼び出せば KEY は `myrepo-specs`。
   doc-db を複数プロジェクト間で共有しても KEY 衝突しない
-- **series**: `<current-git-branch>` (`git rev-parse --abbrev-ref HEAD`)  
+- **series**: `<current-git-branch>` (`git rev-parse --abbrev-ref HEAD`)\
   例: main branch なら `series="main"`、`feature/auth` なら `series="feature/auth"`。
   Git repo 外 / detached HEAD の場合は fallback `"main"`
 
 **branch 別インデックスの効果**:
+
 - 同一 path のファイルでも branch が違えば別 series として管理される
 - 同一内容 (SHA-256 一致) なら embedding は共有される (doc-db DIF-02)
 - query 側はデフォルトで series 指定なし = **KEY 内の全 branch を横断検索** (recall 優先)
@@ -87,12 +89,12 @@ doc-db から関連 chunk を取得 → 親 Claude が本文で最終判定
 
 ## トラブルシューティング
 
-| 症状 | 原因 | 対処 |
-|---|---|---|
-| `mcp__doc-db__* が見つかりません` | MCP 未登録 or Claude Code 未再起動 | 上記セットアップ手順を実施 → Claude Code 再起動 |
-| `pyyaml が必要です` | Python 環境に pyyaml 未インストール | `pip install pyyaml` |
-| `key "xxx" が存在しません` | まだ upsert していない | 先に `/update-db-{specs,rules}` を実行 |
-| `.doc_structure.yaml が存在しません` | プロジェクト初期化未完了 | `/forge:setup-doc-structure` を実行 |
+| 症状                                 | 原因                                | 対処                                            |
+| ------------------------------------ | ----------------------------------- | ----------------------------------------------- |
+| `mcp__doc-db__* が見つかりません`    | MCP 未登録 or Claude Code 未再起動  | 上記セットアップ手順を実施 → Claude Code 再起動 |
+| `pyyaml が必要です`                  | Python 環境に pyyaml 未インストール | `pip install pyyaml`                            |
+| `key "xxx" が存在しません`           | まだ upsert していない              | 先に `/update-db-{specs,rules}` を実行          |
+| `.doc_structure.yaml が存在しません` | プロジェクト初期化未完了            | `/forge:setup-doc-structure` を実行             |
 
 ## 内部設計
 

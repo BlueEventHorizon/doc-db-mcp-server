@@ -54,6 +54,7 @@ python3 .claude/skills/update-db-specs/scripts/resolve_docs.py --type specs
 ```
 
 stdout の JSON を parse:
+
 - `status: "error"` の場合は `message` を報告して終了
 - `entries` (相対 path + 絶対 local_path のオブジェクト配列) を取り出す
 - `project_name` (プロジェクト ディレクトリ名) を KEY prefix として使う
@@ -62,13 +63,13 @@ stdout の JSON を parse:
 
 ### Step 3: KEY と series の決定
 
-- **KEY**: `<project_name>-specs`  
-  例: doc-db-mcp-server プロジェクトなら `doc-db-mcp-server-specs`  
+- **KEY**: `<project_name>-specs`\
+  例: doc-db-mcp-server プロジェクトなら `doc-db-mcp-server-specs`\
   複数プロジェクトで doc-db サーバーを共有しても KEY が衝突しない
-- **series**: `<git_branch>` (Step 2 の JSON の `git_branch` 値)  
-  例: main branch なら `series="main"`、feature/auth branch なら `series="feature/auth"`  
-  Git repo 外 / detached HEAD / git 不在時は fallback `"main"` を使う  
-  **同一 path でも branch が違えば別 series として管理される**  
+- **series**: `<git_branch>` (Step 2 の JSON の `git_branch` 値)\
+  例: main branch なら `series="main"`、feature/auth branch なら `series="feature/auth"`\
+  Git repo 外 / detached HEAD / git 不在時は fallback `"main"` を使う\
+  **同一 path でも branch が違えば別 series として管理される**\
   同一内容 (SHA-256 一致) なら embedding は共有される (DIF-02)
 
 ### Step 4: local_path 経由で upsert

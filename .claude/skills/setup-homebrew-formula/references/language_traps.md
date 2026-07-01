@@ -149,10 +149,10 @@ bin.install ".build/release/Swift-Selena" => "swift-selena"
 
 **対処**: transport ごとに正しい登録形式を案内：
 
-| transport | Claude Code | Claude Desktop |
-|-----------|-------------|----------------|
-| Streamable HTTP | `claude mcp add --transport http <name> http://localhost:<port>/mcp` | `{"url": "http://..."}` |
-| stdio | `claude mcp add <name> -- <binary>` | `{"command": "<abs-path>"}` |
+| transport       | Claude Code                                                          | Claude Desktop              |
+| --------------- | -------------------------------------------------------------------- | --------------------------- |
+| Streamable HTTP | `claude mcp add --transport http <name> http://localhost:<port>/mcp` | `{"url": "http://..."}`     |
+| stdio           | `claude mcp add <name> -- <binary>`                                  | `{"command": "<abs-path>"}` |
 
 ### M-2: HTTP transport は事前起動が必要 [低]
 
