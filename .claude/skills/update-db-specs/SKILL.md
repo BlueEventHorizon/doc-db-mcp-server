@@ -119,8 +119,7 @@ warnings や errors がある場合は必ず含めて報告する (silent failur
   ファイルを削除した場合は別途 `mcp__doc-db__delete_documents` で明示削除するか、
   KEY 全体を `mcp__doc-db__delete_index` で作り直す。
 - **branch 削除時の series 撤去**: feature branch を削除した後、その series の
-  record は残り続ける。別途 `mcp__doc-db__delete_documents` の series 単位削除、
-  または `manage_index` の TTL 短縮で自然に消えるのを待つ。将来 `/delete-db-series`
-  のような専用 SKILL を追加する余地あり (YAGNI で保留)。
+  record は残り続ける。`/delete-db-series <series 名>` (v0.1.9+) で specs / rules 両
+  KEY から一括除去できる。`manage_index` の TTL 短縮で自然に消えるのを待つ選択肢もあり。
 - **KEY の TTL/max_chunks**: doc-db のデフォルト (30 days / 10000 chunks) が適用される。
   長期保持したい場合は `mcp__doc-db__manage_index` で override 可能。
