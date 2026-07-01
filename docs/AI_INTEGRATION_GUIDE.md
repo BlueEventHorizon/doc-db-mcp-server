@@ -189,17 +189,38 @@ doc-db は 6 つの MCP ツールを提供します。詳細スキーマは `too
 
 ### 5.1 初回セットアップ
 
+3 種類の投入経路 (`content` / `url` / `local_path` は排他、exactly-one)。ローカル運用なら
+**`local_path` (絶対パス) 推奨** — payload が小さくなり、大容量ドキュメントでも軽快:
+
 ```javascript
-// 1. ドキュメントを upsert
+// パターン A: local_path (ローカルファイル、payload 削減)
+await mcp.call("upsert_documents", {
+  key: "myrepo-docs",
+  series: "main",
+  documents: [
+    { path: "README.md", local_path: "/Users/me/proj/README.md" },
+    { path: "src/api.md", local_path: "/Users/me/proj/src/api.md" }
+  ]
+});
+
+// パターン B: content 直接送信 (リモート client 等、file access 不可な場合)
 await mcp.call("upsert_documents", {
   key: "myrepo-docs",
   series: "main",
   documents: [
     { path: "README.md", content: "# Project\n..." },
-    { path: "src/api.md", content: "# API\n..." }
   ]
 });
-// → { processed: 2, skipped: 0, failed: 0 }
+
+// パターン C: url 取得 (公開ドキュメントの一括取り込み)
+await mcp.call("upsert_documents", {
+  key: "external-docs",
+  series: "main",
+  documents: [
+    { path: "spec.md", url: "https://example.com/spec.md" }
+  ]
+});
+// → { processed: N, skipped: 0, failed: 0 }
 ```
 
 ### 5.2 検索 → 本文判定
