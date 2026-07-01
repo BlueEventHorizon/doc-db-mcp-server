@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-07-01
+
+### Added
+
+- **新 MCP tool `delete_series`** (APP-001 DEL-03): KEY 内の全 record から指定 series を
+  一括除去する。branch cleanup 用途:
+  - `Store.DeleteSeriesAll(ctx, key, series) (removed, updated int, err error)` 実装
+  - series 除去後 series_keys が空になった record は物理削除 (removed カウント)
+  - 他 series が残る record は保持 (updated カウント)
+  - 存在しない series を指定してもエラーにならない (no-op)
+- **`/delete-db-series <name>` SKILL** 新設 (`.claude/skills/delete-db-series/`):
+  - 引数の series を specs / rules 両 KEY から一括除去
+  - 現在 checkout 中の branch を指定した場合は警告
+  - `git rev-parse --abbrev-ref HEAD` の結果と比較して安全確認
+- Store テスト 2 件 + MCP handler テスト 3 件追加
+
+### Changed
+
+- `.claude/skills/README.md` に `/delete-db-series` を追加
+- APP-001 FNC-002 タイトルを `delete_documents / delete_series` に更新、DEL-03 追加
+- `Register` コメントを「MCP ツール 6 種」→「7 種」に更新
+
 ## [0.1.8] - 2026-07-01
 
 ### Added
@@ -265,7 +287,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.9
 [0.1.8]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.8
 [0.1.7]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.7
 [0.1.6]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.6

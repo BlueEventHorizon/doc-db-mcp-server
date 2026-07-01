@@ -82,7 +82,7 @@ Markdown テキストを受け取り、複数 signal の併用検索（ベクト
 | UPS-OUT-01 | 処理結果として以下を返す: 処理したドキュメント数・スキップしたドキュメント数・失敗したドキュメント数・失敗したドキュメントのパスとエラー内容 |
 | UPS-OUT-02 | 一部ドキュメントの Embedding が失敗した場合も処理を継続し、失敗情報を結果に含めて返す |
 
-### FNC-002 ドキュメント削除（delete_documents）
+### FNC-002 ドキュメント削除（delete_documents / delete_series）
 
 指定 KEY から特定ドキュメントを削除する MCP ツールを提供する。
 
@@ -100,6 +100,7 @@ Markdown テキストを受け取り、複数 signal の併用検索（ベクト
 |--------|------|
 | DEL-01 | 指定 series を、指定 paths に対応する embedding record の series_keys から削除する。series_keys が空になった record のチャンクおよびベクトルデータを物理削除する |
 | DEL-02 | 存在しないパスが指定された場合はそのパスをスキップし、処理結果に警告として含める |
+| **DEL-03** | **KEY 内の全 record から指定 series を一括除去する MCP ツール `delete_series` を提供する (v0.1.9)。branch cleanup 等で「path を列挙せずに series 全体を消したい」ユースケース向け。戻り値は removed_records (物理削除された record 数) と updated_records (他 series が残り保持された record 数)。存在しない series を指定してもエラーにならない (no-op)** |
 
 ### FNC-003 ドキュメント検索（query）
 
@@ -227,3 +228,4 @@ MCP ツールとして提供する。ツール名は TBD-008 で確定する。
 | 2026-06-20 | k2moons | TBD-009 追加: series 廃棄ポリシーの意思決定未確定を明示 |
 | 2026-06-28 | k2moons | 設計思想「二層検索アーキ」(PHIL-01/02) と GREP signal (GRP-01/02 / ALL-01) を追加。query 出力に origin_signals 必須化 (QRY-OUT-03)。reference doc-db / Forge / DocAdvisor で実証済みの方針を本サーバーにも採用 |
 | 2026-07-01 | k2moons | upsert_documents の documents に `local_path` フィールドを追加 (v0.1.8)。ローカル運用時に大容量ドキュメントを content で送らずにサーバー側で直接ディスクから読める。content / url / local_path は exactly-one 排他 |
+| 2026-07-01 | k2moons | FNC-002 に DEL-03 追加 (v0.1.9)。`delete_series` MCP ツール: KEY 内の全 record から指定 series を一括除去。branch cleanup 用途。`/delete-db-series` SKILL のバックエンド |

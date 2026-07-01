@@ -445,6 +445,98 @@ func TestDeleteSeries_RemovesAndPrunes(t *testing.T) {
 	}
 }
 
+func TestDeleteSeriesAll_MixedRemoveAndUpdate(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// path a: series [main, feature-x]
+	recA, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "a", ContentHash: "h_a", Series: "main",
+		Chunks: makeChunks("x"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendSeries(ctx, recA, "feature-x"); err != nil {
+		t.Fatal(err)
+	}
+
+	// path b: series [feature-x] のみ
+	recB, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "b", ContentHash: "h_b", Series: "feature-x",
+		Chunks: makeChunks("y"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// path c: series [main] のみ (feature-x を持たない)
+	if _, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "c", ContentHash: "h_c", Series: "main",
+		Chunks: makeChunks("z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// feature-x を全削除
+	removed, updated, err := s.DeleteSeriesAll(ctx, "K", "feature-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// path a: main が残るので保持 (updated=1)
+	// path b: series が空になるので物理削除 (removed=1)
+	// path c: feature-x 未保有なので触られない
+	if removed != 1 || updated != 1 {
+		t.Errorf("removed=%d, updated=%d, want removed=1, updated=1", removed, updated)
+	}
+
+	// path a はまだ存在 (main が残っている)
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM records WHERE id=?`, recA).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("path a should remain (main still attached), count=%d", n)
+	}
+	// path b は物理削除
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM records WHERE id=?`, recB).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("path b should be pruned, count=%d", n)
+	}
+	// path a に feature-x は残っていない
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM series_keys WHERE record_id=? AND series=?`,
+		recA, "feature-x").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("feature-x should be removed from path a, count=%d", n)
+	}
+}
+
+func TestDeleteSeriesAll_NonExistentSeries_Noop(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "a", ContentHash: "h_a", Series: "main",
+		Chunks: makeChunks("x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 存在しない series を削除 → エラー無し、0 件処理
+	removed, updated, err := s.DeleteSeriesAll(ctx, "K", "nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 || updated != 0 {
+		t.Errorf("nonexistent series: removed=%d, updated=%d, want both 0", removed, updated)
+	}
+}
+
 func TestDeleteKey_RemovesEverything(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

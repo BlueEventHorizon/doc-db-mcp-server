@@ -57,7 +57,7 @@ func New(
 	}
 }
 
-// Register は MCP ツール 6 種を MCP サーバーに登録する（FNC-001/002/003/004）。
+// Register は MCP ツール 7 種を MCP サーバーに登録する（FNC-001/002/003/004 + delete_series）。
 //
 // 各ツールの description は AI consumer (skill / agent) が tools/list だけで
 // 使い方を理解できる粒度で記述する。概念モデル (KEY/series)、いつ使うか、
@@ -109,6 +109,28 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
 
 存在しない path はスキップされ警告として返る (致命的でない)。`,
 	}, h.handleDelete)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "delete_series",
+		Description: `指定 KEY 内の全 record から指定 series を除去する (branch cleanup 用途)。
+
+【動作】
+  - KEY 内で当該 series を含む全 record を走査
+  - 各 record の series_keys から指定 series を除去
+  - series_keys が空になった record はチャンク・ベクトル共に物理削除
+  - 他 series が残る record は保持したまま series のみ剥がす
+
+【delete_documents との違い】
+  - delete_documents: 特定 path 群から series を除去 (paths[] が必須)
+  - delete_series: KEY 全体から series を除去 (paths 不要)
+
+【典型ユースケース】
+  - Git feature branch を削除した後の cleanup
+    (例: /delete-db-series myproj-specs feature/auth)
+  - 古いバージョンタグの掃除
+
+存在しない series を指定してもエラーにならない (removed=0, updated=0 を返す)。`,
+	}, h.handleDeleteSeries)
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "query",
@@ -424,6 +446,35 @@ func (h *Handlers) handleDelete(
 	}
 
 	return nil, DeleteResult{Deleted: len(existing), Warnings: warnings}, nil
+}
+
+// -----------------------------------------------------------------------
+// delete_series (branch cleanup)
+// -----------------------------------------------------------------------
+
+// DeleteSeriesInput は delete_series の入力。
+type DeleteSeriesInput struct {
+	Key    string `json:"key" jsonschema:"対象インデックスの KEY。"`
+	Series string `json:"series" jsonschema:"除去する series 名。この KEY 内の全 record から当該 series を剥がす。存在しない series を指定してもエラーにならない (no-op)。"`
+}
+
+// DeleteSeriesResult は delete_series の出力。
+type DeleteSeriesResult struct {
+	RemovedRecords int `json:"removed_records" jsonschema:"series 除去後 series_keys が空になり物理削除された record 数 (チャンク・ベクトル含む)。"`
+	UpdatedRecords int `json:"updated_records" jsonschema:"series が除去されたが他 series が残っているため保持された record 数。"`
+}
+
+func (h *Handlers) handleDeleteSeries(
+	ctx context.Context, _ *mcpsdk.CallToolRequest, in DeleteSeriesInput,
+) (*mcpsdk.CallToolResult, DeleteSeriesResult, error) {
+	if in.Key == "" || in.Series == "" {
+		return nil, DeleteSeriesResult{}, errors.New("key / series は必須")
+	}
+	removed, updated, err := h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
+	if err != nil {
+		return nil, DeleteSeriesResult{}, fmt.Errorf("delete_series: %w", err)
+	}
+	return nil, DeleteSeriesResult{RemovedRecords: removed, UpdatedRecords: updated}, nil
 }
 
 // -----------------------------------------------------------------------

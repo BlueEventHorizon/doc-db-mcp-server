@@ -729,6 +729,87 @@ func (s *Store) DeleteSeries(ctx context.Context, key, series string, paths []st
 	return nil
 }
 
+// DeleteSeriesAll は指定 KEY 内の全 record から指定 series を除去する（branch cleanup 等）。
+// series_keys が空になった record はチャンク・ベクトル共に物理削除する。
+// 他 series が残る record は保持したまま series のみ剥がす。
+//
+// 戻り値:
+//   - removedRecords: series 除去後に空になり物理削除された record 数
+//   - updatedRecords: series が除去されたが他 series が残り保持された record 数
+//
+// DES-001 §6.2 の原子性要件を満たすため、削除ループ全体を単一トランザクションで実行する。
+// Mutex を取得して直列化する。
+func (s *Store) DeleteSeriesAll(ctx context.Context, key, series string) (removedRecords, updatedRecords int, retErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store.DeleteSeriesAll: begin tx: %w", err)
+	}
+	defer rollbackErrInto(tx, &retErr)
+
+	// KEY 内で当該 series を持つ record 一覧を取得
+	rows, err := tx.QueryContext(ctx,
+		`SELECT DISTINCT r.id
+         FROM records r
+         JOIN series_keys sk ON sk.record_id = r.id
+         WHERE r.key = ? AND sk.series = ?`,
+		key, series,
+	)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store.DeleteSeriesAll: list records: %w", err)
+	}
+	var recordIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		recordIDs = append(recordIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	for _, rid := range recordIDs {
+		// series を除去
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM series_keys WHERE record_id=? AND series=?`, rid, series,
+		); err != nil {
+			return 0, 0, fmt.Errorf("store.DeleteSeriesAll: remove series: %w", err)
+		}
+		// series_keys が空なら record 物理削除、そうでなければ保持
+		var cnt int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM series_keys WHERE record_id=?`, rid,
+		).Scan(&cnt); err != nil {
+			return 0, 0, fmt.Errorf("store.DeleteSeriesAll: count series: %w", err)
+		}
+		if cnt == 0 {
+			if err := s.deleteRecordWithBM25Tx(ctx, tx, rid); err != nil {
+				return 0, 0, err
+			}
+			removedRecords++
+		} else {
+			updatedRecords++
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("store.DeleteSeriesAll: commit: %w", err)
+	}
+
+	// doc_count を更新
+	if err := s.updateDocCountLocked(ctx, key); err != nil {
+		return removedRecords, updatedRecords, err
+	}
+
+	return removedRecords, updatedRecords, nil
+}
+
 // DeleteKey は指定 KEY のすべてのデータを削除する（MNG-02 対応）。
 // DES-001 §6.2 の原子性要件を満たすため、全操作を単一トランザクションで実行する。
 // Mutex を取得して直列化する。

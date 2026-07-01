@@ -495,6 +495,97 @@ func TestDelete_ValidationErrors(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
+// delete_series (branch cleanup, v0.1.9+)
+// -----------------------------------------------------------------------
+
+func TestDeleteSeries_RemovesFromMultiplePaths(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// main と feature-x に登録された 3 path 構成:
+	//   a: main + feature-x
+	//   b: feature-x のみ
+	//   c: main のみ
+	upsert := func(path, content, series string) {
+		_, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+			Key: "K", Series: series,
+			Documents: []UpsertDocument{{Path: path, Content: content}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	upsert("a", "# A\naaa", "main")
+	upsert("a", "# A\naaa", "feature-x") // 同一 hash → series 共有
+	upsert("b", "# B\nbbb", "feature-x")
+	upsert("c", "# C\nccc", "main")
+
+	// feature-x を全削除
+	_, out, err := h.handlers.handleDeleteSeries(ctx, nil, DeleteSeriesInput{
+		Key: "K", Series: "feature-x",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a: main が残るので保持 → updated=1
+	// b: series が空になり物理削除 → removed=1
+	// c: feature-x を持たない → 触られない
+	if out.RemovedRecords != 1 || out.UpdatedRecords != 1 {
+		t.Errorf("got removed=%d updated=%d, want 1/1", out.RemovedRecords, out.UpdatedRecords)
+	}
+
+	// main で query しても a と c は残っている (b は消える)
+	chunks, err := h.store.GetChunksForSearch(ctx, "K", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]bool{}
+	for _, c := range chunks {
+		paths[c.Path] = true
+	}
+	if !paths["a"] || !paths["c"] {
+		t.Errorf("main should still see a and c, got %v", paths)
+	}
+	if paths["b"] {
+		t.Errorf("b should be pruned, got %v", paths)
+	}
+}
+
+func TestDeleteSeries_NonExistentSeries_NoError(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "main",
+		Documents: []UpsertDocument{{Path: "a", Content: "# A\nx"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, out, err := h.handlers.handleDeleteSeries(ctx, nil, DeleteSeriesInput{
+		Key: "K", Series: "does-not-exist",
+	})
+	if err != nil {
+		t.Fatalf("nonexistent series should not error: %v", err)
+	}
+	if out.RemovedRecords != 0 || out.UpdatedRecords != 0 {
+		t.Errorf("got removed=%d updated=%d, want 0/0", out.RemovedRecords, out.UpdatedRecords)
+	}
+}
+
+func TestDeleteSeries_ValidationErrors(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	cases := []DeleteSeriesInput{
+		{Series: "s"},          // no key
+		{Key: "K"},             // no series
+	}
+	for _, in := range cases {
+		if _, _, err := h.handlers.handleDeleteSeries(ctx, nil, in); err == nil {
+			t.Errorf("want error for input %+v", in)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------
 // query
 // -----------------------------------------------------------------------
 
