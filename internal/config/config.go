@@ -94,6 +94,7 @@ func Load() (*Config, error) {
 
 // LoadFrom は指定パスから設定を読み込む。テストおよび内部実装用（CFG-02）。
 // 未知のキーは KnownFields による strict パースで検出する。
+// db_path で先頭が `~/` または `~` 単体の場合は $HOME に展開する。
 func LoadFrom(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -107,11 +108,40 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: YAML パースに失敗しました %q: %w", path, err)
 	}
 
+	// パス系フィールドの `~` を $HOME に展開する（利便性のため）
+	expanded, err := expandTilde(cfg.Server.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("config: server.db_path のチルダ展開に失敗: %w", err)
+	}
+	cfg.Server.DBPath = expanded
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: 設定ファイル %q の検証に失敗しました: %w", path, err)
 	}
 
 	return &cfg, nil
+}
+
+// expandTilde はパス文字列の先頭 `~/` または単独 `~` を $HOME に置換する。
+// `~user/...` 形式 (他ユーザーの home) は展開せずそのまま返す (POSIX 慣習)。
+// 空文字列や `~` を含まないパスはそのまま返す。
+func expandTilde(p string) (string, error) {
+	if p == "" || (p[0] != '~') {
+		return p, nil
+	}
+	// `~user/...` は非対応 (誤爆防止でそのまま返す)
+	if len(p) > 1 && p[1] != '/' {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p, fmt.Errorf("$HOME が解決できません: %w", err)
+	}
+	if p == "~" {
+		return home, nil
+	}
+	// p は "~/..." の形
+	return filepath.Join(home, p[2:]), nil
 }
 
 // Validate は Config 全体の値域・必須項目を検証する（CFG-03）。
