@@ -11,6 +11,7 @@
 | `/update-db-rules` | 同 rules 対象文書を doc-db に登録 |
 | `/query-db-specs` | specs 対象文書を doc-db で検索 (未接続時は grep フォールバック) |
 | `/query-db-rules` | rules 対象文書を doc-db で検索 (同上) |
+| `/delete-db-series <name>` | 指定 series (Git branch 等) を specs/rules 両 KEY から一括除去 (branch cleanup) |
 
 ## 他プロジェクトへの配布
 
