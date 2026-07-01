@@ -1,31 +1,52 @@
 # doc-db MCP Server
 
-Markdown ドキュメントをハイブリッド検索（ベクトル + BM25 + LLM Rerank）で横断検索できる汎用 MCP サーバー。
+Markdown ドキュメントを **Embedding + BM25 + 全文 GREP** の 3 signal で横断検索し、
+必要に応じて **LLM Rerank** で並べ替える汎用 MCP サーバー（Streamable HTTP transport）。
 
-> **開発ステータス: 設計フェーズ完了・実装途中（v0.1.0）**
->
-> 現状は基盤コンポーネント（store / chunker / embedder / fetcher / expiry）と CLI 骨格までが実装されています。MCP ハンドラ・検索パイプライン・Homebrew 配布・YAML 設定方式は **設計済みだが未実装** です。実装ロードマップは下記「実装状況」を参照してください。
+**現バージョン: v0.1.10**（`VERSION` / `CHANGELOG.md` が canonical）。
+基盤コンポーネント・MCP ツール 7 種・3 signal 検索パイプライン・LLM Rerank・
+Homebrew 自家 tap 配布まで実装済み。
 
 ## 何の問題を解決するのか
 
-AI アシスタント（Claude Code 等）は、プロジェクトの仕様書・設計書・ルールドキュメントを「その都度読んで」作業する。ファイル数が増えると：
+AI アシスタント（Claude Code 等）は、プロジェクトの仕様書・設計書・ルールドキュメントを
+「その都度読んで」作業する。ファイル数が増えると:
 
 - どのドキュメントが関連するか判断できない
 - すべて読み込むとコンテキスト上限を超える
 - キーワードが一致しないと関連文書が見つからない
 
-**doc-db** は MCP ツールとしてこれを解決する。ドキュメントを事前にインデックスしておき、自然言語クエリで関連チャンクだけを取り出せるようにする。
+**doc-db** は MCP ツールとしてこれを解決する。事前にインデックスした Markdown を、
+自然言語クエリ・ID 文字列・自由語のいずれからでも取り出せるようにする。
 
-## 主な利点（設計目標）
+## 設計思想（PHIL-01 二層アーキ）
+
+doc-db は「関連文書の**候補**を漏れなく返す」ことに責任を持ち、
+「本当に必要な文書か」の最終判定は **上位 AI agent 側**に委ねる二層構成を取る。
+
+- **Layer 1（本サーバー）**: Embedding + BM25 + GREP を並列実行し **over-recall**
+  な候補プールを返す。取りこぼしを最重要視する。
+- **Layer 2（AI agent）**: 返された chunk の `origin_signals` / `heading_path` /
+  本文を見て、本文まで読むべき文書を選定する。
+
+LLM Rerank は **ranking 最適化のためのオプション**であり、recall を広げる手段では
+ない（PHIL-02）。
+
+詳細: [`docs/AI_INTEGRATION_GUIDE.md`](docs/AI_INTEGRATION_GUIDE.md)
+
+## 主な特徴
 
 | 特徴 | 説明 |
 |------|------|
-| **ハイブリッド検索** | ベクトル類似度 (Embedding) + BM25 語彙一致 + LLM Rerank の3段階で高精度な検索を実現 |
-| **ID パターン対応** | `FNC-001` や `DES-028` のような規格 ID を語彙検索で正確にマッチ |
-| **重複 Embedding 排除** | 同一内容のドキュメントは hash で検出し、Embedding を共有。複数 branch/series を低コストで管理 |
-| **シングルバイナリ** | CGO 不要（pure-Go SQLite）。Homebrew で一発インストール（実装予定） |
-| **TTL / LRU 自動廃棄** | 期限切れ・容量超過のインデックスを自動削除。メンテナンス不要 |
-| **SSRF 防御済み** | URL 登録機能はプライベート IP への接続をデフォルトでブロック |
+| **3 signal 並列検索** | Embedding / BM25 / 全文 GREP を並列実行し `origin_signals` を各 chunk に付与 |
+| **ID パターン対応** | `FNC-001` / `DES-028` のような規格 ID は BM25 substring + GREP で確実にマッチ |
+| **LLM Rerank（任意）** | 3 signal で集めた候補を gpt-4o-mini 等で再ランク（`mode=rerank`） |
+| **local_path 経路** | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+） |
+| **重複 Embedding 排除** | 同一内容は hash で検出し Embedding を共有。branch/series を低コストで多重管理 |
+| **series 削除** | branch 単位で `delete_series` により record から除去（v0.1.9+） |
+| **シングルバイナリ** | pure-Go SQLite。Homebrew tap で 1 コマンド導入 |
+| **TTL / LRU 自動廃棄** | 期限切れ・容量超過のインデックスを Expiry ワーカーが自動削除 |
+| **SSRF 防御** | URL 登録はプライベート IP をデフォルトで拒否 |
 
 ## アーキテクチャ
 
@@ -34,87 +55,68 @@ MCP クライアント (Claude Code / Desktop 等)
         │  Streamable HTTP (MCP 2025-03)
         │  http://localhost:58080/mcp
         ▼
-┌─────────────────────────────────────────────────┐
-│  MCP Server (go-sdk)                            │
-│  ┌──────────┬──────────┬─────────┬───────────┐  │
-│  │ upsert   │  delete  │  query  │  manage   │  │
-│  └────┬─────┴────┬─────┴────┬────┴─────┬─────┘  │
-│       │          │          │          │         │
-│  ┌────▼───┐ ┌────▼────┐ ┌──▼───────┐  │         │
-│  │Chunker │ │Embedder │ │ Search   │  │         │
-│  │(見出し │ │(OpenAI) │ │ Pipeline │  │         │
-│  │ 境界)  │ └────┬────┘ │vector+  │  │         │
-│  └────┬───┘      │      │BM25+    │  │         │
-│       │          │      │rerank   │  │         │
-│       └──────────┴──────┴─────────┴──┘         │
-│                         │                       │
-│              ┌──────────▼──────────┐            │
-│              │  Store (SQLite)     │ ◄── Expiry  │
-│              │  records / chunks   │    Worker   │
-│              │  embeddings / bm25  │  (TTL/LRU)  │
-│              └─────────────────────┘            │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  MCP Server (go-sdk) — 7 tools                      │
+│  upsert_documents / delete_documents / delete_series│
+│  query / list_indexes / delete_index / manage_index │
+│                          │                          │
+│  ┌───────────┬───────────┼───────────┬───────────┐  │
+│  │ Chunker   │ Embedder  │ Search    │ Reranker  │  │
+│  │ (見出し   │ (OpenAI)  │ Pipeline  │ (LLM)     │  │
+│  │  境界)    │           │ emb+lex+  │           │  │
+│  │           │           │ grep      │           │  │
+│  └─────┬─────┴─────┬─────┴─────┬─────┴─────┬─────┘  │
+│        └───────────┴─────┬─────┴───────────┘        │
+│                    ┌─────▼─────────┐                │
+│                    │ Store(SQLite) │ ◄── Expiry     │
+│                    │ WAL / chunks  │    Worker      │
+│                    │ / embeddings  │  (TTL/LRU)     │
+│                    └───────────────┘                │
+└─────────────────────────────────────────────────────┘
 ```
 
 ### レイヤー構成
 
 ```
-cmd/docdb          エントリポイント・設定読み込み
-internal/mcp       MCP ツールハンドラ（4 ツール）           [未実装]
-internal/search    検索パイプライン（emb/lex/hybrid/rerank） [未実装]
-internal/chunker   Markdown → 見出し境界チャンク分割
-internal/embedder  OpenAI Embedding API
-internal/fetcher   URL → コンテンツ取得（SSRF 防御付き）
-internal/expiry    TTL / LRU 自動廃棄ワーカー
-internal/store     SQLite 読み書き・BM25 統計管理
+cmd/docdb           エントリポイント・設定読み込み・配線
+internal/mcp        MCP ツールハンドラ（7 種）
+internal/search     3 signal 検索パイプライン（emb / lex / grep / rerank）
+internal/reranker   OpenAI Chat Completions ベース LLM Rerank
+internal/chunker    Markdown → 見出し境界チャンク分割
+internal/embedder   OpenAI Embedding API（部分失敗対応）
+internal/fetcher    URL → コンテンツ取得（SSRF 防御付き）
+internal/expiry     TTL / LRU 自動廃棄ワーカー
+internal/store      SQLite 読み書き・WAL・アトミック AppendAndCleanSeries
+internal/config     YAML 設定ローダー（`~/.doc-db/doc-db.yaml`）
 ```
 
 上位レイヤーのみが下位を参照する。循環依存なし。
 
-## 実装状況
+## インストール
 
-| 領域 | 状態 | 仕様文書 |
-|------|------|----------|
-| 基盤コンポーネント（store/chunker/embedder/fetcher/expiry） | ✅ 実装済み | `docs/specs/base/design/DES-001` |
-| `--version` フラグ | ✅ 実装済み | DES-002 §4.2.1 |
-| **YAML 設定ファイル方式**（`~/.doc-db/doc-db.yaml`） | ✅ 実装済み（`internal/config` パッケージ・`DOCDB_*` 環境変数撤廃済み） | DES-001 §9 |
-| **`doc-db.yaml.example` 同梱** | ✅ 実装済み（リポジトリ直下） | DES-002 §5.2 |
-| **Homebrew 配布**（`Formula/doc-db.rb` + tap 方式） | ✅ 実装済み（初回 git tag `v0.1.0` 待ち。Formula revision は tag 作成後に SHA で更新） | `docs/specs/install/design/DES-002` |
-| **整合性検証スクリプト**（`scripts/verify_*.sh`） | ✅ 実装済み（`make verify-version` / `make verify-tag`） | DES-002 §4.3 |
-| MCP サーバー本体（Streamable HTTP）・ツールハンドラ 4 種 | 🚧 未実装（DES-001 §3.1 で設計済み） | DES-001 |
-| 検索パイプライン（emb/lex/hybrid/rerank） | 🚧 未実装（DES-001 §6 で設計済み） | DES-001 |
-
----
-
-## 現状の使い方
-
-> MCP ハンドラ・検索パイプライン未実装のため、起動しても接続できる MCP クライアントはありません。基盤コンポーネント・設定ローダーの動作確認用です。
-
-### 前提条件
-
-- Go 1.22 以上
-- OpenAI API キー
-
-### ビルド
+### Homebrew（推奨）
 
 ```bash
-make build
-# または
-go build -ldflags "-X main.version=$(cat VERSION)" -o doc-db ./cmd/docdb
+brew tap blueeventhorizon/doc-db https://github.com/BlueEventHorizon/doc-db-mcp-server
+brew install blueeventhorizon/doc-db/doc-db
+doc-db --version
 ```
 
-### バージョン確認
+### ソースからビルド
 
 ```bash
-./doc-db --version
-# 0.1.0
+git clone https://github.com/BlueEventHorizon/doc-db-mcp-server.git
+cd doc-db-mcp-server
+make build            # ldflags 経由で VERSION を注入
+./doc-db --version    # 0.1.10
 ```
 
-`--version` / `-v` は設定読み込み・API キー検証・サーバー起動より前に即時終了します。
+## セットアップ
 
-### 設定ファイルの配置
+### 1. 設定ファイル配置
 
-doc-db は **`~/.doc-db/doc-db.yaml`**（固定パス）から起動時に設定を読み込みます。ファイルが存在しない場合は fail-fast で終了します（CFG-01）。
+doc-db は **`~/.doc-db/doc-db.yaml`**（固定パス）から起動時に設定を読む。
+ファイルが無い場合は fail-fast で終了する（CFG-01）。
 
 ```bash
 mkdir -p ~/.doc-db
@@ -122,15 +124,15 @@ cp doc-db.yaml.example ~/.doc-db/doc-db.yaml
 # 必要に応じて編集
 ```
 
-設定ファイル例：
+設定例（`doc-db.yaml.example` と同内容）:
 
 ```yaml
 server:
   port: 58080
-  db_path: "./docdb.sqlite"
+  db_path: "~/.doc-db/docdb.sqlite"    # `~/` は $HOME に展開される（v0.1.10+）
 embedding:
-  model: "text-embedding-3-small"
-  dim: 1536
+  model: "text-embedding-3-large"       # 変更時は DB 再構築が必要
+  dim: 3072                             # -3-large=3072 / -3-small=1536
   timeout_seconds: 60
 rerank:
   model: "gpt-4o-mini"
@@ -152,46 +154,24 @@ expiry:
 
 全項目必須・未知キー禁止・値域外で fail-fast（CFG-03）。
 
-### 起動
-
-API キーのみ環境変数で渡し、その他は設定ファイルから読まれます。
+### 2. API キー設定と起動
 
 ```bash
-export OPENAI_API_DOCDB_KEY=sk-...
-./doc-db
-# "doc-db MCP サーバー起動準備完了。MCP ハンドラは未実装のため待機します"
-# Ctrl+C で終了
+export OPENAI_API_DOCDB_KEY=sk-...   # または OPENAI_API_KEY
+doc-db
 ```
 
----
+### 3. MCP クライアントへの登録
 
-## 設計済み・未実装の使い方（将来）
+Streamable HTTP transport のため **URL 形式**で登録する（subprocess `command` は使わない）。
 
-### Homebrew インストール（実装予定）
-
-設計書 `docs/specs/install/design/DES-002` で確定済み。実装後は以下で導入できる予定：
+**Claude Code（user scope）**:
 
 ```bash
-brew tap blueeventhorizon/doc-db https://github.com/BlueEventHorizon/doc-db-mcp-server
-brew install blueeventhorizon/doc-db/doc-db
-```
-
-実装に必要なファイル（いずれも未作成）：
-
-- `Formula/doc-db.rb`（Homebrew Formula）
-- `scripts/verify_version_consistency.sh`
-- `scripts/verify_release_tag.sh`
-
-### Claude Code / Desktop への登録（MCP ハンドラ実装後）
-
-doc-db は Streamable HTTP transport で動作するため、URL 形式で登録します（subprocess 形式の `command` は使用しない）：
-
-```bash
-# Claude Code (user scope)
 claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 ```
 
-Claude Desktop（`~/Library/Application Support/Claude/claude_desktop_config.json`）：
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -203,29 +183,46 @@ Claude Desktop（`~/Library/Application Support/Claude/claude_desktop_config.jso
 }
 ```
 
----
+## MCP ツール一覧
 
-## MCP ツール一覧（設計）
+| ツール | 説明 |
+|--------|------|
+| `upsert_documents` | ドキュメントを登録・更新。`content` / `url` / `local_path` の 3 経路（排他） |
+| `delete_documents` | 指定 series の特定 path ドキュメントを削除 |
+| `delete_series` | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用） |
+| `query` | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank |
+| `list_indexes` | 登録済み KEY 一覧を取得 |
+| `delete_index` | KEY 全体を削除 |
+| `manage_index` | KEY のメタ情報操作（TTL / max_chunks 等） |
 
-| ツール | 説明 | 実装状態 |
-|--------|------|----------|
-| `upsert_documents` | ドキュメントを登録・更新。テキスト直送または URL 指定 | 未実装 |
-| `delete_documents` | 指定 series のドキュメントを削除 | 未実装 |
-| `query` | 自然言語クエリでチャンクを検索 | 未実装 |
-| `manage` | KEY 一覧取得・インデックス削除 | 未実装 |
-
-### query の検索モード（設計）
+### `query` の mode
 
 | mode | 説明 |
 |------|------|
-| `emb` | ベクトル類似度のみ |
-| `lex` | BM25 語彙一致のみ |
-| `hybrid` | ベクトル + BM25 の融合スコア |
-| `rerank` | hybrid 上位候補を LLM で再ランク（デフォルト・最高精度） |
+| `all` | **デフォルト（v0.1.5+）**。3 signal を並列実行し、`origin_signals` 付きで返す |
+| `rerank` | 3 signal で候補収集後、LLM で再ランク |
+| `emb`  | Embedding 類似度のみ |
+| `lex`  | BM25 substring match のみ |
+| `grep` | 全文 GREP（NFKC + lowercase substring）のみ |
+| `hybrid` | legacy 互換: Embedding + BM25 の RRF 融合（GREP なし） |
 
-### series による多バージョン管理（設計）
+各 hit は `origin_signals: ["emb","lex","grep"]` を含み、どの signal で拾われたかを
+上位 agent が判定できる（QRY-OUT-03）。
 
-`key` はインデックスの名前空間、`series` は同一ドキュメントセットの複数バージョンを識別する：
+### `upsert_documents` の 3 経路
+
+| 経路 | 用途 |
+|------|------|
+| `content` | 文字列を直接送る。小さいドキュメントや動的生成向け |
+| `url`     | HTTP(S) から取得（SSRF 防御付き） |
+| `local_path` | サーバーが絶対パスから直接読む（大容量 Markdown 向け・payload 大幅削減。v0.1.8+） |
+
+`local_path` は絶対パスのみ、`..` 要素を含むパスを reject、シンボリックリンク解決後の
+実パスも再検証、10MB 上限、regular file 限定。
+
+### series による多バージョン管理
+
+`key` はインデックスの名前空間、`series` は同一 KEY 内の複数バージョン識別子。
 
 ```
 key: "myrepo"
@@ -233,19 +230,30 @@ key: "myrepo"
   series: "feature-x" → feature ブランチのスナップショット
 ```
 
-同一 `key + path` でハッシュが一致する場合、Embedding は共有される（重複 API 呼び出しなし）。
+同一 `key + path` でハッシュが一致する場合、Embedding は series 間で共有される
+（重複 API 呼び出しなし）。branch を消したら `delete_series` で cleanup。
 
 ## ドキュメント
 
 | 文書 | 内容 |
 |------|------|
-| **`docs/AI_INTEGRATION_GUIDE.md`** | **AI skill / agent から doc-db を使う開発者向け統合ガイド (PHIL-01 二層アーキ・mode の使い分け・origin_signals 解釈・典型フロー)** |
+| **[`docs/AI_INTEGRATION_GUIDE.md`](docs/AI_INTEGRATION_GUIDE.md)** | **AI skill / agent 向け統合ガイド（PHIL-01 二層アーキ・mode 使い分け・origin_signals 解釈・典型フロー・FAQ）** |
 | `docs/specs/base/requirements/APP-001` | 基本機能要件定義書 |
-| `docs/specs/base/design/DES-001` | 基本設計書（アーキテクチャ・データモデル・検索・YAML 設定方式） |
+| `docs/specs/base/design/DES-001` | 基本設計書（アーキテクチャ・データモデル・3 signal 検索・YAML 設定） |
 | `docs/specs/install/requirements/APP-002` | インストール要件定義書（Homebrew 自家 tap） |
 | `docs/specs/install/design/DES-002` | インストール設計書（Formula・整合性検証・caveats） |
-| `CHANGELOG.md` | バージョン履歴（keep-a-changelog 形式） |
+| [`CHANGELOG.md`](CHANGELOG.md) | バージョン履歴（keep-a-changelog 形式） |
 | `VERSION` | canonical バージョン文字列（plain text） |
+
+## 開発
+
+```bash
+make build                 # バイナリビルド
+go test ./...              # 全パッケージテスト
+go test -race ./...        # レース検出テスト
+make verify-version        # VERSION / CHANGELOG / .version-config.yaml / Formula tag 整合性
+make verify-tag            # Formula revision == git tag commit SHA 検証
+```
 
 ## ライセンス
 
