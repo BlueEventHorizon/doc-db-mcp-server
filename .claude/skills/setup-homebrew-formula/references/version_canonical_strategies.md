@@ -35,13 +35,13 @@
 
 ## 戦略選定基準
 
-| 条件 | 推奨戦略 |
-|------|---------|
-| Go プロジェクト | **A**（VERSION + ldflags）。`//go:embed` は **パッケージ外参照不可** のため root の VERSION を internal/version から取り込めない |
-| Swift プロジェクト | **B**（Sources/Constants.swift）。Swift-Selena 実績あり |
-| Rust プロジェクト | **C**（Cargo.toml）。`env!("CARGO_PKG_VERSION")` で取得 |
-| Node.js プロジェクト | **C**（package.json） |
-| マルチ言語 / 言語制約なし | **A** がもっとも汎用・移植性が高い |
+| 条件                      | 推奨戦略                                                                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Go プロジェクト           | **A**（VERSION + ldflags）。`//go:embed` は **パッケージ外参照不可** のため root の VERSION を internal/version から取り込めない |
+| Swift プロジェクト        | **B**（Sources/Constants.swift）。Swift-Selena 実績あり                                                                          |
+| Rust プロジェクト         | **C**（Cargo.toml）。`env!("CARGO_PKG_VERSION")` で取得                                                                          |
+| Node.js プロジェクト      | **C**（package.json）                                                                                                            |
+| マルチ言語 / 言語制約なし | **A** がもっとも汎用・移植性が高い                                                                                               |
 
 ## バイナリへの埋め込み実装例
 
@@ -117,16 +117,16 @@ fn main() {
 
 ## tag 形式
 
-| 形式 | 例 | 推奨度 |
-|------|-----|------|
+| 形式         | 例       | 推奨度                                                                                                          |
+| ------------ | -------- | --------------------------------------------------------------------------------------------------------------- |
 | `v{version}` | `v0.1.0` | **推奨**。Go の `go install <pkg>@v0.1.0` で必須・SemVer 慣習・Homebrew でも `version.to_s` が自動で v を剥がす |
-| `{version}` | `0.1.0` | Swift-Selena 採用例。Go install 非対応プロジェクトでは選択肢になる |
+| `{version}`  | `0.1.0`  | Swift-Selena 採用例。Go install 非対応プロジェクトでは選択肢になる                                              |
 
 `.version-config.yaml` の `tag_format` でこの選択を表現する：
 
 ```yaml
 git:
-  tag_format: "v{version}"  # 推奨
+  tag_format: "v{version}" # 推奨
 ```
 
 整合性検証スクリプト（`verify_version_consistency.sh`）は Formula `tag:` の値の先頭 `v` を剥がしてから canonical と照合する設計にすると、両方の形式に対応できる。
@@ -139,11 +139,13 @@ git:
 ## [Unreleased]
 
 ### Added
+
 - ...
 
 ## [0.1.0] - 2026-06-24
 
 ### Added
+
 - ...
 ```
 

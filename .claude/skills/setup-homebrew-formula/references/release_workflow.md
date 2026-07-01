@@ -4,10 +4,10 @@
 
 ## なぜ 2 段階なのか
 
-| 検証 | タイミング | 検証対象 |
-|------|-----------|---------|
+| 検証                            | タイミング                      | 検証対象                                                                      |
+| ------------------------------- | ------------------------------- | ----------------------------------------------------------------------------- |
 | `verify_version_consistency.sh` | version bump 直後（tag 作成前） | canonical / CHANGELOG / .version-config.yaml / Formula `tag:` の **静的整合** |
-| `verify_release_tag.sh` | git tag 作成後（push 前） | Formula `revision:` == git tag が指す commit SHA |
+| `verify_release_tag.sh`         | git tag 作成後（push 前）       | Formula `revision:` == git tag が指す commit SHA                              |
 
 順序を間違えると、push 後に `brew install` が「`<version>` tag should be `<X>` but is actually `<Y>`」で失敗する。
 
@@ -36,7 +36,7 @@ revision: "0000000000000000000000000000000000000000"  # まだ placeholder
 sync_files:
   - path: Formula/doc-db.rb
     pattern: 'tag:      "v{version}"'
-    filter: 'tag:'
+    filter: "tag:"
 ```
 
 ### Step 3: 静的整合検証
@@ -133,15 +133,16 @@ brew test <short-name>
 
 README の Homebrew インストール手順が正しく書かれていることを確認：
 
-```markdown
+````markdown
 ## インストール
 
 ```bash
 brew tap <owner>/<short-name> https://github.com/<owner>/<repo>
 brew install <short-name>
 ```
-```
+````
 
+```
 ## エラー時の対処
 
 | 症状 | 原因 | 対処 |
@@ -165,3 +166,4 @@ brew install <short-name>
 - [ ] `git push origin main --tags`
 - [ ] `brew install --build-from-source ./Formula/<name>.rb` 検証
 - [ ] `brew test <name>` 検証
+```
