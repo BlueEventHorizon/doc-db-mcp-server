@@ -55,16 +55,21 @@ python3 .claude/skills/update-db-specs/scripts/resolve_docs.py --type specs
 
 stdout の JSON を parse:
 - `status: "error"` の場合は `message` を報告して終了
-- `files` (project-root からの相対パス配列) を取り出す
+- `entries` (相対 path + 絶対 local_path のオブジェクト配列) を取り出す
 - `project_name` (プロジェクト ディレクトリ名) を KEY prefix として使う
+- `git_branch` (現在の Git branch 名) を series として使う
 - `count == 0` の場合は「specs 対象文書がありません。`.doc_structure.yaml` を確認してください」と報告して終了
 
-### Step 3: KEY の決定
+### Step 3: KEY と series の決定
 
-KEY 命名規則: **`<project_name>-specs`**  
-例: doc-db-mcp-server プロジェクトなら `doc-db-mcp-server-specs`
-
-これにより doc-db MCP サーバーを複数プロジェクトで共有しても KEY が衝突しない。
+- **KEY**: `<project_name>-specs`  
+  例: doc-db-mcp-server プロジェクトなら `doc-db-mcp-server-specs`  
+  複数プロジェクトで doc-db サーバーを共有しても KEY が衝突しない
+- **series**: `<git_branch>` (Step 2 の JSON の `git_branch` 値)  
+  例: main branch なら `series="main"`、feature/auth branch なら `series="feature/auth"`  
+  Git repo 外 / detached HEAD / git 不在時は fallback `"main"` を使う  
+  **同一 path でも branch が違えば別 series として管理される**  
+  同一内容 (SHA-256 一致) なら embedding は共有される (DIF-02)
 
 ### Step 4: local_path 経由で upsert
 
@@ -74,7 +79,7 @@ KEY 命名規則: **`<project_name>-specs`**
 ```
 mcp__doc-db__upsert_documents({
   "key": "<project_name>-specs",
-  "series": "main",
+  "series": "<git_branch>",   // Step 2 で取得。main / feature/xxx 等
   "documents": [
     {"path": "docs/specs/xxx/design/foo.md",
      "local_path": "/abs/path/.../foo.md"},
@@ -113,7 +118,9 @@ warnings や errors がある場合は必ず含めて報告する (silent failur
 - **desired-state 動作**: doc-db 側には「消えたファイルの自動 orphan cleanup」は無い。
   ファイルを削除した場合は別途 `mcp__doc-db__delete_documents` で明示削除するか、
   KEY 全体を `mcp__doc-db__delete_index` で作り直す。
-- **series**: 現状は固定で `"main"`。branch ごとのインデックス分離が必要になった場合は
-  SKILL を拡張して `argument-hint` 経由で受け取る余地あり (YAGNI で保留)。
+- **branch 削除時の series 撤去**: feature branch を削除した後、その series の
+  record は残り続ける。別途 `mcp__doc-db__delete_documents` の series 単位削除、
+  または `manage_index` の TTL 短縮で自然に消えるのを待つ。将来 `/delete-db-series`
+  のような専用 SKILL を追加する余地あり (YAGNI で保留)。
 - **KEY の TTL/max_chunks**: doc-db のデフォルト (30 days / 10000 chunks) が適用される。
   長期保持したい場合は `mcp__doc-db__manage_index` で override 可能。

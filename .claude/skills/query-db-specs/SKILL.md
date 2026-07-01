@@ -32,6 +32,9 @@ python3 .claude/skills/query-db-specs/scripts/resolve_docs.py --type specs
 
 **Step A-2: doc-db に検索リクエスト**
 
+デフォルトでは **series 指定なし = KEY 内の全 branch を横断検索** する
+(PHIL-01: recall 優先。AI agent が本文で判定):
+
 ```
 mcp__doc-db__query({
   "key": "<project_name>-specs",
@@ -40,6 +43,10 @@ mcp__doc-db__query({
   "top_n": 20              // Layer 2 (この SKILL 呼び出し元 AI agent) が本文で判定するため多めに
 })
 ```
+
+現在の branch のみ検索したい場合は `series=<git_branch>` を追加 (Step A-1 で取得済み)。
+ユーザーが `$ARGUMENTS` に `--current-branch` のようなフラグを含めた場合の対応判断は
+呼び出し元 AI に委ねる (YAGNI: 現状の argument-hint には含めない)。
 
 **Step A-3: 結果の整形**
 

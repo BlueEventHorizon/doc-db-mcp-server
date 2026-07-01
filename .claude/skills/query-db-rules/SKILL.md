@@ -31,6 +31,9 @@ python3 .claude/skills/query-db-rules/scripts/resolve_docs.py --type rules
 
 **Step A-2: doc-db に検索リクエスト**
 
+デフォルトでは **series 指定なし = KEY 内の全 branch を横断検索** する
+(PHIL-01: recall 優先):
+
 ```
 mcp__doc-db__query({
   "key": "<project_name>-rules",
@@ -39,6 +42,10 @@ mcp__doc-db__query({
   "top_n": 20
 })
 ```
+
+現在の branch のみ検索したい場合は `series=<git_branch>` を追加 (Step A-1 の JSON から
+取得可能)。ユーザーが `$ARGUMENTS` に明示的な branch 指定を含めた場合の対応は呼び出し元
+AI の判断に委ねる。
 
 **Step A-3: 結果の整形**
 

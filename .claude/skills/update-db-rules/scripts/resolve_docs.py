@@ -20,6 +20,7 @@ import argparse
 import glob
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +32,31 @@ except ImportError:
         "message": "pyyaml が必要です。`pip install pyyaml` でインストールしてください。",
     }))
     sys.exit(1)
+
+
+def detect_git_branch(project_root: Path) -> str:
+    """現在の Git branch 名を返す。git repo 外 / detached HEAD / 実行失敗時は "main" を返す。
+
+    series として使うため、path で使えない文字 (typically slashes) はそのまま残す
+    (doc-db 側で opaque 文字列として扱われ、slash 含みでも許容される)。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return "main"
+        branch = result.stdout.strip()
+        if not branch or branch == "HEAD":
+            # detached HEAD 状態 → fallback
+            return "main"
+        return branch
+    except (OSError, subprocess.TimeoutExpired):
+        return "main"
 
 
 def _emit_and_exit(payload: dict, code: int = 0) -> None:
@@ -122,11 +148,14 @@ def main() -> int:
         {"path": rel, "local_path": str(project_root / rel)}
         for rel in files
     ]
+    branch = detect_git_branch(project_root)
+
     _emit_and_exit({
         "status": "ok",
         "type": args.type,
         "project_root": str(project_root),
         "project_name": project_root.name,
+        "git_branch": branch,    # 現在の Git branch (upsert 時の series として使う推奨値)
         "files": files,          # 後方互換: 相対パスのみのリスト
         "entries": entries,      # 新: {path, local_path} オブジェクトのリスト
         "count": len(files),

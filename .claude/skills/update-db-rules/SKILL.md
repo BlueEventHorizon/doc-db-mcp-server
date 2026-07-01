@@ -55,16 +55,21 @@ python3 .claude/skills/update-db-rules/scripts/resolve_docs.py --type rules
 
 stdout の JSON を parse:
 - `status: "error"` の場合は `message` を報告して終了
-- `files` (project-root からの相対パス配列) を取り出す
+- `entries` (相対 path + 絶対 local_path のオブジェクト配列) を取り出す
 - `project_name` (プロジェクト ディレクトリ名) を KEY prefix として使う
+- `git_branch` (現在の Git branch 名) を series として使う
 - `count == 0` の場合は「rules 対象文書がありません。`.doc_structure.yaml` を確認してください」と報告して終了
 
-### Step 3: KEY の決定
+### Step 3: KEY と series の決定
 
-KEY 命名規則: **`<project_name>-rules`**  
-例: doc-db-mcp-server プロジェクトなら `doc-db-mcp-server-rules`
-
-これにより doc-db MCP サーバーを複数プロジェクトで共有しても KEY が衝突しない。
+- **KEY**: `<project_name>-rules`  
+  例: doc-db-mcp-server プロジェクトなら `doc-db-mcp-server-rules`  
+  複数プロジェクトで doc-db サーバーを共有しても KEY が衝突しない
+- **series**: `<git_branch>` (Step 2 の JSON の `git_branch` 値)  
+  例: main branch なら `series="main"`、feature/xxx branch なら `series="feature/xxx"`  
+  Git repo 外 / detached HEAD / git 不在時は fallback `"main"` を使う  
+  **同一 path でも branch が違えば別 series として管理される**  
+  同一内容 (SHA-256 一致) なら embedding は共有される (DIF-02)
 
 ### Step 4: local_path 経由で upsert
 
@@ -74,7 +79,7 @@ KEY 命名規則: **`<project_name>-rules`**
 ```
 mcp__doc-db__upsert_documents({
   "key": "<project_name>-rules",
-  "series": "main",
+  "series": "<git_branch>",   // Step 2 で取得。main / feature/xxx 等
   "documents": [
     {"path": "docs/rules/xxx.md",
      "local_path": "/abs/path/.../xxx.md"},
@@ -100,5 +105,6 @@ warnings や errors がある場合は必ず含めて報告する (silent failur
 - **desired-state 動作**: doc-db 側には「消えたファイルの自動 orphan cleanup」は無い。
   ファイルを削除した場合は別途 `mcp__doc-db__delete_documents` で明示削除するか、
   KEY 全体を `mcp__doc-db__delete_index` で作り直す。
-- **series**: 現状は固定で `"main"`。
+- **branch 削除時の series 撤去**: feature branch を削除した後、その series の
+  record は残り続ける。将来 `/delete-db-series` のような専用 SKILL を追加する予定。
 - **KEY の TTL/max_chunks**: doc-db のデフォルト (30 days / 10000 chunks) が適用される。

@@ -51,15 +51,21 @@ claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 
 登録後 Claude Code を再起動すれば `mcp__doc-db__*` tools が使えるようになる。
 
-## KEY 命名規則
+## KEY / series 命名規則
 
-各 SKILL は **KEY = `<project-dir-basename>-<specs|rules>`** を自動的に使う。
-たとえば `/Users/moons/data/dev/myrepo` から呼び出せば KEY は:
+各 SKILL は以下の自動命名を採用する:
 
-- `myrepo-specs` (specs 検索用)
-- `myrepo-rules` (rules 検索用)
+- **KEY**: `<project-dir-basename>-<specs|rules>`  
+  例: `/Users/moons/data/dev/myrepo` から呼び出せば KEY は `myrepo-specs`。
+  doc-db を複数プロジェクト間で共有しても KEY 衝突しない
+- **series**: `<current-git-branch>` (`git rev-parse --abbrev-ref HEAD`)  
+  例: main branch なら `series="main"`、`feature/auth` なら `series="feature/auth"`。
+  Git repo 外 / detached HEAD の場合は fallback `"main"`
 
-これで doc-db を複数プロジェクト間で共有しても KEY 衝突しない。
+**branch 別インデックスの効果**:
+- 同一 path のファイルでも branch が違えば別 series として管理される
+- 同一内容 (SHA-256 一致) なら embedding は共有される (doc-db DIF-02)
+- query 側はデフォルトで series 指定なし = **KEY 内の全 branch を横断検索** (recall 優先)
 
 ## 使用フロー
 
