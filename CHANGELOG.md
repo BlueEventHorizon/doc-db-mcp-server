@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-07-01
+
+### Added
+
+- **config: `db_path` のチルダ展開**サポート。`~/.doc-db/docdb.sqlite` のような
+  `~/`-prefixed パスを `$HOME` に展開する。従来は literal `~` ディレクトリが cwd に
+  作られる不都合があった
+  - `expandTilde` ヘルパを `internal/config` に追加
+  - `~/...` → `$HOME/...` に置換
+  - 単独 `~` → `$HOME` に置換
+  - `~otheruser/...` 形式は誤爆防止でそのまま返す (POSIX 慣習)
+  - 空文字列や `~` を含まないパスはそのまま返す
+- `doc-db.yaml.example` のデフォルト `db_path` を `./docdb.sqlite` から
+  `~/.doc-db/docdb.sqlite` に変更 (cwd 非依存で使いやすく)
+- テスト 5 件追加 (HomeSlash / HomeOnly / NoTilde / TildeUser / LoadFrom 統合)
+
 ## [0.1.9] - 2026-07-01
 
 ### Added
@@ -287,7 +303,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.10
 [0.1.9]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.9
 [0.1.8]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.8
 [0.1.7]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.7

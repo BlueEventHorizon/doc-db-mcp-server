@@ -10,7 +10,7 @@
 
 server:
   port: 58080                      # HTTP ポート（1〜65535）。dynamic range から選定して他 dev server との衝突を回避
-  db_path: "./docdb.sqlite"        # SQLite ファイルパス
+  db_path: "~/.doc-db/docdb.sqlite"  # SQLite ファイルパス。先頭 `~/` は $HOME に展開される (v0.1.10+)
 
 embedding:
   model: "text-embedding-3-large"  # Embedding モデル（変更時は DB 再構築が必要。reference doc-db SKILL と同モデル）
