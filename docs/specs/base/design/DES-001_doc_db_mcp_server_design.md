@@ -2,11 +2,11 @@
 
 ## メタデータ
 
-| 項目     | 値                                        |
-| -------- | ----------------------------------------- |
-| 設計ID   | DES-001                                   |
-| 関連要件 | APP-001                                   |
-| 作成日   | 2026-06-20                                |
+| 項目     | 値         |
+| -------- | ---------- |
+| 設計ID   | DES-001    |
+| 関連要件 | APP-001    |
+| 作成日   | 2026-06-20 |
 
 ## 1. 概要
 
@@ -75,17 +75,17 @@ internal/store  → (外部依存なし)
 
 ### 3.1 パッケージ一覧
 
-| パッケージ | 責務 | 主な依存 |
-| --- | --- | --- |
-| `cmd/docdb` | エントリポイント・設定読み込み・サーバー起動 | `internal/mcp`, `internal/store`, `internal/expiry` |
-| `internal/mcp` | MCP ツールハンドラ（upsert/delete/query/manage） | `internal/store`, `internal/search`, `internal/chunker`, `internal/embedder`, `internal/fetcher` |
-| `internal/store` | SQLite の読み書き・トランザクション管理 | `modernc.org/sqlite` |
-| `internal/chunker` | Markdown を見出し境界でチャンク分割 | （外部依存なし） |
-| `internal/embedder` | OpenAI Embedding API 呼び出し | `net/http` |
-| `internal/fetcher` | HTTP/HTTPS URL からコンテンツ取得 | `net/http` |
-| `internal/search` | 3 signal 並列検索（emb / BM25 lex / 全文 GREP）・候補 merge・LLM Rerank（オプション）| `internal/store` |
-| `internal/reranker` | OpenAI Chat Completions による LLM Rerank（PHIL-02: オプション） | `internal/search`（interface 実装） |
-| `internal/expiry` | TTL/LRU ポリシーによる自動廃棄ワーカー | `internal/store` |
+| パッケージ          | 責務                                                                                  | 主な依存                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `cmd/docdb`         | エントリポイント・設定読み込み・サーバー起動                                          | `internal/mcp`, `internal/store`, `internal/expiry`                                              |
+| `internal/mcp`      | MCP ツールハンドラ（upsert/delete/query/manage）                                      | `internal/store`, `internal/search`, `internal/chunker`, `internal/embedder`, `internal/fetcher` |
+| `internal/store`    | SQLite の読み書き・トランザクション管理                                               | `modernc.org/sqlite`                                                                             |
+| `internal/chunker`  | Markdown を見出し境界でチャンク分割                                                   | （外部依存なし）                                                                                 |
+| `internal/embedder` | OpenAI Embedding API 呼び出し                                                         | `net/http`                                                                                       |
+| `internal/fetcher`  | HTTP/HTTPS URL からコンテンツ取得                                                     | `net/http`                                                                                       |
+| `internal/search`   | 3 signal 並列検索（emb / BM25 lex / 全文 GREP）・候補 merge・LLM Rerank（オプション） | `internal/store`                                                                                 |
+| `internal/reranker` | OpenAI Chat Completions による LLM Rerank（PHIL-02: オプション）                      | `internal/search`（interface 実装）                                                              |
+| `internal/expiry`   | TTL/LRU ポリシーによる自動廃棄ワーカー                                                | `internal/store`                                                                                 |
 
 ### 3.2 主要な型関係
 
@@ -249,22 +249,22 @@ flowchart TB
 
 ### 5.1 ユースケース一覧
 
-| ユースケース | 対応 MCP ツール | 関連要件 |
-| --- | --- | --- |
-| ドキュメント追加・更新 | `upsert_documents` | FNC-001 |
-| ドキュメント削除 | `delete_documents` | FNC-002 |
-| ドキュメント検索 | `query` | FNC-003 |
-| インデックス一覧取得 | `list_indexes`（TBD-008） | FNC-004 MNG-01 |
-| インデックス削除 | `delete_index`（TBD-008） | FNC-004 MNG-02 |
+| ユースケース           | 対応 MCP ツール           | 関連要件       |
+| ---------------------- | ------------------------- | -------------- |
+| ドキュメント追加・更新 | `upsert_documents`        | FNC-001        |
+| ドキュメント削除       | `delete_documents`        | FNC-002        |
+| ドキュメント検索       | `query`                   | FNC-003        |
+| インデックス一覧取得   | `list_indexes`（TBD-008） | FNC-004 MNG-01 |
+| インデックス削除       | `delete_index`（TBD-008） | FNC-004 MNG-02 |
 
 ### 5.2 upsert_documents シーケンス
 
 **content 取得の 3 経路 (exactly-one 排他)**:
 
-| フィールド | 取得元 | 用途 |
-|---|---|---|
-| `content` | クライアント payload | 任意のテキストを直接投入 (旧来の使い方) |
-| `url` | Fetcher が HTTP GET | リモート文書の取り込み |
+| フィールド   | 取得元                  | 用途                                                          |
+| ------------ | ----------------------- | ------------------------------------------------------------- |
+| `content`    | クライアント payload    | 任意のテキストを直接投入 (旧来の使い方)                       |
+| `url`        | Fetcher が HTTP GET     | リモート文書の取り込み                                        |
 | `local_path` | doc-db が `os.ReadFile` | **ローカル運用推奨**。大容量文書を MCP payload に載せずに済む |
 
 `local_path` の安全性: 絶対パスのみ、`..` 要素禁止、シンボリックリンク解決後のパスも再検証、
@@ -359,10 +359,10 @@ sequenceDiagram
 
 **Embedding モデルと次元数の確定値（EMB-02）**:
 
-| モデル（`embedding.model`） | 次元数 | `embeddings.dim` |
-| --- | --- | --- |
-| `text-embedding-3-large`（デフォルト） | 3072 | 3072 |
-| `text-embedding-3-small` | 1536 | 1536 |
+| モデル（`embedding.model`）            | 次元数 | `embeddings.dim` |
+| -------------------------------------- | ------ | ---------------- |
+| `text-embedding-3-large`（デフォルト） | 3072   | 3072             |
+| `text-embedding-3-small`               | 1536   | 1536             |
 
 デフォルトモデル `text-embedding-3-large` を使用する場合、`embeddings.dim = 3072` で固定される。モデル変更時はデータベースを再構築する（異なる次元数のベクトルは混在不可）。
 
@@ -578,10 +578,10 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 
 設定は **YAML 設定ファイル** で管理する（環境変数による設定値オーバーライドは行わない）。API キーのみシークレットとして環境変数で扱う。
 
-| 種別 | 渡し方 | 対象 |
-| --- | --- | --- |
-| シークレット | 環境変数 | `OPENAI_API_DOCDB_KEY`（優先） / `OPENAI_API_KEY`（フォールバック） |
-| 動作設定 | YAML ファイル | Embedding モデル・タイムアウト・ポート・パス等のすべて |
+| 種別         | 渡し方        | 対象                                                                |
+| ------------ | ------------- | ------------------------------------------------------------------- |
+| シークレット | 環境変数      | `OPENAI_API_DOCDB_KEY`（優先） / `OPENAI_API_KEY`（フォールバック） |
+| 動作設定     | YAML ファイル | Embedding モデル・タイムアウト・ポート・パス等のすべて              |
 
 **設定ファイルパス（CFG-01）**: `~/.doc-db/doc-db.yaml`（固定）。`$HOME` が解決できない、またはファイルが存在しない場合は **fail-fast** でサーバーを終了する。CLI フラグ・環境変数によるパス変更は提供しない（設計上の簡潔性を優先）。
 
@@ -594,57 +594,57 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 ```yaml
 # ~/.doc-db/doc-db.yaml
 server:
-  port: 58080                      # HTTP ポート（dynamic range から選定）
-  db_path: "./docdb.sqlite"        # SQLite ファイルパス
+  port: 58080 # HTTP ポート（dynamic range から選定）
+  db_path: "./docdb.sqlite" # SQLite ファイルパス
 
 embedding:
-  model: "text-embedding-3-large"  # Embedding モデル（変更時は DB 再構築必須）
-  dim: 3072                        # ベクトル次元数（EMB-02 確定値）
-  timeout_seconds: 60              # API タイムアウト
+  model: "text-embedding-3-large" # Embedding モデル（変更時は DB 再構築必須）
+  dim: 3072 # ベクトル次元数（EMB-02 確定値）
+  timeout_seconds: 60 # API タイムアウト
 
 rerank:
-  model: "gpt-4o-mini"             # LLM Rerank モデル
-  factor: 3                        # top_n × factor 件を Rerank に渡す
-  timeout_seconds: 30              # API タイムアウト
+  model: "gpt-4o-mini" # LLM Rerank モデル
+  factor: 3 # top_n × factor 件を Rerank に渡す
+  timeout_seconds: 30 # API タイムアウト
 
 chunker:
-  max_chunk_size: 1500             # チャンクあたり最大文字数（CHK-03 確定値）
+  max_chunk_size: 1500 # チャンクあたり最大文字数（CHK-03 確定値）
 
 bm25:
-  k1: 1.5                          # サチュレーション係数（Robertson 経験則）
-  b: 0.75                          # 文書長正規化係数
+  k1: 1.5 # サチュレーション係数（Robertson 経験則）
+  b: 0.75 # 文書長正規化係数
 
 fetcher:
-  timeout_seconds: 30              # URL フェッチタイムアウト
-  allow_private: false             # プライベート IP へのフェッチを許可（SSRF 対策無効化）
+  timeout_seconds: 30 # URL フェッチタイムアウト
+  allow_private: false # プライベート IP へのフェッチを許可（SSRF 対策無効化）
 
 expiry:
-  ttl_days: 30                     # 未アクセス KEY の自動削除日数（TBD-001）
-  max_chunks: 10000                # システム全体のチャンク上限（TBD-002）
-  interval_seconds: 3600           # 廃棄チェック間隔
+  ttl_days: 30 # 未アクセス KEY の自動削除日数（TBD-001）
+  max_chunks: 10000 # システム全体のチャンク上限（TBD-002）
+  interval_seconds: 3600 # 廃棄チェック間隔
 ```
 
 ### 9.3 設計判断
 
-| 項目 | 判断 | 理由 |
-| --- | --- | --- |
-| YAML 採用 | TOML/JSON ではなく YAML | コメント可・階層構造の可読性・運用者の編集容易性 |
-| 環境変数オーバーライド不採用 | ファイルが唯一の正本 | 設定の出所を一元化し、デバッグ時の挙動推定を容易にする |
-| パス固定 | `~/.doc-db/doc-db.yaml` のみ | CLI / env でのパス変更が増えると「実際にどの設定が使われているか」の判定コストが増す。サーバー用途では複数構成を持つ必要がない |
-| API キーだけ環境変数 | シークレットは設定ファイルに書かない | 平文記録・git 誤コミットのリスク回避 |
+| 項目                         | 判断                                 | 理由                                                                                                                           |
+| ---------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| YAML 採用                    | TOML/JSON ではなく YAML              | コメント可・階層構造の可読性・運用者の編集容易性                                                                               |
+| 環境変数オーバーライド不採用 | ファイルが唯一の正本                 | 設定の出所を一元化し、デバッグ時の挙動推定を容易にする                                                                         |
+| パス固定                     | `~/.doc-db/doc-db.yaml` のみ         | CLI / env でのパス変更が増えると「実際にどの設定が使われているか」の判定コストが増す。サーバー用途では複数構成を持つ必要がない |
+| API キーだけ環境変数         | シークレットは設定ファイルに書かない | 平文記録・git 誤コミットのリスク回避                                                                                           |
 
 ## 10. エラーハンドリング方針
 
 外部要因エラーのみキャッチし、内部バグはサイレントフォールバックせず伝播させる（APP-001 エラーケース節）。
 
-| レイヤー | 方針 |
-| --- | --- |
-| 起動時 | `OPENAI_API_DOCDB_KEY` と `OPENAI_API_KEY` の両方が未設定の場合、サーバーを即座に終了する（PRE-01 fail-fast）。実際の API 疎通確認はしない（遅延検出コストが不要）。起動後に無効キーだと判明した場合は Embedder レイヤーでエラーを返す |
-| Fetcher | タイムアウト・HTTP エラーをキャッチし、該当 document をスキップして error 情報を返す |
-| Embedder | API エラーをキャッチし、複数バッチ失敗は `errors.Join` で全件保持し caller に返す。指数バックオフで最大 3 回リトライ |
-| Reranker | エラー時は merge 順結果にフォールバック（RR-02）。フォールバック発生は `QueryResult.warnings` に記録し caller が観測可能にする（silent failure 禁止方針） |
-| Store | DB エラーは内部バグとして伝播させる（panic または error return で MCP エラーレスポンス）。tx.Rollback 失敗は `errors.Join` で caller に伝達 |
-| ExpiryWorker | 個別 KEY 削除失敗はログ + `Worker.Stats().LastKeyErrors` に記録し observability を担保。サーバー停止はしない |
+| レイヤー     | 方針                                                                                                                                                                                                                                   |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 起動時       | `OPENAI_API_DOCDB_KEY` と `OPENAI_API_KEY` の両方が未設定の場合、サーバーを即座に終了する（PRE-01 fail-fast）。実際の API 疎通確認はしない（遅延検出コストが不要）。起動後に無効キーだと判明した場合は Embedder レイヤーでエラーを返す |
+| Fetcher      | タイムアウト・HTTP エラーをキャッチし、該当 document をスキップして error 情報を返す                                                                                                                                                   |
+| Embedder     | API エラーをキャッチし、複数バッチ失敗は `errors.Join` で全件保持し caller に返す。指数バックオフで最大 3 回リトライ                                                                                                                   |
+| Reranker     | エラー時は merge 順結果にフォールバック（RR-02）。フォールバック発生は `QueryResult.warnings` に記録し caller が観測可能にする（silent failure 禁止方針）                                                                              |
+| Store        | DB エラーは内部バグとして伝播させる（panic または error return で MCP エラーレスポンス）。tx.Rollback 失敗は `errors.Join` で caller に伝達                                                                                            |
+| ExpiryWorker | 個別 KEY 削除失敗はログ + `Worker.Stats().LastKeyErrors` に記録し observability を担保。サーバー停止はしない                                                                                                                           |
 
 **silent failure 禁止方針**: 全エラー経路で「ログのみ」で終わらせず caller / observable state
 に必ず伝達する。詳細は memory `feedback_no_silent_failure.md` 参照。
@@ -662,11 +662,11 @@ expiry:
 
 ## 改定履歴
 
-| 日付       | バージョン | 内容 |
-| ---------- | ---------- | ---- |
-| 2026-06-20 | 0.1        | 初版作成 |
-| 2026-06-20 | 0.2        | レビュー対応: C2(DIF-02 series 剥がし漏れ修正)・C3(WAL+接続プール方針に改訂)・H1(トークナイザ仕様追加)・H2(ID boost/EMB guarantee追加)・H3(スケール上限明記)・H5(LRU SQL修正)・H6(SSRF対策追加)・H7(起動時 fail-fast)・Chunker依存修正・WALテスト注記・series廃棄TBD追加 |
-| 2026-06-20 | 0.3        | レビュー対応(追補): M1(ハッシュ正規化規則追加)・M2(部分 Embed 失敗方針を部分保存に確定)・§4.1(dim 検査の動作主体を明示)・§3.1(internal/mcp の embedder 依存を追記) |
-| 2026-06-24 | 0.4        | §9 を YAML 設定ファイル方式に変更（`~/.doc-db/doc-db.yaml` 固定パス・環境変数オーバーライド不採用・API キーのみ環境変数）。本文中の `DOCDB_*` 環境変数参照を設定ファイルキー参照に更新 |
+| 日付       | バージョン | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-06-20 | 0.1        | 初版作成                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 2026-06-20 | 0.2        | レビュー対応: C2(DIF-02 series 剥がし漏れ修正)・C3(WAL+接続プール方針に改訂)・H1(トークナイザ仕様追加)・H2(ID boost/EMB guarantee追加)・H3(スケール上限明記)・H5(LRU SQL修正)・H6(SSRF対策追加)・H7(起動時 fail-fast)・Chunker依存修正・WALテスト注記・series廃棄TBD追加                                                                                                                                                                                                                                      |
+| 2026-06-20 | 0.3        | レビュー対応(追補): M1(ハッシュ正規化規則追加)・M2(部分 Embed 失敗方針を部分保存に確定)・§4.1(dim 検査の動作主体を明示)・§3.1(internal/mcp の embedder 依存を追記)                                                                                                                                                                                                                                                                                                                                            |
+| 2026-06-24 | 0.4        | §9 を YAML 設定ファイル方式に変更（`~/.doc-db/doc-db.yaml` 固定パス・環境変数オーバーライド不採用・API キーのみ環境変数）。本文中の `DOCDB_*` 環境変数参照を設定ファイルキー参照に更新                                                                                                                                                                                                                                                                                                                        |
 | 2026-06-28 | 0.5        | APP-001 PHIL-01/02 (二層検索アーキ) に対応: §2.1 アーキテクチャ概要に Layer 1/2 説明と更新 mermaid 図を追加。§6.4 全文 GREP signal の設計を新規追加 (substring 一致・origin_signals 記録)。§6.5 Candidate Merge を新規追加 (3 signal 合算ロジック)。§6.6 LLM Rerank を従来の §6.4 から番号変更 + PHIL-02 (Rerank は optional) を明記。§10 エラーハンドリングを silent failure 禁止方針 (memory: no-silent-failure) に整合させ Embedder の `errors.Join` / Reranker の warnings / Expiry の Stats() 公開を反映 |
-| 2026-07-01 | 0.6        | §5.2 upsert_documents シーケンス冒頭に content 取得 3 経路 (content / url / **local_path**) の表を追加。local_path はローカル運用時の payload 削減用途で、doc-db が絶対パスから直接ディスク読み込みする。安全性制約 (絶対パス必須・`..` 禁止・symlink 解決後再検証・10MB 上限・regular file 限定) を明記 |
+| 2026-07-01 | 0.6        | §5.2 upsert_documents シーケンス冒頭に content 取得 3 経路 (content / url / **local_path**) の表を追加。local_path はローカル運用時の payload 削減用途で、doc-db が絶対パスから直接ディスク読み込みする。安全性制約 (絶対パス必須・`..` 禁止・symlink 解決後再検証・10MB 上限・regular file 限定) を明記                                                                                                                                                                                                      |

@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     local_path なら数十バイトで済む)
 - `internal/mcp/mcp.go` に `readLocalDocument` ヘルパを追加、対応するテスト 6 件追加
   (ReadsFile / RelativePathRejected / TraversalRejected / NotFound /
-   ThreeSourcesMutuallyExclusive / ContentURL 両指定は既存維持)
+  ThreeSourcesMutuallyExclusive / ContentURL 両指定は既存維持)
 
 ### Changed
 

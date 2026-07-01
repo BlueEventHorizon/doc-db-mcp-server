@@ -36,17 +36,17 @@ LLM Rerank は **ranking 最適化のためのオプション**であり、recal
 
 ## 主な特徴
 
-| 特徴 | 説明 |
-|------|------|
-| **3 signal 並列検索** | Embedding / BM25 / 全文 GREP を並列実行し `origin_signals` を各 chunk に付与 |
-| **ID パターン対応** | `FNC-001` / `DES-028` のような規格 ID は BM25 substring + GREP で確実にマッチ |
-| **LLM Rerank（任意）** | 3 signal で集めた候補を gpt-4o-mini 等で再ランク（`mode=rerank`） |
-| **local_path 経路** | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+） |
+| 特徴                    | 説明                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| **3 signal 並列検索**   | Embedding / BM25 / 全文 GREP を並列実行し `origin_signals` を各 chunk に付与  |
+| **ID パターン対応**     | `FNC-001` / `DES-028` のような規格 ID は BM25 substring + GREP で確実にマッチ |
+| **LLM Rerank（任意）**  | 3 signal で集めた候補を gpt-4o-mini 等で再ランク（`mode=rerank`）             |
+| **local_path 経路**     | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+） |
 | **重複 Embedding 排除** | 同一内容は hash で検出し Embedding を共有。branch/series を低コストで多重管理 |
-| **series 削除** | branch 単位で `delete_series` により record から除去（v0.1.9+） |
-| **シングルバイナリ** | pure-Go SQLite。Homebrew tap で 1 コマンド導入 |
-| **TTL / LRU 自動廃棄** | 期限切れ・容量超過のインデックスを Expiry ワーカーが自動削除 |
-| **SSRF 防御** | URL 登録はプライベート IP をデフォルトで拒否 |
+| **series 削除**         | branch 単位で `delete_series` により record から除去（v0.1.9+）               |
+| **シングルバイナリ**    | pure-Go SQLite。Homebrew tap で 1 コマンド導入                                |
+| **TTL / LRU 自動廃棄**  | 期限切れ・容量超過のインデックスを Expiry ワーカーが自動削除                  |
+| **SSRF 防御**           | URL 登録はプライベート IP をデフォルトで拒否                                  |
 
 ## アーキテクチャ
 
@@ -129,10 +129,10 @@ cp doc-db.yaml.example ~/.doc-db/doc-db.yaml
 ```yaml
 server:
   port: 58080
-  db_path: "~/.doc-db/docdb.sqlite"    # `~/` は $HOME に展開される（v0.1.10+）
+  db_path: "~/.doc-db/docdb.sqlite" # `~/` は $HOME に展開される（v0.1.10+）
 embedding:
-  model: "text-embedding-3-large"       # 変更時は DB 再構築が必要
-  dim: 3072                             # -3-large=3072 / -3-small=1536
+  model: "text-embedding-3-large" # 変更時は DB 再構築が必要
+  dim: 3072 # -3-large=3072 / -3-small=1536
   timeout_seconds: 60
 rerank:
   model: "gpt-4o-mini"
@@ -185,36 +185,36 @@ claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 
 ## MCP ツール一覧
 
-| ツール | 説明 |
-|--------|------|
+| ツール             | 説明                                                                         |
+| ------------------ | ---------------------------------------------------------------------------- |
 | `upsert_documents` | ドキュメントを登録・更新。`content` / `url` / `local_path` の 3 経路（排他） |
-| `delete_documents` | 指定 series の特定 path ドキュメントを削除 |
-| `delete_series` | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用） |
-| `query` | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank |
-| `list_indexes` | 登録済み KEY 一覧を取得 |
-| `delete_index` | KEY 全体を削除 |
-| `manage_index` | KEY のメタ情報操作（TTL / max_chunks 等） |
+| `delete_documents` | 指定 series の特定 path ドキュメントを削除                                   |
+| `delete_series`    | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用）   |
+| `query`            | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank                        |
+| `list_indexes`     | 登録済み KEY 一覧を取得                                                      |
+| `delete_index`     | KEY 全体を削除                                                               |
+| `manage_index`     | KEY のメタ情報操作（TTL / max_chunks 等）                                    |
 
 ### `query` の mode
 
-| mode | 説明 |
-|------|------|
-| `all` | **デフォルト（v0.1.5+）**。3 signal を並列実行し、`origin_signals` 付きで返す |
-| `rerank` | 3 signal で候補収集後、LLM で再ランク |
-| `emb`  | Embedding 類似度のみ |
-| `lex`  | BM25 substring match のみ |
-| `grep` | 全文 GREP（NFKC + lowercase substring）のみ |
-| `hybrid` | legacy 互換: Embedding + BM25 の RRF 融合（GREP なし） |
+| mode     | 説明                                                                          |
+| -------- | ----------------------------------------------------------------------------- |
+| `all`    | **デフォルト（v0.1.5+）**。3 signal を並列実行し、`origin_signals` 付きで返す |
+| `rerank` | 3 signal で候補収集後、LLM で再ランク                                         |
+| `emb`    | Embedding 類似度のみ                                                          |
+| `lex`    | BM25 substring match のみ                                                     |
+| `grep`   | 全文 GREP（NFKC + lowercase substring）のみ                                   |
+| `hybrid` | legacy 互換: Embedding + BM25 の RRF 融合（GREP なし）                        |
 
 各 hit は `origin_signals: ["emb","lex","grep"]` を含み、どの signal で拾われたかを
 上位 agent が判定できる（QRY-OUT-03）。
 
 ### `upsert_documents` の 3 経路
 
-| 経路 | 用途 |
-|------|------|
-| `content` | 文字列を直接送る。小さいドキュメントや動的生成向け |
-| `url`     | HTTP(S) から取得（SSRF 防御付き） |
+| 経路         | 用途                                                                              |
+| ------------ | --------------------------------------------------------------------------------- |
+| `content`    | 文字列を直接送る。小さいドキュメントや動的生成向け                                |
+| `url`        | HTTP(S) から取得（SSRF 防御付き）                                                 |
 | `local_path` | サーバーが絶対パスから直接読む（大容量 Markdown 向け・payload 大幅削減。v0.1.8+） |
 
 `local_path` は絶対パスのみ、`..` 要素を含むパスを reject、シンボリックリンク解決後の
@@ -235,15 +235,15 @@ key: "myrepo"
 
 ## ドキュメント
 
-| 文書 | 内容 |
-|------|------|
+| 文書                                                               | 内容                                                                                                           |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
 | **[`docs/AI_INTEGRATION_GUIDE.md`](docs/AI_INTEGRATION_GUIDE.md)** | **AI skill / agent 向け統合ガイド（PHIL-01 二層アーキ・mode 使い分け・origin_signals 解釈・典型フロー・FAQ）** |
-| `docs/specs/base/requirements/APP-001` | 基本機能要件定義書 |
-| `docs/specs/base/design/DES-001` | 基本設計書（アーキテクチャ・データモデル・3 signal 検索・YAML 設定） |
-| `docs/specs/install/requirements/APP-002` | インストール要件定義書（Homebrew 自家 tap） |
-| `docs/specs/install/design/DES-002` | インストール設計書（Formula・整合性検証・caveats） |
-| [`CHANGELOG.md`](CHANGELOG.md) | バージョン履歴（keep-a-changelog 形式） |
-| `VERSION` | canonical バージョン文字列（plain text） |
+| `docs/specs/base/requirements/APP-001`                             | 基本機能要件定義書                                                                                             |
+| `docs/specs/base/design/DES-001`                                   | 基本設計書（アーキテクチャ・データモデル・3 signal 検索・YAML 設定）                                           |
+| `docs/specs/install/requirements/APP-002`                          | インストール要件定義書（Homebrew 自家 tap）                                                                    |
+| `docs/specs/install/design/DES-002`                                | インストール設計書（Formula・整合性検証・caveats）                                                             |
+| [`CHANGELOG.md`](CHANGELOG.md)                                     | バージョン履歴（keep-a-changelog 形式）                                                                        |
+| `VERSION`                                                          | canonical バージョン文字列（plain text）                                                                       |
 
 ## 開発
 
