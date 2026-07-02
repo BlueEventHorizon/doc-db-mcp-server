@@ -70,49 +70,73 @@ stdout の JSON を parse:
   **同一 path でも branch が違えば別 series として管理される**\
   同一内容 (SHA-256 一致) なら embedding は共有される (DIF-02)
 
-### Step 4: local_path 経由で upsert (バッチ分割 + 進捗表示)
+### Step 4: local_path 経由で upsert (呼び出し側でバッチループ) [MANDATORY]
 
 **doc-db にファイル内容を送らず、絶対パスだけを渡してサーバ側で読ませる**
 (payload 削減)。`docdb_client.py` は `~/.doc-db/doc-db.yaml` の port を自動取得し、
 MCP handshake (initialize → notifications/initialized → tools/call) を内部で行う。
-**デフォルトで 30 件ずつバッチ分割**し、各バッチ完了時に進捗を stderr に表示する。
 
-Step 2 の JSON の `entries[]` をそのまま `--entries-json` に渡す:
+> ⚠️ **`upsert` サブコマンドを直接呼ばないこと**。`upsert` は全バッチを 1 プロセス内で
+> 連続実行するため、大量ファイル (目安 200+) では Claude Code の Bash tool のデフォルト
+> timeout (2分) を超えて `Command timed out` になる。timeout はこのプロセスの外側
+> (Claude Code harness) の制約であり、スクリプト内から変更できない。
+>
+> **必ず `upsert-batch` を使い、SKILL 実行者 (この AI) がバッチ単位でループする。**
+> 1 回の呼び出しは 30 件・数十秒で完了するため、timeout に依存せず確実に動作する。
+
+**Step 4-1: entries を取得し、バッチ数を計算する**
 
 ```bash
-ENTRIES_JSON=$(python3 .claude/skills/update-db-rules/scripts/resolve_docs.py --type rules \
-    | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps(d['entries']))")
+python3 .claude/skills/update-db-rules/scripts/resolve_docs.py --type rules \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps(d['entries']))" \
+    > /tmp/docdb_rules_entries.json
 
-python3 .claude/skills/update-db-rules/scripts/docdb_client.py upsert \
+python3 -c "
+import json
+entries = json.load(open('/tmp/docdb_rules_entries.json'))
+total = len(entries)
+batch = 30
+print(f'total={total} batches={(total + batch - 1)//batch}')
+"
+```
+
+**Step 4-2: バッチごとに `upsert-batch` を呼び、結果を集約する [MANDATORY]**
+
+`total` 件を 30 件区切りで `offset` を進めながら **1 バッチ = 1 Bash 呼び出し**で処理する。
+AI は以下をループし、**各バッチ完了時にユーザーへ進捗を報告する**:
+
+```bash
+python3 .claude/skills/update-db-rules/scripts/docdb_client.py upsert-batch \
     --key "<project_name>-rules" \
     --series "<git_branch>" \
-    --entries-json "$ENTRIES_JSON"
-    # --batch-size 30    (デフォルト。大量ファイル時に必要なら 10〜50 で調整)
+    --entries-json "$(cat /tmp/docdb_rules_entries.json)" \
+    --offset <0, 30, 60, ...> \
+    --limit 30
 ```
 
-`entries[]` の各要素は `{path, local_path}` (path=相対、local_path=絶対)。
+各呼び出しの stdout は 1 バッチ分の JSON:
 
-**進捗表示例** (stderr):
-
-```
-upsert start: total=600 batches=20 batch_size=30 key=... series=main
-[  30/600] processed=   2 skipped=  28 failed=  0 (  4.5s / batch, ETA    89s)
-[  60/600] processed=   1 skipped=  59 failed=  0 (  2.1s / batch, ETA    42s)
-...
-upsert done: total_elapsed=94.3s
+```json
+{
+  "offset": 0, "limit": 30, "total": 90, "batch_count": 30,
+  "processed": 2, "skipped": 28, "failed": 0, "errors": [], "warnings": []
+}
 ```
 
-**接続失敗時** (exit 1 + stderr): Step 1 の案内を提示。バッチ途中で 1 つのバッチが
-失敗しても他バッチは続行し、`errors[]` に集約される。全バッチ完了後 `failed > 0`
-なら exit 2。
+AI はこれを **バッチごとに `processed` / `skipped` / `failed` / `errors` / `warnings` へ加算**し、
+全バッチ完了後に Step 5 で合計を報告する。
+
+**接続失敗時** (exit 1 + stderr): Step 1 の案内を提示してループを中断する。
+1 バッチが失敗 (exit 2, `failed > 0`) しても **ループは継続**し、失敗バッチの
+`errors[]` を集約結果に含める。
 
 **注**: doc-db は SHA-256 ハッシュで変更を検出し、同一内容の再 embedding をスキップする
 (DIF-02)。
 
 ### Step 5: 完了レポート
 
-stdout の JSON (processed / skipped / failed / errors) をそのまま報告する。
-warnings や errors がある場合は必ず含めて報告する (silent failure 禁止方針)。
+Step 4-2 で集約した合計値を報告する。warnings や errors がある場合は必ず含めて報告する
+(silent failure 禁止方針)。
 
 ## Notes
 

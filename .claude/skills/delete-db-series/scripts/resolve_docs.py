@@ -146,6 +146,42 @@ def parse_config(content: str) -> dict:
 # doc-db 固有: git branch 検出 / 出力
 # ---------------------------------------------------------------------------
 
+def detect_project_name(project_root: Path) -> str:
+    """git worktree 環境でも安定した project 識別名 (KEY prefix) を返す。
+
+    git worktree はブランチごとに別ディレクトリ (basename も別) になりうる。
+    `project_root.name` を単純に使うと worktree のディレクトリ名が KEY prefix に
+    化けてしまい、同一プロジェクトなのに branch (worktree) ごとに別 KEY として
+    doc-db に登録されてしまう (DIF-02 の series 設計が意味を成さなくなるバグ)。
+
+    `git rev-parse --git-common-dir` は同一 repo の全 worktree で共通の
+    `.git` ディレクトリを指す。その親ディレクトリ (= 本体 repo のルート) の
+    名前を使えば、どの worktree から呼んでも同じ project_name が得られる。
+
+    git repo でない場合や git 実行に失敗した場合は、従来通り
+    `project_root.name` (ディレクトリ名) にフォールバックする。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            common_dir_str = result.stdout.strip()
+            if common_dir_str:
+                common_dir = Path(common_dir_str)
+                if not common_dir.is_absolute():
+                    common_dir = project_root / common_dir
+                main_repo_root = common_dir.resolve().parent
+                if main_repo_root.name:
+                    return main_repo_root.name
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return project_root.name
+
+
 def detect_git_branch(project_root: Path) -> str:
     """現在の Git branch 名を返す。git repo 外 / detached HEAD / 実行失敗時は "main"。"""
     try:
@@ -245,12 +281,13 @@ def main() -> int:
         for rel in files
     ]
     branch = detect_git_branch(project_root)
+    project_name = detect_project_name(project_root)
 
     _emit_and_exit({
         "status": "ok",
         "type": args.type,
         "project_root": str(project_root),
-        "project_name": project_root.name,
+        "project_name": project_name,
         "git_branch": branch,
         "files": files,
         "entries": entries,

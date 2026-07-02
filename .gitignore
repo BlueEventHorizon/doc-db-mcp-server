@@ -35,3 +35,4 @@ docs/references
 /docdb
 /doc-db
 *.sqlite
+docs/specs/test-docs
