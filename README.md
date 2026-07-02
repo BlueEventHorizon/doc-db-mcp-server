@@ -3,7 +3,7 @@
 Markdown ドキュメントを **Embedding + BM25 + 全文 GREP** の 3 signal で横断検索し、
 必要に応じて **LLM Rerank** で並べ替える汎用 MCP サーバー（Streamable HTTP transport）。
 
-**現バージョン: v0.1.11**（`VERSION` / `CHANGELOG.md` が canonical）。
+**現バージョン: v0.1.12**（`VERSION` / `CHANGELOG.md` が canonical）。
 基盤コンポーネント・MCP ツール 7 種・3 signal 検索パイプライン・LLM Rerank・
 Homebrew 自家 tap 配布まで実装済み。
 
@@ -108,7 +108,7 @@ doc-db --version
 git clone https://github.com/BlueEventHorizon/doc-db-mcp-server.git
 cd doc-db-mcp-server
 make build            # ldflags 経由で VERSION を注入
-./doc-db --version    # 0.1.11
+./doc-db --version    # 0.1.12
 ```
 
 ## セットアップ
@@ -150,9 +150,13 @@ expiry:
   ttl_days: 30
   max_chunks: 10000
   interval_seconds: 3600
+log:
+  path: "~/.doc-db/doc-db.log" # 省略可（省略時デフォルト値と同じ）。"stdout"/"stderr" も指定可
+  level: "info" # debug/info/warn/error
 ```
 
-全項目必須・未知キー禁止・値域外で fail-fast（CFG-03）。
+全項目必須・未知キー禁止・値域外で fail-fast（CFG-03）。**例外**: `log` セクションは省略可
+（省略時は `path: ~/.doc-db/doc-db.log` / `level: info` が適用される。v0.1.12+）。
 
 ### 2. API キー設定と起動
 
@@ -160,6 +164,18 @@ expiry:
 export OPENAI_API_DOCDB_KEY=sk-...   # または OPENAI_API_KEY
 doc-db
 ```
+
+**ログはサーバー自身が `log.path` を開いて書き込む**（v0.1.12+）。従来のような
+`doc-db > /tmp/doc-db.log 2>&1 &` というシェルリダイレクトは不要:
+
+```bash
+doc-db &                  # ログは ~/.doc-db/doc-db.log (デフォルト) に書き込まれる
+make show-log             # ログを tail -f で追跡
+make show-config          # 解決済みの config/log/db パスを確認
+doc-db --show-config      # 同上（make を経由しない直接呼び出し）
+```
+
+起動直後は標準出力にも設定サマリ（config / log / db のパスと待受ポート）が 1 度だけ表示される。
 
 ### 3. MCP クライアントへの登録
 
@@ -282,6 +298,8 @@ go test ./...              # 全パッケージテスト
 go test -race ./...        # レース検出テスト
 make verify-version        # VERSION / CHANGELOG / .version-config.yaml / Formula tag 整合性
 make verify-tag            # Formula revision == git tag commit SHA 検証
+make show-config           # 解決済み設定 (log/db パス等) を表示
+make show-log              # 設定済みログファイルを tail -f で追跡
 ```
 
 ## ライセンス

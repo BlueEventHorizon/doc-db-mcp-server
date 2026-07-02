@@ -48,8 +48,13 @@ cp /opt/homebrew/opt/doc-db/share/doc-db/doc-db.yaml.example ~/.doc-db/doc-db.ya
 export OPENAI_API_DOCDB_KEY=sk-...
 
 # 4. サーバ起動 (別ターミナル or launchd)
-doc-db > /tmp/doc-db.log 2>&1 &
+doc-db &
 ```
+
+**ログはサーバー自身が `~/.doc-db/doc-db.log` に書き込む** (v0.1.12+)。従来のような
+シェルリダイレクト (`doc-db > /tmp/doc-db.log 2>&1 &`) は不要。実際のログ/DB パスは
+`doc-db --show-config`（または本体リポジトリの `make show-log` / `make show-config`）
+で確認できる。
 
 これだけで各 SKILL の `docdb_client.py` が `http://localhost:58080/mcp` に対して
 MCP handshake (initialize → notifications/initialized → tools/call) を発行し
@@ -93,11 +98,11 @@ branch を削除した後は `/delete-db-series <branch 名>` で cleanup する
 
 ## トラブルシューティング
 
-| 症状                                 | 原因                     | 対処                                     |
-| ------------------------------------ | ------------------------ | ---------------------------------------- |
-| `doc-db サーバに接続できません`      | サーバ未起動             | `doc-db > /tmp/doc-db.log 2>&1 &` で起動 |
-| `key "xxx" が存在しません`           | まだ upsert していない   | 先に `/update-db-{specs,rules}` を実行   |
-| `.doc_structure.yaml が存在しません` | プロジェクト初期化未完了 | `/forge:setup-doc-structure` を実行      |
+| 症状                                 | 原因                     | 対処                                   |
+| ------------------------------------ | ------------------------ | -------------------------------------- |
+| `doc-db サーバに接続できません`      | サーバ未起動             | `doc-db &` で起動                      |
+| `key "xxx" が存在しません`           | まだ upsert していない   | 先に `/update-db-{specs,rules}` を実行 |
+| `.doc_structure.yaml が存在しません` | プロジェクト初期化未完了 | `/forge:setup-doc-structure` を実行    |
 
 ## 内部設計
 

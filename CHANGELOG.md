@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-07-02
+
+### Added (config.log セクション + 起動時可視化 + リクエストログ)
+
+ログ出力先が呼び出し側シェルのリダイレクト (`doc-db > /tmp/doc-db.log 2>&1 &`) 任せに
+なっており、`doc-db.yaml` で管理されていなかった問題を解消。加えて、リクエスト単位の
+処理状況が全く可視化されていなかった問題も解消した。
+
+- **`config.log` セクション新設** (`internal/config`):
+  - `log.path`（デフォルト `~/.doc-db/doc-db.log`。`"stdout"`/`"stderr"` も指定可）
+  - `log.level`（`debug`/`info`/`warn`/`error`。デフォルト `info`）
+  - **CFG-03 の例外**: `log` セクションは省略可。省略時は上記デフォルト値が補完される
+    (既存の `doc-db.yaml` に変更を強いない後方互換措置。DES-001 §9 に明記)
+- **サーバー自身がログファイルを開くように変更** (`cmd/docdb/main.go`):
+  - `cfg.Log.Path` を `os.OpenFile` (`O_APPEND|O_CREATE`) で開き `slog` の出力先に設定
+  - 親ディレクトリが無ければ自動作成
+  - `"stdout"`/`"stderr"` 指定時はそのまま標準出力・標準エラーに出力
+- **起動時バナー**: `slog` とは別に、config / log / db の実配置パスと待受ポートを
+  標準出力へ直接 1 度だけ表示する。ログをファイルにリダイレクトしていても、
+  起動直後にターミナルで確認できる
+- **新規 `doc-db --show-config` フラグ**: サーバーを起動せずに解決済みの
+  `version` / `config_path` / `log.path` / `log.level` / `db_path` / `port` /
+  `embedding.model` を表示する
+- **`make show-config` / `make show-log`** (Makefile): `--show-config` の結果から
+  ログパスを取得して `tail -f` する。ログファイルが未作成の場合や `log.path` が
+  `stdout`/`stderr` の特殊値の場合は分かりやすいメッセージを表示する
+- **リクエスト単位のログ** (`internal/mcp/mcp.go`): 7 ツール全てに開始・終了ログを追加
+  (`upsert_documents` / `delete_documents` / `delete_series` / `query` /
+  `list_indexes` / `delete_index` / `manage_index`)。`upsert`/`delete_documents`/
+  `delete_series`/`query` は処理時間 (`duration_ms`) も記録。`tail -f` で
+  リアルタイムに処理状況を追えるようになった
+
+### Changed (ドキュメント)
+
+- `doc-db.yaml.example` / `README.md` / `docs/specs/base/design/DES-001` に
+  `log:` セクションの説明を追加
+- `.claude/skills/README.md` / `update-db-{specs,rules}/SKILL.md` /
+  `docdb_client.py` (5 コピー) のサーバ起動案内から
+  `doc-db > /tmp/doc-db.log 2>&1 &` を撤去し、`doc-db &` + `--show-config` 案内に統一
+
+### テスト
+
+- `internal/config`: `log` セクション省略時のデフォルト適用・明示指定・
+  `stdout`/`stderr` 特殊値・不正な `level` の fail-fast を検証する 4 テストを追加
+- 既存の全パッケージテスト (`go test -race ./...`) は変更なしで green を維持
+
 ## [0.1.11] - 2026-07-02
 
 ### Changed (SKILL バックエンドを MCP tool 経由 → HTTP 直叩きへ)
@@ -351,7 +397,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.12
 [0.1.11]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.11
 [0.1.10]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.10
 [0.1.9]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.9

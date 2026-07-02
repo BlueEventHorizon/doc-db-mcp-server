@@ -87,7 +87,9 @@ def _post(url: str, payload: dict, session_id: str | None, timeout: int) -> tupl
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"doc-db サーバに接続できません ({url}): {e.reason}. "
-            f"サーバが起動しているか確認してください: `doc-db > /tmp/doc-db.log 2>&1 &`"
+            f"サーバが起動しているか確認してください: `doc-db &` "
+            f"(ログはサーバー自身が ~/.doc-db/doc-db.log に書き込みます。"
+            f"`doc-db --show-config` で実際のログ/DB パスを確認できます)"
         ) from e
 
     if not raw:

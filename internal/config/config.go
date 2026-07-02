@@ -26,6 +26,10 @@ type Config struct {
 	BM25      BM25Config      `yaml:"bm25"`
 	Fetcher   FetcherConfig   `yaml:"fetcher"`
 	Expiry    ExpiryConfig    `yaml:"expiry"`
+	// Log は省略可能セクション（CFG-03 の例外。DES-001 §9.3 参照）。
+	// 省略時は defaultLogPath() / "info" が適用される。既存の doc-db.yaml に
+	// log: セクションが無くても起動が壊れないようにするための後方互換措置。
+	Log LogConfig `yaml:"log"`
 }
 
 // ServerConfig は server セクション。
@@ -72,6 +76,23 @@ type ExpiryConfig struct {
 	IntervalSeconds int `yaml:"interval_seconds"`
 }
 
+// LogConfig は log セクション（省略可）。
+// Path はログの出力先。通常は絶対パス（`~/` は展開される）。
+// 特殊値 "stdout" / "stderr" を指定すると標準出力・標準エラーにそのまま出す
+// （フォアグラウンド開発時の用途）。
+// Level は "debug" | "info" | "warn" | "error"。
+type LogConfig struct {
+	Path  string `yaml:"path"`
+	Level string `yaml:"level"`
+}
+
+// defaultLogPath は log.path 省略時のデフォルト値（展開前）を返す。
+func defaultLogPath() string {
+	return "~/.doc-db/doc-db.log"
+}
+
+const defaultLogLevel = "info"
+
 // DefaultPath は設定ファイルの固定パス（CFG-01）。
 // `$HOME/.doc-db/doc-db.yaml` を返す。$HOME が解決できない場合は空文字列を返す。
 func DefaultPath() string {
@@ -114,6 +135,22 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: server.db_path のチルダ展開に失敗: %w", err)
 	}
 	cfg.Server.DBPath = expanded
+
+	// log セクション省略時のデフォルト適用（CFG-03 の例外。DES-001 §9.3）
+	if cfg.Log.Path == "" {
+		cfg.Log.Path = defaultLogPath()
+	}
+	if cfg.Log.Level == "" {
+		cfg.Log.Level = defaultLogLevel
+	}
+	// "stdout" / "stderr" はチルダ展開・パス扱いしない特殊値
+	if cfg.Log.Path != "stdout" && cfg.Log.Path != "stderr" {
+		expandedLog, err := expandTilde(cfg.Log.Path)
+		if err != nil {
+			return nil, fmt.Errorf("config: log.path のチルダ展開に失敗: %w", err)
+		}
+		cfg.Log.Path = expandedLog
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: 設定ファイル %q の検証に失敗しました: %w", path, err)
@@ -166,6 +203,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.Expiry.validate(); err != nil {
+		return err
+	}
+	if err := c.Log.validate(); err != nil {
 		return err
 	}
 	return nil
@@ -240,6 +280,18 @@ func (e *ExpiryConfig) validate() error {
 	}
 	if e.IntervalSeconds <= 0 {
 		return fmt.Errorf("expiry.interval_seconds は正の整数を指定してください（現在値: %d）", e.IntervalSeconds)
+	}
+	return nil
+}
+
+func (l *LogConfig) validate() error {
+	if l.Path == "" {
+		return errors.New("log.path は必須です")
+	}
+	switch l.Level {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf(`log.level は "debug"/"info"/"warn"/"error" のいずれかを指定してください（現在値: %q）`, l.Level)
 	}
 	return nil
 }

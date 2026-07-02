@@ -589,6 +589,11 @@ EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series 
 
 **検証（CFG-03）**: パース後にバリデーションを行う。未知のキー、型不一致、必須項目欠落、値域外（ポート範囲・正の整数等）は fail-fast で起動を中止する。
 
+> **CFG-03 の例外（v0.1.12+）**: `log` セクションは省略可とする。既存の `doc-db.yaml`
+> に破壊的変更を強いないための後方互換措置。省略時は `path: ~/.doc-db/doc-db.log` /
+> `level: info` がロード時に補完される。他の全セクションは引き続き必須項目欠落を
+> fail-fast で拒否する（この例外は `log` セクションのみに限定する）。
+
 ### 9.2 設定ファイルスキーマ
 
 ```yaml
@@ -622,6 +627,10 @@ expiry:
   ttl_days: 30 # 未アクセス KEY の自動削除日数（TBD-001）
   max_chunks: 10000 # システム全体のチャンク上限（TBD-002）
   interval_seconds: 3600 # 廃棄チェック間隔
+
+log:
+  path: "~/.doc-db/doc-db.log" # ログ出力先（省略可。"stdout"/"stderr" も指定可）
+  level: "info" # debug/info/warn/error（省略可）
 ```
 
 ### 9.3 設計判断
