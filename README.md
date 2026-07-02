@@ -3,7 +3,7 @@
 Markdown ドキュメントを **Embedding + BM25 + 全文 GREP** の 3 signal で横断検索し、
 必要に応じて **LLM Rerank** で並べ替える汎用 MCP サーバー（Streamable HTTP transport）。
 
-**現バージョン: v0.1.10**（`VERSION` / `CHANGELOG.md` が canonical）。
+**現バージョン: v0.1.11**（`VERSION` / `CHANGELOG.md` が canonical）。
 基盤コンポーネント・MCP ツール 7 種・3 signal 検索パイプライン・LLM Rerank・
 Homebrew 自家 tap 配布まで実装済み。
 
@@ -36,17 +36,17 @@ LLM Rerank は **ranking 最適化のためのオプション**であり、recal
 
 ## 主な特徴
 
-| 特徴 | 説明 |
-|------|------|
-| **3 signal 並列検索** | Embedding / BM25 / 全文 GREP を並列実行し `origin_signals` を各 chunk に付与 |
-| **ID パターン対応** | `FNC-001` / `DES-028` のような規格 ID は BM25 substring + GREP で確実にマッチ |
-| **LLM Rerank（任意）** | 3 signal で集めた候補を gpt-4o-mini 等で再ランク（`mode=rerank`） |
-| **local_path 経路** | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+） |
+| 特徴                    | 説明                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| **3 signal 並列検索**   | Embedding / BM25 / 全文 GREP を並列実行し `origin_signals` を各 chunk に付与  |
+| **ID パターン対応**     | `FNC-001` / `DES-028` のような規格 ID は BM25 substring + GREP で確実にマッチ |
+| **LLM Rerank（任意）**  | 3 signal で集めた候補を gpt-4o-mini 等で再ランク（`mode=rerank`）             |
+| **local_path 経路**     | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+） |
 | **重複 Embedding 排除** | 同一内容は hash で検出し Embedding を共有。branch/series を低コストで多重管理 |
-| **series 削除** | branch 単位で `delete_series` により record から除去（v0.1.9+） |
-| **シングルバイナリ** | pure-Go SQLite。Homebrew tap で 1 コマンド導入 |
-| **TTL / LRU 自動廃棄** | 期限切れ・容量超過のインデックスを Expiry ワーカーが自動削除 |
-| **SSRF 防御** | URL 登録はプライベート IP をデフォルトで拒否 |
+| **series 削除**         | branch 単位で `delete_series` により record から除去（v0.1.9+）               |
+| **シングルバイナリ**    | pure-Go SQLite。Homebrew tap で 1 コマンド導入                                |
+| **TTL / LRU 自動廃棄**  | 期限切れ・容量超過のインデックスを Expiry ワーカーが自動削除                  |
+| **SSRF 防御**           | URL 登録はプライベート IP をデフォルトで拒否                                  |
 
 ## アーキテクチャ
 
@@ -108,7 +108,7 @@ doc-db --version
 git clone https://github.com/BlueEventHorizon/doc-db-mcp-server.git
 cd doc-db-mcp-server
 make build            # ldflags 経由で VERSION を注入
-./doc-db --version    # 0.1.10
+./doc-db --version    # 0.1.11
 ```
 
 ## セットアップ
@@ -129,10 +129,10 @@ cp doc-db.yaml.example ~/.doc-db/doc-db.yaml
 ```yaml
 server:
   port: 58080
-  db_path: "~/.doc-db/docdb.sqlite"    # `~/` は $HOME に展開される（v0.1.10+）
+  db_path: "~/.doc-db/docdb.sqlite" # `~/` は $HOME に展開される（v0.1.10+）
 embedding:
-  model: "text-embedding-3-large"       # 変更時は DB 再構築が必要
-  dim: 3072                             # -3-large=3072 / -3-small=1536
+  model: "text-embedding-3-large" # 変更時は DB 再構築が必要
+  dim: 3072 # -3-large=3072 / -3-small=1536
   timeout_seconds: 60
 rerank:
   model: "gpt-4o-mini"
@@ -185,36 +185,36 @@ claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 
 ## MCP ツール一覧
 
-| ツール | 説明 |
-|--------|------|
+| ツール             | 説明                                                                         |
+| ------------------ | ---------------------------------------------------------------------------- |
 | `upsert_documents` | ドキュメントを登録・更新。`content` / `url` / `local_path` の 3 経路（排他） |
-| `delete_documents` | 指定 series の特定 path ドキュメントを削除 |
-| `delete_series` | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用） |
-| `query` | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank |
-| `list_indexes` | 登録済み KEY 一覧を取得 |
-| `delete_index` | KEY 全体を削除 |
-| `manage_index` | KEY のメタ情報操作（TTL / max_chunks 等） |
+| `delete_documents` | 指定 series の特定 path ドキュメントを削除                                   |
+| `delete_series`    | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用）   |
+| `query`            | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank                        |
+| `list_indexes`     | 登録済み KEY 一覧を取得                                                      |
+| `delete_index`     | KEY 全体を削除                                                               |
+| `manage_index`     | KEY のメタ情報操作（TTL / max_chunks 等）                                    |
 
 ### `query` の mode
 
-| mode | 説明 |
-|------|------|
-| `all` | **デフォルト（v0.1.5+）**。3 signal を並列実行し、`origin_signals` 付きで返す |
-| `rerank` | 3 signal で候補収集後、LLM で再ランク |
-| `emb`  | Embedding 類似度のみ |
-| `lex`  | BM25 substring match のみ |
-| `grep` | 全文 GREP（NFKC + lowercase substring）のみ |
-| `hybrid` | legacy 互換: Embedding + BM25 の RRF 融合（GREP なし） |
+| mode     | 説明                                                                          |
+| -------- | ----------------------------------------------------------------------------- |
+| `all`    | **デフォルト（v0.1.5+）**。3 signal を並列実行し、`origin_signals` 付きで返す |
+| `rerank` | 3 signal で候補収集後、LLM で再ランク                                         |
+| `emb`    | Embedding 類似度のみ                                                          |
+| `lex`    | BM25 substring match のみ                                                     |
+| `grep`   | 全文 GREP（NFKC + lowercase substring）のみ                                   |
+| `hybrid` | legacy 互換: Embedding + BM25 の RRF 融合（GREP なし）                        |
 
 各 hit は `origin_signals: ["emb","lex","grep"]` を含み、どの signal で拾われたかを
 上位 agent が判定できる（QRY-OUT-03）。
 
 ### `upsert_documents` の 3 経路
 
-| 経路 | 用途 |
-|------|------|
-| `content` | 文字列を直接送る。小さいドキュメントや動的生成向け |
-| `url`     | HTTP(S) から取得（SSRF 防御付き） |
+| 経路         | 用途                                                                              |
+| ------------ | --------------------------------------------------------------------------------- |
+| `content`    | 文字列を直接送る。小さいドキュメントや動的生成向け                                |
+| `url`        | HTTP(S) から取得（SSRF 防御付き）                                                 |
 | `local_path` | サーバーが絶対パスから直接読む（大容量 Markdown 向け・payload 大幅削減。v0.1.8+） |
 
 `local_path` は絶対パスのみ、`..` 要素を含むパスを reject、シンボリックリンク解決後の
@@ -230,20 +230,49 @@ key: "myrepo"
   series: "feature-x" → feature ブランチのスナップショット
 ```
 
-同一 `key + path` でハッシュが一致する場合、Embedding は series 間で共有される
-（重複 API 呼び出しなし）。branch を消したら `delete_series` で cleanup。
+#### ハッシュベース dedup (DIF-02) — Embedding は series 間で共有される
+
+同一 `key + path` に対して、**内容が完全一致 (SHA-256 ハッシュ一致) するファイルは
+Embedding を再計算しない**。既存 record の `series_keys` に新しい series 名だけを
+追記して終わる (OpenAI API 呼び出しゼロ、課金ゼロ)。
+
+具体的な挙動:
+
+| シナリオ                                  | 挙動                                                            |
+| ----------------------------------------- | --------------------------------------------------------------- |
+| **branch 切替 → 同一内容を再 upsert**     | 既存 record に `series_keys += [新 branch]` するだけ。skip 扱い |
+| **branch 切替 → 内容変更 (SHA-256 変化)** | 新 record を作成し、旧 record からは当該 series を除去 (DIF-03) |
+| **branch 削除 (`delete_series`)**         | `series_keys` から除去。当該 record の series が空なら物理削除  |
+| **series が全て残る record**              | そのまま保持 (他 branch から参照されているため)                 |
+
+コスト効果: 600 ファイル × 10 branch を管理しても、branch 間の差分がわずかなら
+実 Embedding 呼び出しは差分ファイル分のみ。API 課金は「全ファイル × 全 branch」に
+ならない。
+
+#### テスト保証
+
+この挙動は以下のテストで常時検証されている (`go test ./...` で自動実行):
+
+- `internal/store/store_test.go::TestAppendAndCleanSeries_DIF02` — Store 層の
+  「同ハッシュ既存時は series 追記のみ、旧 record は series が空になれば物理削除」
+- `internal/mcp/mcp_test.go::TestUpsert_DIF02_SameHashSkips` — MCP handler 層の
+  「別 series に同一内容 upsert → Skipped=1、series_keys に両 branch 紐付き」
+- `internal/mcp/upsert_integration_test.go::TestUpsertIntegration_DIF02_DoesNotCallEmbedder`
+  — Embedder spy で「同一ハッシュ経路で Embedding API が呼ばれない」ことを保証
+
+branch cleanup は `delete_series` (v0.1.9+) または SKILL `/delete-db-series <name>` で。
 
 ## ドキュメント
 
-| 文書 | 内容 |
-|------|------|
+| 文書                                                               | 内容                                                                                                           |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
 | **[`docs/AI_INTEGRATION_GUIDE.md`](docs/AI_INTEGRATION_GUIDE.md)** | **AI skill / agent 向け統合ガイド（PHIL-01 二層アーキ・mode 使い分け・origin_signals 解釈・典型フロー・FAQ）** |
-| `docs/specs/base/requirements/APP-001` | 基本機能要件定義書 |
-| `docs/specs/base/design/DES-001` | 基本設計書（アーキテクチャ・データモデル・3 signal 検索・YAML 設定） |
-| `docs/specs/install/requirements/APP-002` | インストール要件定義書（Homebrew 自家 tap） |
-| `docs/specs/install/design/DES-002` | インストール設計書（Formula・整合性検証・caveats） |
-| [`CHANGELOG.md`](CHANGELOG.md) | バージョン履歴（keep-a-changelog 形式） |
-| `VERSION` | canonical バージョン文字列（plain text） |
+| `docs/specs/base/requirements/APP-001`                             | 基本機能要件定義書                                                                                             |
+| `docs/specs/base/design/DES-001`                                   | 基本設計書（アーキテクチャ・データモデル・3 signal 検索・YAML 設定）                                           |
+| `docs/specs/install/requirements/APP-002`                          | インストール要件定義書（Homebrew 自家 tap）                                                                    |
+| `docs/specs/install/design/DES-002`                                | インストール設計書（Formula・整合性検証・caveats）                                                             |
+| [`CHANGELOG.md`](CHANGELOG.md)                                     | バージョン履歴（keep-a-changelog 形式）                                                                        |
+| `VERSION`                                                          | canonical バージョン文字列（plain text）                                                                       |
 
 ## 開発
 

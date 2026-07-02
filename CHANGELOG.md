@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-07-02
+
+### Changed (SKILL バックエンドを MCP tool 経由 → HTTP 直叩きへ)
+
+Claude Code の MCP tool ラッパー (`mcp__doc-db__*`) 経由の呼び出しから、
+`http://localhost:<port>/mcp` を SKILL 内から Python stdlib のみで直接叩く
+方式へ切り替え。Claude Code 側での MCP 登録が不要になり、他プロジェクトへの
+配布 (rsync のみ) が完結する。
+
+- **新規 `docdb_client.py`** (各 SKILL の `scripts/` に同一コピー、stdlib のみ):
+  MCP Streamable HTTP handshake (`initialize` → `notifications/initialized` →
+  `tools/call`) を実装。サブコマンド `query` / `upsert` / `delete-series`
+- **`upsert` のバッチ分割 + 進捗表示** (v0.1.11 追加):
+  - デフォルト 30 件ごとにバッチ分割 (`--batch-size` で変更可)。600+ ファイル
+    一括 upsert でのタイムアウト・ハング見えを回避
+  - MCP session を再利用 (initialize は最初の 1 回のみ、Client クラス導入)
+  - 進捗を stderr に表示: `[done/total] processed/skipped/failed (Xs / batch, ETA Ys)`
+  - バッチ失敗は他バッチを続行し `errors[]` に集約。最終 `failed>0` で exit 2
+  - `--timeout` を top-level オプション化 (デフォルト 600 秒)
+- **`resolve_docs.py` から PyYAML 依存を排除**:
+  forge の `resolve_doc_structure.py::parse_config` 互換の stdlib-only 行ベース
+  YAML parser を内蔵。追加パッケージインストール不要 (Python 3.9+ のみで動作)
+- **5 SKILL.md を書き換え**: `mcp__doc-db__*` 可用性チェック →
+  `docdb_client.py` 実行時の接続失敗判定に置換。Claude Code MCP 登録手順を撤去
+
+### Changed (ドキュメント)
+
+- **`README.md`** を v0.1.10 実装状況に整合。「実装状況」欄の未実装マーク撤去、
+  MCP ツール 7 種を実装済みとして記述、Homebrew インストールを実利用可能な手順
+  として再構成。開発コマンド節を追加
+- **`README.md` §series による多バージョン管理**: SHA-256 ハッシュ dedup
+  (DIF-02) の挙動・シナリオ別テーブル・コスト効果・テスト保証 3 レイヤーを追記
+  (`TestAppendAndCleanSeries_DIF02` / `TestUpsert_DIF02_SameHashSkips` /
+  `TestUpsertIntegration_DIF02_DoesNotCallEmbedder`)
+- **`.claude/skills/README.md`** を HTTP 直叩き前提に更新。pyyaml 前提の記述撤去、
+  `docdb_client.py` / `resolve_docs.py` の内部設計を明記
+- `update-db-{specs,rules}/SKILL.md` の Notes を v0.1.9+ の `/delete-db-series`
+  実装済みに整合させた記述に修正
+
+### Notes
+
+Go コード本体 (`cmd/` / `internal/`) の実装変更なし。バイナリは v0.1.10 と同一。
+今回の変更は `.claude/skills/` 配下 (SKILL 定義・スクリプト) と `README.md` / 関連
+文書のみ。Homebrew Formula の `tag:` は `v0.1.11` に更新済み。`revision:` は
+本 bump commit 時点では 40 桁の `0` プレースホルダとし、git tag `v0.1.11` を打った
+後に `chore(release): Formula revision を v0.1.11 tag commit に確定` で実際の
+commit SHA へ更新する (慣行通り)。
+
 ## [0.1.10] - 2026-07-01
 
 ### Added
@@ -58,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     local_path なら数十バイトで済む)
 - `internal/mcp/mcp.go` に `readLocalDocument` ヘルパを追加、対応するテスト 6 件追加
   (ReadsFile / RelativePathRejected / TraversalRejected / NotFound /
-   ThreeSourcesMutuallyExclusive / ContentURL 両指定は既存維持)
+  ThreeSourcesMutuallyExclusive / ContentURL 両指定は既存維持)
 
 ### Changed
 
@@ -303,7 +351,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.11
 [0.1.10]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.10
 [0.1.9]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.9
 [0.1.8]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.8

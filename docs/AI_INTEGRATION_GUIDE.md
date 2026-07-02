@@ -18,19 +18,19 @@ doc-db の設計詳細・実装は [DES-001](specs/base/design/DES-001_doc_db_mc
 
 このため doc-db は **2 つのレイヤー** に責務を分けます:
 
-| Layer | 担当 | 責務 |
-|---|---|---|
+| Layer       | 担当                | 責務                                              |
+| ----------- | ------------------- | ------------------------------------------------- |
 | **Layer 1** | doc-db (本サーバー) | **取りこぼし無き候補プール** を返す (over-recall) |
-| **Layer 2** | 呼び出し側 AI agent | 候補本文を読んで関連性判断、親 Claude に返す |
+| **Layer 2** | 呼び出し側 AI agent | 候補本文を読んで関連性判断、親 Claude に返す      |
 
 Layer 1 では Embedding + BM25 + 全文 GREP の 3 signal を **並列実行** します。
 3 signal は互いに代替不能で、異なる種類の取りこぼしを埋め合う関係にあります:
 
-| signal | 強み | 弱み |
-|---|---|---|
-| Embedding | 言い換え・抽象概念・多言語 | 固有 ID/低頻度トークンを散らかす |
-| BM25 lex | トークン頻度に基づく確実性 | トークナイザ境界で割れる、意味理解なし |
-| 全文 GREP | literal 一致で取りこぼしゼロ | 意味類似は解さない |
+| signal    | 強み                         | 弱み                                   |
+| --------- | ---------------------------- | -------------------------------------- |
+| Embedding | 言い換え・抽象概念・多言語   | 固有 ID/低頻度トークンを散らかす       |
+| BM25 lex  | トークン頻度に基づく確実性   | トークナイザ境界で割れる、意味理解なし |
+| 全文 GREP | literal 一致で取りこぼしゼロ | 意味類似は解さない                     |
 
 ### 1.2 LLM Rerank の位置付け (PHIL-02)
 
@@ -55,6 +55,7 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 ```
 
 **KEY 設計のベストプラクティス**:
+
 - **粒度**: 一緒に検索したい範囲を 1 KEY にまとめる。横断検索したくないものは別 KEY に
 - **命名**: human readable。クライアント側で意味が分かる名前
 - **数の上限**: なし (ただし `expiry.max_chunks` 超過時に LRU で古い KEY が削除される)
@@ -72,6 +73,7 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 ```
 
 **series の動作**:
+
 - 同一 content (= 同一 SHA-256 ハッシュ) のドキュメントは複数 series で
   embedding を共有 (再 embedding スキップ)
 - 同 path 同 series で content が変わると新 record 作成 + 旧 record から
@@ -79,6 +81,7 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 - `delete_documents` で series 単位の削除可能
 
 **series 戦略の例**:
+
 - branch ベース: `main` / `feature-x` / `pr-123`
 - バージョンベース: `v1.2.3` / `v2.0.0`
 - 時系列ベース: `2026-01` / `2026-02`
@@ -97,14 +100,14 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 
 doc-db は 6 つの MCP ツールを提供します。詳細スキーマは `tools/list` で取得できます。
 
-| Tool | 目的 |
-|---|---|
+| Tool                   | 目的                                                       |
+| ---------------------- | ---------------------------------------------------------- |
 | **`upsert_documents`** | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding) |
-| **`delete_documents`** | 特定 path のドキュメントから series を除去 |
-| **`query`** | 候補プールを検索 (3 signal 並列) |
-| **`list_indexes`** | 登録済み KEY の一覧 + メタ情報 |
-| **`delete_index`** | KEY 全体を物理削除 (破壊的) |
-| **`manage_index`** | KEY ごとの廃棄ポリシー (TTL / max_chunks) 設定 |
+| **`delete_documents`** | 特定 path のドキュメントから series を除去                 |
+| **`query`**            | 候補プールを検索 (3 signal 並列)                           |
+| **`list_indexes`**     | 登録済み KEY の一覧 + メタ情報                             |
+| **`delete_index`**     | KEY 全体を物理削除 (破壊的)                                |
+| **`manage_index`**     | KEY ごとの廃棄ポリシー (TTL / max_chunks) 設定             |
 
 ---
 
@@ -112,16 +115,17 @@ doc-db は 6 つの MCP ツールを提供します。詳細スキーマは `too
 
 ### 4.1 mode の選び方
 
-| mode | 推奨ケース | 動作 |
-|---|---|---|
-| **`all`** (デフォルト) | 通常の検索全般 (推奨) | 3 signal 並列 + 合算 |
-| `rerank` | ranking 精度が重要、レイテンシ許容 | all + LLM (gpt-4o-mini) で再ランキング |
-| `emb` | 純粋に意味類似だけ見たい | ベクトル類似度のみ |
-| `lex` | BM25 単独で検証 | 語彙頻度のみ |
-| **`grep`** | **固有 ID/関数名/特殊用語** を確実に拾いたい | literal 一致のみ |
-| `hybrid` | legacy (推奨せず) | emb+lex RRF (grep 含まず) |
+| mode                   | 推奨ケース                                   | 動作                                   |
+| ---------------------- | -------------------------------------------- | -------------------------------------- |
+| **`all`** (デフォルト) | 通常の検索全般 (推奨)                        | 3 signal 並列 + 合算                   |
+| `rerank`               | ranking 精度が重要、レイテンシ許容           | all + LLM (gpt-4o-mini) で再ランキング |
+| `emb`                  | 純粋に意味類似だけ見たい                     | ベクトル類似度のみ                     |
+| `lex`                  | BM25 単独で検証                              | 語彙頻度のみ                           |
+| **`grep`**             | **固有 ID/関数名/特殊用語** を確実に拾いたい | literal 一致のみ                       |
+| `hybrid`               | legacy (推奨せず)                            | emb+lex RRF (grep 含まず)              |
 
 **判断指針**:
+
 - 普段は `mode=all` で十分。AI agent が候補本文を読んで判定する Layer 2 設計のため
 - 抽象的・言い換えの多い質問は `rerank` でランキング精度を上げる選択肢あり
   (ただしレイテンシ ~10s、課金あり)
@@ -135,7 +139,7 @@ doc-db は 6 つの MCP ツールを提供します。詳細スキーマは `too
 {
   "path": "docs/api.md",
   "origin_signals": ["emb", "grep"],
-  "score_breakdown": {"emb": 0.85, "lex": 0, "grep": 2, "rrf": 0, "rerank": 0}
+  "score_breakdown": { "emb": 0.85, "lex": 0, "grep": 2, "rrf": 0, "rerank": 0 }
 }
 ```
 
@@ -144,6 +148,7 @@ doc-db は 6 つの MCP ツールを提供します。詳細スキーマは `too
 - `["emb", "lex", "grep"]`: 3 signal 全部でヒット → **強い候補**
 
 **AI agent のフィルタリング指針**:
+
 - 複数 signal でヒットした候補は概ね信頼度が高い
 - 1 signal のみの候補は本文を読んで判定する価値あり (Layer 2 の役目)
 
@@ -278,7 +283,11 @@ await mcp.call("delete_documents", {
   "failed": 1,
   "errors": [
     { "path": "missing.md", "error": "fetch: 404" },
-    { "path": "partial.md", "error": "partial embedding failure", "skipped_chunks": [3] }
+    {
+      "path": "partial.md",
+      "error": "partial embedding failure",
+      "skipped_chunks": [3]
+    }
   ]
 }
 ```
@@ -289,6 +298,7 @@ await mcp.call("delete_documents", {
 ### 6.2 致命的エラー
 
 以下は例外として throw されます (MCP error response):
+
 - KEY が存在しない (query / upsert で必須)
 - 入力バリデーション (key/series 必須、content+url 排他等)
 - OpenAI API キー未設定 (起動時 fail-fast)
@@ -297,6 +307,7 @@ await mcp.call("delete_documents", {
 
 silent failure 禁止方針のため、致命的でない異常は全て `warnings` に集約されます。
 監視・運用観点で重要:
+
 - ログだけ見ていても見落とすので **`warnings` を必ずチェック**
 - フォールバック発動が頻発しているなら設計見直しのシグナル
 
@@ -314,6 +325,7 @@ silent failure 禁止方針のため、致命的でない異常は全て `warnin
 ### Q2. top_n はどう決める?
 
 Layer 2 の AI agent が **本文を読んで判定** する設計なので、生 ranking より recall 重視。
+
 - 通常: `top_n: 10` (デフォルト)
 - 重要な検索や難しいクエリ: `top_n: 20-30`
 

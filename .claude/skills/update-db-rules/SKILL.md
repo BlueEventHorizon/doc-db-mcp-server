@@ -70,11 +70,12 @@ stdout の JSON を parse:
   **同一 path でも branch が違えば別 series として管理される**\
   同一内容 (SHA-256 一致) なら embedding は共有される (DIF-02)
 
-### Step 4: local_path 経由で upsert
+### Step 4: local_path 経由で upsert (バッチ分割 + 進捗表示)
 
 **doc-db にファイル内容を送らず、絶対パスだけを渡してサーバ側で読ませる**
 (payload 削減)。`docdb_client.py` は `~/.doc-db/doc-db.yaml` の port を自動取得し、
 MCP handshake (initialize → notifications/initialized → tools/call) を内部で行う。
+**デフォルトで 30 件ずつバッチ分割**し、各バッチ完了時に進捗を stderr に表示する。
 
 Step 2 の JSON の `entries[]` をそのまま `--entries-json` に渡す:
 
@@ -86,11 +87,24 @@ python3 .claude/skills/update-db-rules/scripts/docdb_client.py upsert \
     --key "<project_name>-rules" \
     --series "<git_branch>" \
     --entries-json "$ENTRIES_JSON"
+    # --batch-size 30    (デフォルト。大量ファイル時に必要なら 10〜50 で調整)
 ```
 
 `entries[]` の各要素は `{path, local_path}` (path=相対、local_path=絶対)。
 
-**接続失敗時** (exit 1 + stderr): Step 1 の案内を提示。
+**進捗表示例** (stderr):
+
+```
+upsert start: total=600 batches=20 batch_size=30 key=... series=main
+[  30/600] processed=   2 skipped=  28 failed=  0 (  4.5s / batch, ETA    89s)
+[  60/600] processed=   1 skipped=  59 failed=  0 (  2.1s / batch, ETA    42s)
+...
+upsert done: total_elapsed=94.3s
+```
+
+**接続失敗時** (exit 1 + stderr): Step 1 の案内を提示。バッチ途中で 1 つのバッチが
+失敗しても他バッチは続行し、`errors[]` に集約される。全バッチ完了後 `failed > 0`
+なら exit 2。
 
 **注**: doc-db は SHA-256 ハッシュで変更を検出し、同一内容の再 embedding をスキップする
 (DIF-02)。

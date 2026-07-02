@@ -2,6 +2,15 @@
 
 初回リリースおよび version bump 後のリリース手順。Formula の `revision:` は **git tag 確定後にしか正しい値にできない** ため、整合性検証は 2 段階に分かれる。
 
+> **重要: この 2 段階運用は「初回作成時だけ」ではなく「毎バージョンリリースで繰り返す」**。
+> v0.1.7 / v0.1.8 / v0.1.9 / v0.1.10 の全 bump で以下のパターンが実行されている:
+>
+> 1. **bump commit** (`chore: bump version to X.Y.Z`): `VERSION` / `CHANGELOG` / Formula `tag:` を更新し、`revision:` は **40 桁 0 の placeholder にリセット**する
+> 2. **git tag vX.Y.Z** を打つ
+> 3. **`chore(release): Formula revision を vX.Y.Z tag commit に確定`** commit で、`revision:` に tag commit の実 SHA を書き込む
+>
+> `.version-config.yaml` の `sync_files` は文字列単純置換のため `revision:` は対象外。bump 毎に手動リセットが必要。
+
 ## なぜ 2 段階なのか
 
 | 検証                            | タイミング                      | 検証対象                                                                      |
@@ -21,22 +30,25 @@
 - `CHANGELOG.md` の `[Unreleased]` を `[X.Y.Z] - YYYY-MM-DD` に昇格、新しい `[Unreleased]` セクションを追加
 - 末尾のリンク定義 `[X.Y.Z]: .../releases/tag/v{X.Y.Z}` を追加
 
-### Step 2: Formula tag 更新
+### Step 2: Formula tag 更新 + revision リセット
 
-`Formula/<name>.rb` の `tag:` を新版に書き換える：
+`Formula/<name>.rb` の `tag:` を新版に書き換え、`revision:` を **40 桁 0 の placeholder に戻す**（前バージョンの SHA が残っているとリリース後に古い commit を指し続けるため）：
 
 ```ruby
 tag:      "v0.1.1",          # canonical と一致
-revision: "0000000000000000000000000000000000000000"  # まだ placeholder
+revision: "0000000000000000000000000000000000000000"  # bump 毎にリセット必須
 ```
 
-`.version-config.yaml` の `sync_files` で自動化する場合：
+`.version-config.yaml` の `sync_files` で `tag:` は自動化されるが、`revision:` は
+文字列単純置換の対象外 (SHA なので version 文字列ではない)。手動でリセットする:
 
 ```yaml
 sync_files:
   - path: Formula/doc-db.rb
     pattern: 'tag:      "v{version}"'
     filter: "tag:"
+  # revision: は sync_files 対象外。bump 毎に手動で 40 桁 0 に戻す。
+  # tag 確定後、chore(release) commit で実 SHA に更新する (Step 5)。
 ```
 
 ### Step 3: 静的整合検証
@@ -57,43 +69,35 @@ git commit -m "chore: bump version to X.Y.Z"
 git tag vX.Y.Z
 ```
 
-### Step 5: Formula revision 更新
+### Step 5: Formula revision 更新 (`chore(release)` 別 commit)
 
-tag が指す commit SHA を取得して Formula に埋める：
+**本プロジェクトの実運用**: tag は動かさず、tag 確定後に別 commit で `revision:` を
+実 SHA に書き換える。tag そのものが指す commit ではなく、その **後続 commit** で
+Formula ファイルが「tag が指している commit の SHA」を保持する形になる。
+
+`brew install` は `url + tag + revision` で clone → checkout revision するので、
+ビルドソースは tag commit のまま。Formula ファイル自体は main HEAD (`chore(release)`
+commit) から読まれる。これで整合性が保たれる。
 
 ```bash
 tag_commit=$(git rev-parse "vX.Y.Z^{commit}")
-# Formula/<name>.rb の revision: を $tag_commit に書き換え
-```
-
-書き換え後、もう一度 commit する（または amend するが、tag は元の commit を指したまま）：
-
-```text
-注意: revision 更新の commit を amend すると tag が古い commit を指したまま残り、
-verify_release_tag.sh が pass しなくなる。
-
-代わりに：
-  - commit を新規追加する → tag を新しい commit に移動 (`git tag -f vX.Y.Z`)
-  - または、tag を作成する前に revision を仮置きで commit しておき、
-    tag 作成後に revision を再 commit & tag 移動する
-```
-
-実用的な手順は次のいずれか：
-
-**手順 A: tag 後に revision commit を追加して tag 移動**
-
-```bash
-git tag vX.Y.Z                            # 仮置きで tag
-tag_commit=$(git rev-parse "vX.Y.Z^{commit}")
-# Formula revision を更新
+# Formula/<name>.rb の revision: を "$tag_commit" に書き換え
 git add Formula/<name>.rb
-git commit --amend --no-edit              # 同じ commit に追加
-git tag -f vX.Y.Z                         # tag を amend 後の commit に移動
+git commit -m "chore(release): Formula revision を vX.Y.Z tag commit に確定"
+# 例: git show fd739f4 で v0.1.10 の同 commit を確認できる
 ```
 
-**手順 B: ローカルで複数回 commit → push 直前に整える**
+**この方式の利点**:
 
-リリースの最後に `git rebase -i` で整理する。
+- tag を動かさない (`git tag -f` 不要 → force push リスクなし)
+- リリース履歴に「revision 確定」の意図が commit として明示される
+- `brew install` は url+tag+revision で pin されたビルドを取得できる
+
+**避けるべき手順** (過去に検討したが不採用):
+
+- `git commit --amend` + `git tag -f`: tag を強制移動する必要があり、force push が
+  必要になる。push 済みなら整合が壊れる
+- revision を先に仮置きしてから tag: 循環依存 (SHA を先に確定できない)
 
 ### Step 6: tag 整合性検証
 
@@ -156,12 +160,14 @@ brew install <short-name>
 
 - [ ] VERSION 更新
 - [ ] CHANGELOG `[Unreleased]` → `[X.Y.Z] - YYYY-MM-DD` 昇格
-- [ ] Formula tag 更新
+- [ ] Formula `tag:` 更新
+- [ ] **Formula `revision:` を 40 桁 0 の placeholder にリセット** ← 忘れやすい
 - [ ] `make verify-version` pass
-- [ ] commit
-- [ ] git tag 作成
-- [ ] Formula revision 更新
-- [ ] tag 移動（手順 A の場合）
+- [ ] **bump commit** (`chore: bump version to X.Y.Z`)
+- [ ] main へ merge
+- [ ] git tag `vX.Y.Z` 作成
+- [ ] Formula `revision:` に tag commit SHA を書き込み
+- [ ] **`chore(release)` commit** (`Formula revision を vX.Y.Z tag commit に確定`)
 - [ ] `make verify-tag` pass
 - [ ] `git push origin main --tags`
 - [ ] `brew install --build-from-source ./Formula/<name>.rb` 検証

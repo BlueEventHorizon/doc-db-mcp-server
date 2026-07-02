@@ -229,7 +229,6 @@ tasks:
   # ────────────────────────────────────────
   # フェーズ 1: データ基盤とテキスト処理（priority 90-99）
   # ────────────────────────────────────────
-
   - task_id: TASK-001
     title: プロジェクト骨格・go.mod・依存パッケージ追加
     priority: 99
@@ -443,7 +442,7 @@ tasks:
       - RRF 融合結果が embedding ランクと lexical ランクの両方を考慮した順序になることを確認する
       - EMB top-K 保証（lexical スコア 0 の文書が RRF 上位に残ること）を確認する
       - EMB フォールバック（lex ヒット率が閾値未満時に emb スコア降順になること）を確認する
-      - 'BM25 トークナイザが ID パターン（例: FNC-001）を単一トークンとして扱うことを確認する'
+      - "BM25 トークナイザが ID パターン（例: FNC-001）を単一トークンとして扱うことを確認する"
     acceptance_criteria: "go test ./internal/search/... が全通過すること"
     required_reading:
       - docs/specs/base/design/DES-001_doc_db_mcp_server_design.md
@@ -507,7 +506,7 @@ tasks:
       - upsert_documents MCP ツールハンドラを実装する（§5.2 シーケンス図に従う）
       - url 指定ドキュメントは Fetcher で取得し content に変換する
       - M1 ハッシュ正規化（BOM 除去・改行コード統一・クライアント提供 hash との照合）を実装する（§5.2）
-      - 'DIF-02（同一ハッシュ: AppendSeries + CleanOtherSeries）と DIF-03（新規: Split + Embed + UpsertRecord + CleanOtherSeries）の分岐を実装する'
+      - "DIF-02（同一ハッシュ: AppendSeries + CleanOtherSeries）と DIF-03（新規: Split + Embed + UpsertRecord + CleanOtherSeries）の分岐を実装する"
       - M2 部分保存方針を実装する（チャンク一部 Embedding 失敗時に成功チャンクのみ保存）（§5.2）
       - UpsertResult（processed/skipped/failed/errors）を返す（UPS-OUT-01/02）
     acceptance_criteria: "go build ./internal/mcp/... が成功すること"
@@ -563,9 +562,9 @@ tasks:
     group_id: null
     build_check: per_task
     description:
-      - 'KEY 別インデックス一覧を返すツールハンドラを実装する（MNG-01: Store.ListKeys → KeyInfo）'
-      - '指定 KEY のインデックスを削除するツールハンドラを実装する（MNG-02: Store.DeleteKey）'
-      - 'KEY の廃棄ポリシーを設定・更新する manage_index ツールハンドラを実装する（EXP-04: §8.4）'
+      - "KEY 別インデックス一覧を返すツールハンドラを実装する（MNG-01: Store.ListKeys → KeyInfo）"
+      - "指定 KEY のインデックスを削除するツールハンドラを実装する（MNG-02: Store.DeleteKey）"
+      - "KEY の廃棄ポリシーを設定・更新する manage_index ツールハンドラを実装する（EXP-04: §8.4）"
       - manage_index の expiry_policy に null を渡した場合はサーバーデフォルトにリセットする（§8.4）
       - ツール名は DES-001 §5.1 の記載（TBD-008 は設計書の状態のまま）に従う
     acceptance_criteria: "go build ./internal/mcp/... が成功すること"
@@ -609,7 +608,7 @@ tasks:
     group_id: null
     build_check: per_task
     description:
-      - 'delete_documents ハンドラの正常系テストを書く（DEL-01: series 除去・空 record の物理削除）'
+      - "delete_documents ハンドラの正常系テストを書く（DEL-01: series 除去・空 record の物理削除）"
       - 存在しないパスのスキップと警告返却を確認する（DEL-02）
       - 異常系テストを書く（無効 series・空パスリスト等）
       - Embedder/Fetcher はモックを使用する
@@ -628,8 +627,8 @@ tasks:
     group_id: null
     build_check: per_task
     description:
-      - 'list_indexes ハンドラの正常系テストを書く（MNG-01: KeyInfo 一覧取得）'
-      - 'delete_index ハンドラの正常系テストを書く（MNG-02: 指定 KEY のインデックス削除）'
+      - "list_indexes ハンドラの正常系テストを書く（MNG-01: KeyInfo 一覧取得）"
+      - "delete_index ハンドラの正常系テストを書く（MNG-02: 指定 KEY のインデックス削除）"
       - manage_index ハンドラのポリシー設定・null リセットをテストする（EXP-04）
       - 異常系テストを書く（存在しない KEY への操作等）
     acceptance_criteria: "go test ./internal/mcp/... が ManageHandler のテストケースをすべて通過すること"
@@ -647,7 +646,7 @@ tasks:
     group_id: null
     build_check: per_task
     description:
-      - 'upsert_documents ハンドラの正常系テストを書く（DIF-02: 同一ハッシュで Embedding スキップ・DIF-03: ハッシュ不一致で新規 record 作成）'
+      - "upsert_documents ハンドラの正常系テストを書く（DIF-02: 同一ハッシュで Embedding スキップ・DIF-03: ハッシュ不一致で新規 record 作成）"
       - url 指定ドキュメントの Fetcher 経由取得フローをモックで確認する
       - M2 部分保存（一部 Embedding 失敗時に成功チャンクのみ保存）を確認する
       - UpsertResult（processed/skipped/failed）が正しく返ることを確認する（UPS-OUT-01/02）
@@ -750,8 +749,8 @@ tasks:
     build_check: per_task
     description:
       - DES-001 §11 の廃棄ポリシー統合テスト仕様に従いテストを実施する
-      - 'TTL テスト: last_accessed_at を過去日時に設定した KEY が TTL ワーカー実行後に削除されることを確認する（EXP-01）'
-      - 'LRU テスト: DOCDB_MAX_CHUNKS を超えた状態でワーカー実行後に最古アクセス KEY が削除されることを確認する（EXP-02）'
+      - "TTL テスト: last_accessed_at を過去日時に設定した KEY が TTL ワーカー実行後に削除されることを確認する（EXP-01）"
+      - "LRU テスト: DOCDB_MAX_CHUNKS を超えた状態でワーカー実行後に最古アクセス KEY が削除されることを確認する（EXP-02）"
       - manage_index で設定した KEY 固有ポリシーが優先されることを確認する（EXP-04）
       - 廃棄済み KEY への query/upsert でエラーが返ることを確認する
     acceptance_criteria: "廃棄ポリシー統合テストが全通過すること"
