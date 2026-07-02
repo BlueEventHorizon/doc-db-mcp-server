@@ -82,7 +82,8 @@ removed も updated も 0 なら「該当 series は既に存在しません (no
 - **HTTP 直叩き**: `docdb_client.py` は Python stdlib のみ (urllib) で MCP Streamable
   HTTP を扱う。Claude Code の MCP client 層に依存しない
 - **接続失敗**: サーバ未起動時は `python3 docdb_client.py` が exit 1 + stderr に接続
-  エラーメッセージ。案内メッセージで `doc-db > /tmp/doc-db.log 2>&1 &` を提示
+  エラーメッセージ。案内メッセージで `doc-db &` を提示 (ログはサーバー自身が
+  `~/.doc-db/doc-db.log` に書き込む、v0.1.12+)
 - **series が最後の 1 つだった record は物理削除**。チャンク・ベクトル・BM25 統計含めて全部消える
 - **他 series が残る record は保持**。例: main と feature-x を持つ record から feature-x のみ削除すると main の record として残る
 - **現在 checkout 中の branch を削除しない**。誤操作防止のため Step 1 で警告する
