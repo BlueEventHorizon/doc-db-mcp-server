@@ -3,7 +3,7 @@
 Markdown ドキュメントを **Embedding + BM25 + 全文 GREP** の 3 signal で横断検索し、
 必要に応じて **LLM Rerank** で並べ替える汎用 MCP サーバー（Streamable HTTP transport）。
 
-**現バージョン: v0.1.10**（`VERSION` / `CHANGELOG.md` が canonical）。
+**現バージョン: v0.1.11**（`VERSION` / `CHANGELOG.md` が canonical）。
 基盤コンポーネント・MCP ツール 7 種・3 signal 検索パイプライン・LLM Rerank・
 Homebrew 自家 tap 配布まで実装済み。
 
@@ -108,7 +108,7 @@ doc-db --version
 git clone https://github.com/BlueEventHorizon/doc-db-mcp-server.git
 cd doc-db-mcp-server
 make build            # ldflags 経由で VERSION を注入
-./doc-db --version    # 0.1.10
+./doc-db --version    # 0.1.11
 ```
 
 ## セットアップ
@@ -230,8 +230,37 @@ key: "myrepo"
   series: "feature-x" → feature ブランチのスナップショット
 ```
 
-同一 `key + path` でハッシュが一致する場合、Embedding は series 間で共有される
-（重複 API 呼び出しなし）。branch を消したら `delete_series` で cleanup。
+#### ハッシュベース dedup (DIF-02) — Embedding は series 間で共有される
+
+同一 `key + path` に対して、**内容が完全一致 (SHA-256 ハッシュ一致) するファイルは
+Embedding を再計算しない**。既存 record の `series_keys` に新しい series 名だけを
+追記して終わる (OpenAI API 呼び出しゼロ、課金ゼロ)。
+
+具体的な挙動:
+
+| シナリオ                                  | 挙動                                                            |
+| ----------------------------------------- | --------------------------------------------------------------- |
+| **branch 切替 → 同一内容を再 upsert**     | 既存 record に `series_keys += [新 branch]` するだけ。skip 扱い |
+| **branch 切替 → 内容変更 (SHA-256 変化)** | 新 record を作成し、旧 record からは当該 series を除去 (DIF-03) |
+| **branch 削除 (`delete_series`)**         | `series_keys` から除去。当該 record の series が空なら物理削除  |
+| **series が全て残る record**              | そのまま保持 (他 branch から参照されているため)                 |
+
+コスト効果: 600 ファイル × 10 branch を管理しても、branch 間の差分がわずかなら
+実 Embedding 呼び出しは差分ファイル分のみ。API 課金は「全ファイル × 全 branch」に
+ならない。
+
+#### テスト保証
+
+この挙動は以下のテストで常時検証されている (`go test ./...` で自動実行):
+
+- `internal/store/store_test.go::TestAppendAndCleanSeries_DIF02` — Store 層の
+  「同ハッシュ既存時は series 追記のみ、旧 record は series が空になれば物理削除」
+- `internal/mcp/mcp_test.go::TestUpsert_DIF02_SameHashSkips` — MCP handler 層の
+  「別 series に同一内容 upsert → Skipped=1、series_keys に両 branch 紐付き」
+- `internal/mcp/upsert_integration_test.go::TestUpsertIntegration_DIF02_DoesNotCallEmbedder`
+  — Embedder spy で「同一ハッシュ経路で Embedding API が呼ばれない」ことを保証
+
+branch cleanup は `delete_series` (v0.1.9+) または SKILL `/delete-db-series <name>` で。
 
 ## ドキュメント
 

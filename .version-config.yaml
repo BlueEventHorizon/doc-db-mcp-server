@@ -13,6 +13,21 @@ targets:
       # CHANGELOG link 定義（"## [Unreleased]" などはそのままにし、URL 末尾の v{version} を更新する）。
       # 注意: /forge:update-version 実行時に [Unreleased] セクションを新版へ昇格させる挙動は別途の責務。
       # ここでは link 定義の URL に含まれる version 文字列のみを置換対象とする。
+      #
+      # ---------------------------------------------------------------------
+      # Formula `revision:` は sync_files 対象外（version 文字列ではなく git tag
+      # commit の SHA なので、汎用 version ツールでは扱えない）。
+      #
+      # リリースサイクル毎に以下を **手動で** 実施すること（過去 v0.1.7〜v0.1.10 で
+      # 全て同パターンを踏襲）:
+      #   1. bump commit 時: Formula の revision: を 40 桁 0 にリセット
+      #        revision: "0000000000000000000000000000000000000000"
+      #   2. git tag vX.Y.Z を打つ
+      #   3. `chore(release): Formula revision を vX.Y.Z tag commit に確定` commit で
+      #      revision: を tag commit の実 SHA に更新する
+      #
+      # 詳細: .claude/skills/setup-homebrew-formula/references/release_workflow.md
+      # ---------------------------------------------------------------------
 
 changelog:
   file: CHANGELOG.md
