@@ -6,6 +6,8 @@
 #   # 必要に応じて値を編集
 #
 # 全項目必須。未知のキーや型不一致は起動時に fail-fast でエラー（CFG-03）。
+# 例外: log セクションは省略可（省略時 path=~/.doc-db/doc-db.log, level=info が適用される。
+# 既存の doc-db.yaml に log セクションを追記しなくても動作する後方互換措置。v0.1.12+）。
 # OpenAI API キーは設定ファイルではなく環境変数 OPENAI_API_DOCDB_KEY（または OPENAI_API_KEY）で渡す。
 
 server:
@@ -37,3 +39,9 @@ expiry:
   ttl_days: 30                     # 未アクセス KEY の自動削除日数（TBD-001）
   max_chunks: 10000                # システム全体のチャンク上限（TBD-002）
   interval_seconds: 3600           # 廃棄チェック間隔
+
+log:
+  # 省略可（省略時は下記のデフォルト値と同じ）。サーバー自身がこのパスを開いて書き込む。
+  # 従来の `doc-db > /tmp/doc-db.log 2>&1 &` のようなシェルリダイレクトへの依存を無くすための設定。
+  path: "~/.doc-db/doc-db.log"     # ログ出力先。"stdout" / "stderr" も指定可（フォアグラウンド開発用）
+  level: "info"                    # "debug" / "info" / "warn" / "error"

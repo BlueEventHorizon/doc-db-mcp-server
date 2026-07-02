@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -236,9 +237,21 @@ type UpsertResult struct {
 	Errors    []UpsertError `json:"errors,omitempty" jsonschema:"失敗または部分失敗の詳細リスト。"`
 }
 
+// logHandlerDone は各 MCP tool handler の完了ログを統一的に出力する。
+// defer から呼ぶことで、正常終了・early return によるエラー終了のいずれの
+// パスでも "done" ログが確実に記録される（silent failure 禁止方針）。
+// err が非 nil の場合は "error" フィールドを追加する。
+func logHandlerDone(msg string, err error, start time.Time, fields ...any) {
+	allFields := append(append([]any{}, fields...), "duration_ms", time.Since(start).Milliseconds())
+	if err != nil {
+		allFields = append(allFields, "error", err.Error())
+	}
+	slog.Info(msg, allFields...)
+}
+
 func (h *Handlers) handleUpsert(
 	ctx context.Context, _ *mcpsdk.CallToolRequest, in UpsertInput,
-) (*mcpsdk.CallToolResult, UpsertResult, error) {
+) (res *mcpsdk.CallToolResult, out UpsertResult, err error) {
 	if in.Key == "" || in.Series == "" {
 		return nil, UpsertResult{}, errors.New("key と series は必須")
 	}
@@ -246,14 +259,22 @@ func (h *Handlers) handleUpsert(
 		return nil, UpsertResult{}, errors.New("documents が空")
 	}
 
-	result := UpsertResult{}
+	start := time.Now()
+	slog.Info("upsert start", "key", in.Key, "series", in.Series, "count", len(in.Documents))
+	defer func() {
+		logHandlerDone("upsert done", err, start,
+			"key", in.Key, "series", in.Series,
+			"processed", out.Processed, "skipped", out.Skipped, "failed", out.Failed)
+	}()
+
 	for _, doc := range in.Documents {
-		if err := h.upsertOne(ctx, in.Key, in.Series, doc, &result); err != nil {
-			slog.Warn("upsert: document failed", "path", doc.Path, "error", err)
+		if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
+			slog.Warn("upsert: document failed", "path", doc.Path, "error", uerr)
 			continue
 		}
 	}
-	return nil, result, nil
+
+	return nil, out, nil
 }
 
 // upsertOne は 1 ドキュメント分の upsert を実行する。
@@ -419,18 +440,26 @@ type DeleteResult struct {
 
 func (h *Handlers) handleDelete(
 	ctx context.Context, _ *mcpsdk.CallToolRequest, in DeleteInput,
-) (*mcpsdk.CallToolResult, DeleteResult, error) {
+) (res *mcpsdk.CallToolResult, out DeleteResult, err error) {
 	if in.Key == "" || in.Series == "" || len(in.Paths) == 0 {
 		return nil, DeleteResult{}, errors.New("key / series / paths は必須")
 	}
+
+	start := time.Now()
+	slog.Info("delete_documents start", "key", in.Key, "series", in.Series, "paths", len(in.Paths))
+	defer func() {
+		logHandlerDone("delete_documents done", err, start,
+			"key", in.Key, "series", in.Series, "deleted", out.Deleted)
+	}()
 
 	// 事前に存在チェックして warning を構築（DEL-02）
 	var warnings []string
 	existing := make([]string, 0, len(in.Paths))
 	for _, p := range in.Paths {
-		found, err := h.store.HasRecord(ctx, in.Key, p)
-		if err != nil {
-			return nil, DeleteResult{}, fmt.Errorf("check path %q: %w", p, err)
+		found, herr := h.store.HasRecord(ctx, in.Key, p)
+		if herr != nil {
+			err = fmt.Errorf("check path %q: %w", p, herr)
+			return nil, DeleteResult{}, err
 		}
 		if !found {
 			warnings = append(warnings, fmt.Sprintf("path %q は存在しないためスキップ", p))
@@ -440,8 +469,9 @@ func (h *Handlers) handleDelete(
 	}
 
 	if len(existing) > 0 {
-		if err := h.store.DeleteSeries(ctx, in.Key, in.Series, existing); err != nil {
-			return nil, DeleteResult{}, fmt.Errorf("delete: %w", err)
+		if derr := h.store.DeleteSeries(ctx, in.Key, in.Series, existing); derr != nil {
+			err = fmt.Errorf("delete: %w", derr)
+			return nil, DeleteResult{}, err
 		}
 	}
 
@@ -466,14 +496,24 @@ type DeleteSeriesResult struct {
 
 func (h *Handlers) handleDeleteSeries(
 	ctx context.Context, _ *mcpsdk.CallToolRequest, in DeleteSeriesInput,
-) (*mcpsdk.CallToolResult, DeleteSeriesResult, error) {
+) (res *mcpsdk.CallToolResult, out DeleteSeriesResult, err error) {
 	if in.Key == "" || in.Series == "" {
 		return nil, DeleteSeriesResult{}, errors.New("key / series は必須")
 	}
-	removed, updated, err := h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
-	if err != nil {
-		return nil, DeleteSeriesResult{}, fmt.Errorf("delete_series: %w", err)
+	start := time.Now()
+	slog.Info("delete_series start", "key", in.Key, "series", in.Series)
+	defer func() {
+		logHandlerDone("delete_series done", err, start,
+			"key", in.Key, "series", in.Series,
+			"removed_records", out.RemovedRecords, "updated_records", out.UpdatedRecords)
+	}()
+
+	removed, updated, derr := h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
+	if derr != nil {
+		err = fmt.Errorf("delete_series: %w", derr)
+		return nil, DeleteSeriesResult{}, err
 	}
+
 	return nil, DeleteSeriesResult{RemovedRecords: removed, UpdatedRecords: updated}, nil
 }
 
@@ -513,7 +553,7 @@ type QueryResult struct {
 
 func (h *Handlers) handleQuery(
 	ctx context.Context, _ *mcpsdk.CallToolRequest, in QueryInput,
-) (*mcpsdk.CallToolResult, QueryResult, error) {
+) (res *mcpsdk.CallToolResult, out QueryResult, err error) {
 	if in.Query == "" || in.Key == "" {
 		return nil, QueryResult{}, errors.New("query と key は必須")
 	}
@@ -527,35 +567,44 @@ func (h *Handlers) handleQuery(
 		in.TopN = 10
 	}
 
+	start := time.Now()
+	slog.Info("query start", "key", in.Key, "series", in.Series, "mode", string(mode), "top_n", in.TopN)
+	defer func() {
+		logHandlerDone("query done", err, start, "key", in.Key, "hits", len(out.Results))
+	}()
+
 	// KEY 存在確認
-	exists, err := h.store.KeyExists(ctx, in.Key)
-	if err != nil {
-		return nil, QueryResult{}, fmt.Errorf("key check: %w", err)
+	exists, kerr := h.store.KeyExists(ctx, in.Key)
+	if kerr != nil {
+		err = fmt.Errorf("key check: %w", kerr)
+		return nil, QueryResult{}, err
 	}
 	if !exists {
-		return nil, QueryResult{}, fmt.Errorf("key %q が存在しません", in.Key)
+		err = fmt.Errorf("key %q が存在しません", in.Key)
+		return nil, QueryResult{}, err
 	}
 
 	var warnings []string
 
 	// TouchKey（last_accessed_at 更新）。致命的ではないが caller に観測可能化する。
-	if err := h.store.TouchKey(ctx, in.Key); err != nil {
-		slog.Warn("query: TouchKey failed", "key", in.Key, "error", err)
-		warnings = append(warnings, fmt.Sprintf("TouchKey failed for key %q: %v", in.Key, err))
+	if terr := h.store.TouchKey(ctx, in.Key); terr != nil {
+		slog.Warn("query: TouchKey failed", "key", in.Key, "error", terr)
+		warnings = append(warnings, fmt.Sprintf("TouchKey failed for key %q: %v", in.Key, terr))
 	}
 
-	out, err := h.search.Run(ctx, in.Key, in.Series, in.Query, mode, in.TopN)
-	if err != nil {
-		return nil, QueryResult{}, fmt.Errorf("search: %w", err)
+	sr, serr := h.search.Run(ctx, in.Key, in.Series, in.Query, mode, in.TopN)
+	if serr != nil {
+		err = fmt.Errorf("search: %w", serr)
+		return nil, QueryResult{}, err
 	}
 
 	// search.Pipeline が記録した Rerank フォールバック等の警告を取り込む
-	if out.Warnings != nil {
-		warnings = append(warnings, out.Warnings...)
+	if sr.Warnings != nil {
+		warnings = append(warnings, sr.Warnings...)
 	}
 
-	hits := make([]QueryHit, len(out.Results))
-	for i, r := range out.Results {
+	hits := make([]QueryHit, len(sr.Results))
+	for i, r := range sr.Results {
 		hits[i] = QueryHit{
 			Path:           r.Path,
 			HeadingPath:    r.HeadingPath,
@@ -566,7 +615,8 @@ func (h *Handlers) handleQuery(
 			SeriesKeys:     r.SeriesKeys,
 		}
 	}
-	return nil, QueryResult{Results: hits, StageStats: out.Stats, Warnings: warnings}, nil
+
+	return nil, QueryResult{Results: hits, StageStats: sr.Stats, Warnings: warnings}, nil
 }
 
 // -----------------------------------------------------------------------
@@ -583,10 +633,16 @@ type ListIndexesResult struct {
 
 func (h *Handlers) handleListIndexes(
 	ctx context.Context, _ *mcpsdk.CallToolRequest, _ ListIndexesInput,
-) (*mcpsdk.CallToolResult, ListIndexesResult, error) {
-	keys, err := h.store.ListKeys(ctx)
-	if err != nil {
-		return nil, ListIndexesResult{}, fmt.Errorf("list keys: %w", err)
+) (res *mcpsdk.CallToolResult, out ListIndexesResult, err error) {
+	start := time.Now()
+	defer func() {
+		logHandlerDone("list_indexes done", err, start, "count", len(out.Indexes))
+	}()
+
+	keys, lerr := h.store.ListKeys(ctx)
+	if lerr != nil {
+		err = fmt.Errorf("list keys: %w", lerr)
+		return nil, ListIndexesResult{}, err
 	}
 	return nil, ListIndexesResult{Indexes: keys}, nil
 }
@@ -607,12 +663,19 @@ type DeleteIndexResult struct {
 
 func (h *Handlers) handleDeleteIndex(
 	ctx context.Context, _ *mcpsdk.CallToolRequest, in DeleteIndexInput,
-) (*mcpsdk.CallToolResult, DeleteIndexResult, error) {
+) (res *mcpsdk.CallToolResult, out DeleteIndexResult, err error) {
 	if in.Key == "" {
 		return nil, DeleteIndexResult{}, errors.New("key は必須")
 	}
-	if err := h.store.DeleteKey(ctx, in.Key); err != nil {
-		return nil, DeleteIndexResult{}, fmt.Errorf("delete key: %w", err)
+	start := time.Now()
+	slog.Info("delete_index start", "key", in.Key)
+	defer func() {
+		logHandlerDone("delete_index done", err, start, "key", in.Key, "deleted", out.Deleted)
+	}()
+
+	if derr := h.store.DeleteKey(ctx, in.Key); derr != nil {
+		err = fmt.Errorf("delete key: %w", derr)
+		return nil, DeleteIndexResult{}, err
 	}
 	return nil, DeleteIndexResult{Deleted: true}, nil
 }
@@ -635,12 +698,19 @@ type ManageIndexResult struct {
 
 func (h *Handlers) handleManageIndex(
 	ctx context.Context, _ *mcpsdk.CallToolRequest, in ManageIndexInput,
-) (*mcpsdk.CallToolResult, ManageIndexResult, error) {
+) (res *mcpsdk.CallToolResult, out ManageIndexResult, err error) {
 	if in.Key == "" {
 		return nil, ManageIndexResult{}, errors.New("key は必須")
 	}
-	if err := h.store.SetExpiryPolicy(ctx, in.Key, in.ExpiryPolicy); err != nil {
-		return nil, ManageIndexResult{}, fmt.Errorf("set expiry policy: %w", err)
+	start := time.Now()
+	slog.Info("manage_index start", "key", in.Key)
+	defer func() {
+		logHandlerDone("manage_index done", err, start, "key", in.Key, "updated", out.Updated)
+	}()
+
+	if serr := h.store.SetExpiryPolicy(ctx, in.Key, in.ExpiryPolicy); serr != nil {
+		err = fmt.Errorf("set expiry policy: %w", serr)
+		return nil, ManageIndexResult{}, err
 	}
 	return nil, ManageIndexResult{Updated: true}, nil
 }

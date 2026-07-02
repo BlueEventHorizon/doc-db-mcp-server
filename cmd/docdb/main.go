@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -41,6 +43,16 @@ func main() {
 		return
 	}
 
+	// --show-config: 起動せずに解決済み設定 (log/db パス等) だけ表示する。
+	// `make show-log` や運用者がログ・DB の実配置場所を確認する用途。
+	if len(os.Args) > 1 && os.Args[1] == "--show-config" {
+		if err := showConfig(); err != nil {
+			fmt.Fprintln(os.Stderr, "設定読み込み失敗:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -50,12 +62,95 @@ func main() {
 	}
 }
 
+// showConfig は --show-config フラグ用。設定ファイルを読み込み、解決済みの
+// log / db / port 等のパスを標準出力にそのまま表示する（サーバーは起動しない）。
+func showConfig() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("version:         %s\n", version)
+	fmt.Printf("config_path:     %s\n", config.DefaultPath())
+	fmt.Printf("log.path:        %s\n", cfg.Log.Path)
+	fmt.Printf("log.level:       %s\n", cfg.Log.Level)
+	fmt.Printf("server.db_path:  %s\n", cfg.Server.DBPath)
+	fmt.Printf("server.port:     %d\n", cfg.Server.Port)
+	fmt.Printf("embedding.model: %s\n", cfg.Embedding.Model)
+	return nil
+}
+
+// parseLogLevel は log.level 文字列 ("debug"/"info"/"warn"/"error") を
+// slog.Level に変換する。config.Validate() が値域を保証済みのため、
+// 未知の値は info 扱いにフォールバックする（ここでは fail-fast しない）。
+func parseLogLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// setupLogging は cfg.Log.Path に応じて slog の出力先を設定する。
+// "stdout"/"stderr" は標準出力・標準エラーにそのまま、それ以外は絶対パスの
+// ファイルとして開く（無ければ親ディレクトリごと作成）。
+// 戻り値の io.Closer はファイル出力時のみ非 nil（呼び出し側で defer Close）。
+func setupLogging(cfg *config.Config) (io.Closer, error) {
+	level := parseLogLevel(cfg.Log.Level)
+	var w io.Writer
+	var closer io.Closer
+
+	switch cfg.Log.Path {
+	case "stdout":
+		w = os.Stdout
+	case "stderr":
+		w = os.Stderr
+	default:
+		if err := os.MkdirAll(filepath.Dir(cfg.Log.Path), 0o755); err != nil {
+			return nil, fmt.Errorf("log: ディレクトリを作成できません %q: %w", filepath.Dir(cfg.Log.Path), err)
+		}
+		f, err := os.OpenFile(cfg.Log.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("log: ログファイルを開けません %q: %w", cfg.Log.Path, err)
+		}
+		w = f
+		closer = f
+	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
+	return closer, nil
+}
+
 func run(ctx context.Context) error {
 	// 設定ファイル読み込み（DES-001 §9 CFG-01）
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("起動失敗: %w", err)
 	}
+
+	// ログ出力先を config.log.path に設定する（デフォルト ~/.doc-db/doc-db.log）。
+	// 従来は呼び出し側シェルのリダイレクト (`doc-db > /tmp/doc-db.log 2>&1 &`) に
+	// 依存していたが、サーバー自身が出力先を決定・管理するようにした。
+	logCloser, err := setupLogging(cfg)
+	if err != nil {
+		return fmt.Errorf("起動失敗: %w", err)
+	}
+	if logCloser != nil {
+		defer logCloser.Close()
+	}
+
+	// 起動確認用バナー: ログをファイルにリダイレクトしていても、operator が
+	// ターミナル起動直後に config / log / db の実配置を必ず確認できるよう、
+	// slog とは別に標準出力へ直接表示する。
+	fmt.Printf("doc-db v%s 起動\n", version)
+	fmt.Printf("  config: %s\n", config.DefaultPath())
+	fmt.Printf("  log:    %s\n", cfg.Log.Path)
+	fmt.Printf("  db:     %s\n", cfg.Server.DBPath)
+	fmt.Printf("  addr:   :%d\n", cfg.Server.Port)
 
 	// API キー（PRE-01 fail-fast）
 	apiKey, err := embedder.APIKeyFromEnv()
@@ -134,6 +229,8 @@ func run(ctx context.Context) error {
 	go func() {
 		slog.Info("doc-db MCP サーバー起動",
 			"addr", addr,
+			"config_path", config.DefaultPath(),
+			"log_path", cfg.Log.Path,
 			"db_path", cfg.Server.DBPath,
 			"embedding_model", cfg.Embedding.Model,
 			"version", version)
