@@ -568,7 +568,7 @@ func (h *Handlers) handleQuery(
 	}
 
 	start := time.Now()
-	slog.Info("query start", "key", in.Key, "series", in.Series, "mode", string(mode), "top_n", in.TopN)
+	slog.Info("query start", "key", in.Key, "series", in.Series, "mode", string(mode), "top_n", in.TopN, "query", in.Query)
 	defer func() {
 		logHandlerDone("query done", err, start, "key", in.Key, "hits", len(out.Results))
 	}()

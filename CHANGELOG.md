@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-07-03
+
+### Added
+
+- 起動時に DB 統計 (KEY 数・総チャンク数) を標準出力へ表示 (`cmd/docdb/main.go`)。
+  取得に失敗しても起動は継続する
+
+### Fixed
+
+- symbolic link 周りの不具合を修正
+
+### Docs
+
+- `docs/AI_INTEGRATION_GUIDE.md` の提供ツール表を実装 (7 ツール) に合わせて修正。
+  漏れていた `delete_series` を追加し、`delete_documents` との使い分けを明記
+- 競合調査ドキュメント `COMPETITORS.md` を追加
+
+### Chore
+
+- `reference/` 配下の古い forge / doc-advisor 関連ドキュメントを整理・削除
+
 ## [0.1.12] - 2026-07-02
 
 ### Added (config.log セクション + 起動時可視化 + リクエストログ)
