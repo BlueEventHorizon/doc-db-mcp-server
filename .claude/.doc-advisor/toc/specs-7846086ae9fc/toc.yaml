@@ -5,72 +5,169 @@
 metadata:
   name: Document Search Index (specs)
   key: specs
-  generated_at: 2026-06-21T05:00:08Z
-  file_count: 2
+  generated_at: 2026-07-03T12:47:39Z
+  file_count: 5
 
 docs:
   docs/specs/base/design/DES-001_doc_db_mcp_server_design.md:
     title: DES-001 doc-db MCP Server Design
-    purpose: Specifies the complete architecture, data model, search pipeline, and implementation guidelines for a hybrid search MCP server in Go, providing vector embedding plus BM25 plus LLM reranking capabilities for markdown documents
+    purpose: Defines the architecture, module design, data model, and search pipeline for a hybrid Markdown document search MCP server implemented in Go with pure-Go SQLite
     content_details:
-      - Package architecture with layered dependencies
-      - SQLite schema with WAL mode concurrency control
-      - Embedding record and series_keys multi-to-many management
-      - Hybrid search pipeline with vector, BM25, and LLM reranking
-      - Chunker with markdown heading boundary splitting
-      - BM25 tokenizer with ID pattern matching and Unicode normalization
-      - OpenAI Embedding API integration with batch handling and retry logic
-      - Expiry worker with TTL and LRU policies per key
-      - SSRF protection for URL fetching
-      - Configuration via environment variables and error handling policies
+      - "Two-layer search architecture (Layer 1 server with 3 signals: embedding, BM25, GREP)"
+      - SQLite schema with records, series_keys, chunks, and embeddings tables
+      - Hash-based deduplication (DIF-02) with content_hash and series management
+      - WAL mode with connection pooling for concurrent read-write access
+      - Upsert sequence with content normalization, chunking, and partial embedding failure handling
+      - Query pipeline with embedding, BM25 lexical search, and GREP literal matching signals
+      - Candidate merge strategy tracking origin_signals and score breakdown
+      - Optional LLM reranking via OpenAI Chat Completions
+      - YAML configuration at ~/.doc-db/doc-db.yaml with fail-fast validation
+      - Error handling policy with silent failure prevention and observability requirements
     applicable_tasks:
-      - MCP server implementation
-      - Go backend development
-      - Search system design
-      - SQLite database schema
-      - Embedding pipeline design
-      - Hybrid search implementation
-      - API integration
+      - MCP server implementation in Go
+      - Hybrid search pipeline architecture design
+      - SQLite concurrent access control implementation
+      - API integration design (OpenAI Embedding and Chat Completions)
+      - Search signal algorithm implementation
+      - Reranking strategy development
+      - Error handling and logging design
+      - Configuration management system design
     keywords:
       - MCP
-      - doc-db
-      - Go
-      - SQLite
+      - Streamable HTTP
+      - two-layer architecture
+      - embedding vector search
+      - BM25 lexical
+      - GREP signal
+      - SQLite WAL
+      - deduplication
+      - reranking
+  docs/specs/base/design/DES-003_desired_state_sync_and_deferred_gc_design.md:
+    title: DES-003 Desired-State Sync Job and Startup Garbage Collection Design
+    purpose: Defines desired-state synchronization and deferred garbage collection strategy to ensure client-side file deletions are properly reflected in doc-db indices through startup sweeps
+    content_details:
+      - Desired-state sync job (sync_documents) accepting complete file lists and detecting unlisted paths for deletion
+      - Polling interface (get_sync_status) for non-blocking job progress monitoring
+      - Series deletion scheduling (schedule_delete_series) for branch removal tracking
+      - pending_deletions table schema with key, series, and path columns and marked_at timestamp
+      - Store layer methods for marking series and document deletions and execution of startup sweep
+      - Sync job state management using Mutex protection with status tracking and error collection
+      - In-memory-only job history with cleanup policy to prevent unbounded memory growth
+      - Integration of startup sweep in cmd/docdb before database statistics display
+      - Reuse of existing DeleteSeries and DeleteSeriesAll for safe physical deletion
+      - Non-reentrant Mutex handling pattern to prevent deadlocks with existing store operations
+    applicable_tasks:
+      - Desired-state synchronization client implementation
+      - Garbage collection mechanism development
+      - sync_documents tool handler implementation
+      - get_sync_status polling tool implementation
+      - schedule_delete_series tool handler development
+      - pending_deletions table integration and querying
+      - Job state management with Mutex protection
+      - Startup sweep execution in server initialization
+      - Idempotency and race condition testing
+      - Integration testing with existing delete operations
+    keywords:
+      - desired-state
+      - garbage collection
+      - pending deletion
+      - sync_documents
+      - get_sync_status
+      - schedule_delete_series
+      - job state
+      - Mutex
+      - startup sweep
+      - SyncJobStatus
+  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md:
+    title: APP-001 doc-db MCP Server Requirements Specification
+    purpose: Specifies comprehensive requirements for a hybrid-search document MCP server using three-signal parallel search (embedding, lexical, GREP) with optional LLM reranking, emphasizing recall-first two-layer architecture
+    content_details:
+      - Two-layer search architecture with Layer 1 candidate collection and Layer 2 AI agent content judgment
+      - "Three parallel search signals: Embedding for semantic similarity, BM25 for lexical matching, GREP for literal string matching"
+      - Hash-based deduplication skipping re-embedding when content hash matches for same key and path
+      - Series-based versioning with embedding sharing across multiple series (Git branches and versions)
+      - Chunk splitting at Markdown heading boundaries (H1-H6) with hierarchy preservation
+      - MCP tool specifications for upsert_documents, delete_documents, query, index management, and sync operations
+      - Search output format including origin_signals array showing which signals detected each chunk
+      - Desired-state document synchronization with sync_documents and deletion scheduling via schedule_delete_series
+      - Expiry policies with TTL (time-based) and LRU (capacity-based) automatic index cleanup
+    applicable_tasks:
+      - Implementing hybrid search backend combining Embedding, BM25, and GREP signals
+      - Designing and validating two-layer search architecture (candidate collection and AI judgment)
+      - Implementing document upsert with hash-based deduplication and series sharing
+      - Configuring and testing series-based versioning and cleanup policies
+      - Implementing desired-state document synchronization with deletion scheduling
+      - Defining and validating query output format including origin_signals
+      - Implementing error handling for external API failures and processing continuation
+      - Setting up index lifecycle management with TTL and LRU policies
+    keywords:
       - embedding
       - BM25
-      - hybrid search
+      - GREP signal
+      - two-layer architecture
+      - hash-based deduplication
+      - series versioning
+      - MCP tools
       - reranking
-      - Streamable HTTP
-  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md:
-    title: APP-001 doc-db MCP Server Requirements
-    purpose: Specifies functional and non-functional requirements for a hybrid document search MCP server that processes Markdown, manages embeddings, and provides vector plus lexical plus LLM rerank search capabilities.
+      - document chunking
+  docs/specs/install/design/DES-002_install_design.md:
+    title: DES-002 doc-db MCP Server Installation Design
+    purpose: Defines Homebrew installation architecture for doc-db MCP server, including Formula design, version consistency management, and post-installation user experience
     content_details:
-      - Hybrid search architecture with vector embedding, lexical matching, and LLM reranking stages
-      - OpenAI API key configuration with fallback mechanism (OPENAI_API_DOCDB_KEY / OPENAI_API_KEY)
-      - upsert_documents tool with support for direct content or URL-based document ingestion
-      - Chunk division at Markdown heading boundaries (H1–H6) with heading hierarchy paths
-      - Differential embedding management with hash-based deduplication and series_keys sharing
-      - Lexical matching algorithm for ID patterns and entity name exact matches
-      - LLM Rerank fallback when embedding plus lexical scores are combined
-      - delete_documents tool with series-aware record cleanup and physical deletion
-      - query tool with mode selection (emb / lex / hybrid / rerank) and top_n limiting
-      - TTL and LRU capacity-based expiration policies with per-KEY override capability
+      - Self-hosted tap strategy without separate homebrew-doc-db repository to minimize maintenance
+      - Go build integration with version injection via ldflags -X main.version for Formula compatibility
+      - Version canonical location in VERSION file with CHANGELOG and Formula tag synchronization
+      - Smoke test implementation using doc-db --version flag without configuration or API key dependencies
+      - Configuration file example installation to share directory with post-install caveats messaging
+      - Required post-installation steps for configuration, API key setup, and MCP client registration
+      - Verification script design with verify_version_consistency.sh and verify_release_tag.sh for release validation
+      - macOS Ventura+ requirement and Go toolchain dependency specification in Formula
+      - Two-phase release workflow for version bump followed by git tag and revision confirmation
     applicable_tasks:
-      - Define document search system architecture
-      - Plan embedding and vector storage design
-      - Implement MCP tool interface for document operations
-      - Design hybrid search scoring algorithm
-      - Set up OpenAI API integration for embeddings and reranking
-      - Implement chunk-level metadata tracking and series management
-      - Specify error handling and recovery scenarios
+      - Homebrew Formula implementation and maintenance
+      - Version management and release workflow execution
+      - Installation process testing and smoke test validation
+      - Configuration file schema and example creation
+      - User onboarding and post-installation guidance documentation
+      - Release tag management and git commit verification
+      - Binary distribution setup and packaging
+      - Installation verification through actual brew install testing
     keywords:
-      - MCP server
-      - hybrid search
-      - vector embedding
-      - lexical matching
-      - LLM rerank
-      - chunk division
-      - series deduplication
-      - OpenAI API
-      - expiration policy
-      - lexical scoring
+      - Formula
+      - ldflags
+      - caveats
+      - revision
+      - Homebrew
+      - git tag
+      - VERSION file
+      - go build
+      - MCP
+  docs/specs/install/requirements/APP-002_install_requirements.md:
+    title: APP-002 doc-db MCP Server Installation Requirements Specification
+    purpose: Defines installation requirements for doc-db MCP Server on macOS via Homebrew, including distribution format, version consistency validation, and post-installation user guidance
+    content_details:
+      - Homebrew self-tap distribution format with Formula in repository root
+      - Version consistency validation between VERSION file CHANGELOG and Formula tag/revision fields
+      - Post-installation guidance via Homebrew caveats for configuration and MCP registration
+      - Configuration file placement (~/.doc-db/doc-db.yaml) and OpenAI API key environment variable setup
+      - Binary versioning and version embedding via ldflags injection during go build
+      - macOS version dependency (13/Ventura+) and Go toolchain (1.22+) requirements
+      - MCP server registration format for Claude Code and Claude Desktop with HTTP transport
+      - Formula test requirement for doc-db --version output verification
+    applicable_tasks:
+      - Homebrew Formula development and testing
+      - Version bump and release workflow implementation
+      - MCP server installation setup for Claude Code and Claude Desktop
+      - Release tag creation and validation procedures
+      - Configuration file and environment setup verification
+    keywords:
+      - Homebrew
+      - Formula
+      - Installation
+      - Version consistency
+      - MCP registration
+      - macOS
+      - Configuration file
+      - Release workflow
+      - ldflags
+      - Binary distribution
