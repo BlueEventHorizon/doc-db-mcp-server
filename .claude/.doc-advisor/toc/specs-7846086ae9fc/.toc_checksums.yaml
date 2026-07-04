@@ -1,10 +1,12 @@
 # ToC checksums for key: specs
 # Auto-generated - do not edit
-generated_at: 2026-07-03T12:47:39Z
-file_count: 5
+generated_at: 2026-07-03T17:22:58Z
+file_count: 7
 checksums:
-  docs/specs/base/design/DES-001_doc_db_mcp_server_design.md: ff574c3661016f539560392febd0153b913ad655c7ed470c003c70c6523e7cd3
-  docs/specs/base/design/DES-003_desired_state_sync_and_deferred_gc_design.md: 08abdbf0f7754202d368108b8c0cc99b631a1e67d2740ed772a7319881281a84
-  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md: 53b594b7564b2e5d59fbe2be006011e400bed998cc1c94b639272abe8ad808a8
+  docs/specs/base/design/ADR-001_feature_split_criteria_for_additive_changes.md: 2c90b6ea39adf17aa73f7e81f6006cf8b9615a58b41909a4b83ce84e060870d8
+  docs/specs/base/design/DES-001_doc_db_mcp_server_design.md: dd0ddf1a2d1d8aec18f94ba8a253cec72efd266dfe9e297ef77ddd917c549cc4
+  docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md: 0dcb5c44dca56452d0b53ca28a896c2d9dbb5c158e2ae30479e8e896385576c6
   docs/specs/install/design/DES-002_install_design.md: 524bb00e770875fefda1d8dd3d202d9205442af479f4f7b4239ce04b9b8a4419
   docs/specs/install/requirements/APP-002_install_requirements.md: 21e471db6dbc4dfa00f29f697a6938716ee5ae065686f7679244a943b6038fe3
+  docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md: d0317475b6ac26c2821318417d8a7de2f00ac93835d7227aee134b1c29abc360
+  docs/specs/sync-gc/requirements/APP-003_sync_gc_requirements.md: 311ea86a37bf13849ec4ec6bfb92809a560fdb9c8f2c7ecac3be4183f199f4ac

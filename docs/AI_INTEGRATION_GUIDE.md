@@ -100,15 +100,15 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 
 doc-db は 7 つの MCP ツールを提供します。詳細スキーマは `tools/list` で取得できます。
 
-| Tool                   | 目的                                                          |
-| ---------------------- | -------------------------------------------------------------- |
-| **`upsert_documents`** | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)    |
-| **`delete_documents`** | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須) |
+| Tool                   | 目的                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| **`upsert_documents`** | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)                   |
+| **`delete_documents`** | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須)                |
 | **`delete_series`**    | KEY 内の全 record から指定 series を除去 (branch cleanup 用途、`paths` 不要) |
-| **`query`**            | 候補プールを検索 (3 signal 並列)                              |
-| **`list_indexes`**     | 登録済み KEY の一覧 + メタ情報                                |
-| **`delete_index`**     | KEY 全体を物理削除 (破壊的)                                   |
-| **`manage_index`**     | KEY ごとの廃棄ポリシー (TTL / max_chunks) 設定                |
+| **`query`**            | 候補プールを検索 (3 signal 並列)                                             |
+| **`list_indexes`**     | 登録済み KEY の一覧 + メタ情報                                               |
+| **`delete_index`**     | KEY 全体を物理削除 (破壊的)                                                  |
+| **`manage_index`**     | KEY ごとの廃棄ポリシー (TTL / max_chunks) 設定                               |
 
 **`delete_documents` と `delete_series` の使い分け**:
 
