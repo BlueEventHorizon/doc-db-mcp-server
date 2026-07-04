@@ -13,14 +13,14 @@ doc-db-mcp-server と同種の機能（Markdown ドキュメントのハイブ�
 
 ## 比較表
 
-| プロダクト | 言語/配布 | 検索方式 | MCP 対応 | doc-db との違い |
-| --- | --- | --- | --- | --- |
-| [Qmd](https://github.com/ehc-io/qmd) | TypeScript/Python、npm 配布 | BM25(FTS5)+ベクトル+LLM rerank、SQLite 使用 | あり（stdio/HTTP） | 最も近い設計思想。単一バイナリではなく npm パッケージ。series/branch 概念なし。GREP 単独 signal はなく「クエリ拡張→融合→rerank」の一本道 |
-| [ck (BeaconBay)](https://github.com/BeaconBay/ck) | Rust、単一バイナリ (cargo) | セマンティック(FastEmbed)+BM25(Tantivy)+RRF 融合 | あり (`ck --serve`) | LLM rerank なし。git branch 対応なし。dedup は blake3 のチャンクレベル変更検出（API 課金削減という設計目的は共通） |
-| [MCP-Markdown-RAG](https://github.com/Zackriya-Solutions/MCP-Markdown-RAG) | Python | FAISS+Whoosh(BM25)+グラフ探索のハイブリッド | あり | GREP 無し、series/branch 無し、単一バイナリでもない |
-| [ragdocs (andnp)](https://glama.ai/mcp/servers/andnp/ragdocs-mcp) | Python | セマンティック+BM25、デーモン方式 | あり | git 履歴のセマンティック検索はあるが branch 単位の series 管理ではない |
-| [MCP Toolbox for Databases (Google Cloud)](https://medium.com/google-cloud/find-the-right-docs-every-time-announcing-versioned-documentation-for-mcp-toolbox-f94e8180d304) | — | バージョン管理されたドキュメント検索 | あり | 「バージョン」はリリースバージョンの概念で、Git branch 名をそのまま series として扱う設計ではない |
-| [docs-mcp-server (arabold)](https://github.com/arabold/docs-mcp-server) | Node.js | ライブラリの特定バージョンに絞った検索 | あり | 対象はライブラリドキュメント（npm/pip 等）で自プロジェクトの Markdown 文書向けではない |
+| プロダクト                                                                                                                                                                 | 言語/配布                   | 検索方式                                         | MCP 対応            | doc-db との違い                                                                                                                          |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------ | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| [Qmd](https://github.com/ehc-io/qmd)                                                                                                                                       | TypeScript/Python、npm 配布 | BM25(FTS5)+ベクトル+LLM rerank、SQLite 使用      | あり（stdio/HTTP）  | 最も近い設計思想。単一バイナリではなく npm パッケージ。series/branch 概念なし。GREP 単独 signal はなく「クエリ拡張→融合→rerank」の一本道 |
+| [ck (BeaconBay)](https://github.com/BeaconBay/ck)                                                                                                                          | Rust、単一バイナリ (cargo)  | セマンティック(FastEmbed)+BM25(Tantivy)+RRF 融合 | あり (`ck --serve`) | LLM rerank なし。git branch 対応なし。dedup は blake3 のチャンクレベル変更検出（API 課金削減という設計目的は共通）                       |
+| [MCP-Markdown-RAG](https://github.com/Zackriya-Solutions/MCP-Markdown-RAG)                                                                                                 | Python                      | FAISS+Whoosh(BM25)+グラフ探索のハイブリッド      | あり                | GREP 無し、series/branch 無し、単一バイナリでもない                                                                                      |
+| [ragdocs (andnp)](https://glama.ai/mcp/servers/andnp/ragdocs-mcp)                                                                                                          | Python                      | セマンティック+BM25、デーモン方式                | あり                | git 履歴のセマンティック検索はあるが branch 単位の series 管理ではない                                                                   |
+| [MCP Toolbox for Databases (Google Cloud)](https://medium.com/google-cloud/find-the-right-docs-every-time-announcing-versioned-documentation-for-mcp-toolbox-f94e8180d304) | —                           | バージョン管理されたドキュメント検索             | あり                | 「バージョン」はリリースバージョンの概念で、Git branch 名をそのまま series として扱う設計ではない                                        |
+| [docs-mcp-server (arabold)](https://github.com/arabold/docs-mcp-server)                                                                                                    | Node.js                     | ライブラリの特定バージョンに絞った検索           | あり                | 対象はライブラリドキュメント（npm/pip 等）で自プロジェクトの Markdown 文書向けではない                                                   |
 
 ## 観点別の評価
 

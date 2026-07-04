@@ -96,18 +96,18 @@ flowchart LR
 
 ### レイヤー構成
 
-| パッケージ           | 責務                                                             |
-| --------------------- | ---------------------------------------------------------------- |
-| `cmd/docdb`         | エントリポイント・設定読み込み・配線                              |
-| `internal/mcp`      | MCP ツールハンドラ（7 種）                                        |
-| `internal/search`   | 3 signal 検索パイプライン（emb / lex / grep / rerank）            |
-| `internal/reranker` | OpenAI Chat Completions ベース LLM Rerank                         |
-| `internal/chunker`  | Markdown → 見出し境界チャンク分割                                 |
-| `internal/embedder` | OpenAI Embedding API（部分失敗対応）                              |
-| `internal/fetcher`  | URL → コンテンツ取得（SSRF 防御付き）                             |
-| `internal/expiry`   | TTL / LRU 自動廃棄ワーカー                                        |
-| `internal/store`    | SQLite 読み書き・WAL・アトミック AppendAndCleanSeries              |
-| `internal/config`   | YAML 設定ローダー（`~/.doc-db/doc-db.yaml`）                      |
+| パッケージ          | 責務                                                   |
+| ------------------- | ------------------------------------------------------ |
+| `cmd/docdb`         | エントリポイント・設定読み込み・配線                   |
+| `internal/mcp`      | MCP ツールハンドラ（7 種）                             |
+| `internal/search`   | 3 signal 検索パイプライン（emb / lex / grep / rerank） |
+| `internal/reranker` | OpenAI Chat Completions ベース LLM Rerank              |
+| `internal/chunker`  | Markdown → 見出し境界チャンク分割                      |
+| `internal/embedder` | OpenAI Embedding API（部分失敗対応）                   |
+| `internal/fetcher`  | URL → コンテンツ取得（SSRF 防御付き）                  |
+| `internal/expiry`   | TTL / LRU 自動廃棄ワーカー                             |
+| `internal/store`    | SQLite 読み書き・WAL・アトミック AppendAndCleanSeries  |
+| `internal/config`   | YAML 設定ローダー（`~/.doc-db/doc-db.yaml`）           |
 
 上位レイヤーのみが下位を参照する。循環依存なし。
 

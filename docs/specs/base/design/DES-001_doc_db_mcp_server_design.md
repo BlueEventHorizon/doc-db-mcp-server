@@ -238,18 +238,15 @@ flowchart TB
 
 ### 5.1 ユースケース一覧
 
-| ユースケース                       | 対応 MCP ツール             | 関連要件       |
-| ----------------------------------- | ---------------------------- | -------------- |
-| ドキュメント追加・更新             | `upsert_documents`          | FNC-001        |
-| ドキュメント削除                   | `delete_documents`          | FNC-002        |
-| series 一括削除（branch cleanup）  | `delete_series`             | FNC-002 DEL-03 |
-| ドキュメント検索                   | `query`                     | FNC-003        |
-| インデックス一覧取得               | `list_indexes`（TBD-008）   | FNC-004 MNG-01 |
-| インデックス削除                   | `delete_index`（TBD-008）   | FNC-004 MNG-02 |
-| KEY ごとの廃棄ポリシー設定         | `manage_index`              | EXP-04         |
-| desired-state 同期（削除検出含む） | `sync_documents`            | FNC-006 SYN-01〜08 |
-| 同期ジョブの進捗確認               | `get_sync_status`           | FNC-006 SYN-05〜06 |
-| series 削除予約（起動時スイープ）  | `schedule_delete_series`    | FNC-006 GC-01〜05 |
+| ユースケース                      | 対応 MCP ツール           | 関連要件       |
+| --------------------------------- | ------------------------- | -------------- |
+| ドキュメント追加・更新            | `upsert_documents`        | FNC-001        |
+| ドキュメント削除                  | `delete_documents`        | FNC-002        |
+| series 一括削除（branch cleanup） | `delete_series`           | FNC-002 DEL-03 |
+| ドキュメント検索                  | `query`                   | FNC-003        |
+| インデックス一覧取得              | `list_indexes`（TBD-008） | FNC-004 MNG-01 |
+| インデックス削除                  | `delete_index`（TBD-008） | FNC-004 MNG-02 |
+| KEY ごとの廃棄ポリシー設定        | `manage_index`            | EXP-04         |
 
 ### 5.2 upsert_documents シーケンス
 
@@ -510,10 +507,6 @@ fine-tuning は最小限とする（PHIL-01）。
 
 バックグラウンドゴルーチンとして起動し、定期的（デフォルト 1 時間ごと）に実行する。
 
-> **本節の TTL/LRU は KEY 単位の推測ベース廃棄（`last_accessed_at` 基準）であり変更しない。**
-> クライアントが確定的に把握している事実（branch 削除・ファイル削除）に基づく削除予約＋起動時スイープ方式は
-> [DES-003](DES-003_desired_state_sync_and_deferred_gc_design.md) を参照（TBD-009 解決、FNC-006）。
-
 ### 8.1 TTL（EXP-01）
 
 ```
@@ -539,13 +532,16 @@ ORDER BY (SELECT last_accessed_at FROM keys WHERE key = r.key) ASC;
 
 `total_chunks > max_chunks` の場合、`last_accessed_at ASC`（最も古いアクセス順）で KEY を削除し、上限以下になるまで繰り返す。
 
-### 8.3 series 廃棄ポリシー（TBD-009 解決済み）
+### 8.3 series 廃棄ポリシー（TBD）
 
-EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series の廃棄ポリシーは当初 APP-001 に存在しなかった（TBD-009）。feature ブランチ運用ではブランチ削除後も series が残存し続ける問題があったが、これは APP-001 FNC-006 で解決済みである。
+EXP-01/02 は KEY 単位の廃棄のみを規定しており、未使用 series の廃棄ポリシーは APP-001 に存在しない。feature ブランチ運用ではブランチ削除後も series が残存し続ける問題がある。
 
-TTL/LRU の単位を KEY → series へ拡張する案は**採用しない**（推測ベースの拡張は本来の課題を悪化させるだけであるため）。代わりに、クライアントが確定的に把握している事実（branch 削除・ファイル削除）に基づく**削除予約＋起動時スイープ方式**を採用する。詳細は [DES-003](DES-003_desired_state_sync_and_deferred_gc_design.md) を参照。
+設計方針 TBD:
 
-既存の `delete_documents` / `delete_series`（series の即時明示削除）は本方針と併存し、変更しない。
+- `delete_documents` で series を明示削除するオペレーション運用（現設計）を基本とし、自動廃棄は初版スコープ外とする
+- または TTL/LRU の単位を KEY → series に拡張する（APP-001 EXP-01/02 の改訂が必要）
+
+現設計では series の自動廃棄は実装しない。利用者が不要な series を `delete_documents` で明示削除する運用を前提とする。
 
 ### 8.4 KEY ごとのポリシーオーバーライド（EXP-04）
 
@@ -664,6 +660,5 @@ log:
 | 2026-06-24 | 0.4        | §9 を YAML 設定ファイル方式に変更（`~/.doc-db/doc-db.yaml` 固定パス・環境変数オーバーライド不採用・API キーのみ環境変数）。本文中の `DOCDB_*` 環境変数参照を設定ファイルキー参照に更新                                                                                                                                                                                                                                                                                                                        |
 | 2026-06-28 | 0.5        | APP-001 PHIL-01/02 (二層検索アーキ) に対応: §2.1 アーキテクチャ概要に Layer 1/2 説明と更新 mermaid 図を追加。§6.4 全文 GREP signal の設計を新規追加 (substring 一致・origin_signals 記録)。§6.5 Candidate Merge を新規追加 (3 signal 合算ロジック)。§6.6 LLM Rerank を従来の §6.4 から番号変更 + PHIL-02 (Rerank は optional) を明記。§10 エラーハンドリングを silent failure 禁止方針 (memory: no-silent-failure) に整合させ Embedder の `errors.Join` / Reranker の warnings / Expiry の Stats() 公開を反映 |
 | 2026-07-01 | 0.6        | §5.2 upsert_documents シーケンス冒頭に content 取得 3 経路 (content / url / **local_path**) の表を追加。local_path はローカル運用時の payload 削減用途で、doc-db が絶対パスから直接ディスク読み込みする。安全性制約 (絶対パス必須・`..` 禁止・symlink 解決後再検証・10MB 上限・regular file 限定) を明記                                                                                                                                                                                                      |
-| 2026-07-03 | 0.7        | §4.1 の `bm25_stats`/`bm25_df` スキーマ定義・§6.2 の関連更新手順を、v0.1.2 で廃止済み (実装は substring match による都度計算方式) の実態に合わせて修正。§8 に DES-003 (desired-state 同期ジョブ + 削除予約の起動時ガベージコレクション) への参照注記を追加                                                                                                                                                                                                                                                     |
-| 2026-07-03 | 0.8        | §8.3 が §8 冒頭の DES-003 参照注記と矛盾したまま「series の自動廃棄は実装しない」と記載していた不整合を修正。TBD-009 解決済みである旨・KEY→series への TTL/LRU 拡張案を不採用とした理由・DES-003 への参照を明記                                                                                                                                                                                                                                                                                             |
-| 2026-07-03 | 0.9        | §5.1 ユースケース一覧に未掲載だった `delete_series` / `manage_index` および FNC-006 新規3ツール（`sync_documents` / `get_sync_status` / `schedule_delete_series`）を追加し、全ツール一覧として完全化                                                                                                                                                                                                                                                                                                         |
+| 2026-07-03 | 0.7        | §4.1 の `bm25_stats`/`bm25_df` スキーマ定義・§6.2 の関連更新手順を、v0.1.2 で廃止済み (実装は substring match による都度計算方式) の実態に合わせて修正                                                                                                                                                                                                                                                                                                                                                        |
+| 2026-07-04 | 0.8        | §5.1 ユースケース一覧に未掲載だった `delete_series` / `manage_index` を追加し、既存ツール一覧として完全化                                                                                                                                                                                                                                                                                                                                                                                                     |

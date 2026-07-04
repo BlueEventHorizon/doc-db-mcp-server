@@ -1,0 +1,366 @@
+# ---
+# type: temporary-feature-plan
+# notes:
+#   - 正本は対応する追加 feature 要件定義書（APP-003）。旧仕様と矛盾する場合は要件定義書を優先する。
+#   - 本 feature 実装完了後、この計画書は破棄される予定（additive_development_spec.md §4「追加開発の計画 → 破棄」）。
+# ---
+
+# sync-gc 実装計画書
+
+# === トレーサビリティ ===
+requirements_traceability:
+  - requirement_id: SYN-01
+    title: sync_documents の documents を desired-state とみなす
+    design_id: DES-003
+    status: pending
+  - requirement_id: SYN-02
+    title: documents の各要素に既存 DIF-01〜03 の差分管理を適用する（無改造再利用）
+    design_id: DES-003
+    status: pending
+  - requirement_id: SYN-03
+    title: documents に含まれない既存 path を削除予約として記録する
+    design_id: DES-003
+    status: pending
+  - requirement_id: SYN-04
+    title: 削除予約の自己修復（path 再出現・series 全体予約の解除）
+    design_id: DES-003
+    status: pending
+  - requirement_id: SYN-05
+    title: sync_documents は job_id を即座に返す
+    design_id: DES-003
+    status: pending
+  - requirement_id: SYN-06
+    title: get_sync_status がジョブ進捗・完了・エラーを返す
+    design_id: DES-003
+    status: pending
+  - requirement_id: SYN-07
+    title: ジョブ状態はメモリ保持のみ・永続化しない
+    design_id: DES-003
+    status: pending
+  - requirement_id: SYN-08
+    title: 同一 KEY の書き込み系操作を sync_documents と排他実行する（WithKeyLock）
+    design_id: DES-003
+    status: pending
+  - requirement_id: GC-01
+    title: schedule_delete_series が series を即座に削除せず予約する
+    design_id: DES-003
+    status: pending
+  - requirement_id: GC-02
+    title: series 単位・path 単位の削除予約を起動時に一括物理削除する
+    design_id: DES-003
+    status: pending
+  - requirement_id: GC-03
+    title: 起動時削除予約処理を統計情報算出より前に完了させる
+    design_id: DES-003
+    status: pending
+  - requirement_id: GC-04
+    title: 削除予約の物理削除失敗時にログ記録し処理継続する
+    design_id: DES-003
+    status: pending
+  - requirement_id: GC-05
+    title: sync_documents のジョブ用 context をリクエスト context から分離する
+    design_id: DES-003
+    status: pending
+
+design_traceability:
+  - design_id: DES-003
+    title: desired-state 同期ジョブ + 削除予約の起動時ガベージコレクション 設計書
+    requirement_ids:
+      - SYN-01
+      - SYN-02
+      - SYN-03
+      - SYN-04
+      - SYN-05
+      - SYN-06
+      - SYN-07
+      - SYN-08
+      - GC-01
+      - GC-02
+      - GC-03
+      - GC-04
+      - GC-05
+    task_ids:
+      - TASK-001
+      - TASK-002
+      - TASK-003
+      - TASK-004
+      - TASK-005
+      - TASK-006
+      - TASK-007
+      - TASK-008
+      - TASK-009
+      - TASK-010
+      - TASK-011
+      - TASK-012
+      - TASK-013
+
+# === タスク一覧 ===
+tasks:
+  # ────────────────────────────────────────
+  # フェーズ 1: WithKeyLock 基盤 + 直接排他性テスト（priority 90-99）
+  # ────────────────────────────────────────
+  - task_id: TASK-001
+    title: internal/store — WithKeyLock 実装
+    priority: 99
+    status: pending
+    design_id: DES-003
+    depends_on: []
+    group_id: null
+    build_check: per_task
+    description:
+      - Store 構造体に keyLocksMu sync.Mutex と keyLocks map[string]*keyLockEntry を追加する
+      - keyLockEntry（ch chan struct{}（バッファ1）, ref int）を定義する（sync.Mutex ではなく channel を使うのは、ロック待機中でも ctx.Done() と select できるようにするため）
+      - "WithKeyLock(ctx, key, fn func() error) error を実装する（参照カウント方式、ref が 0 になったエントリを map から削除。select 文で ch への送信と ctx.Done() を競合させ、ロック待機中のキャンセルに対応する）"
+      - 既存の DeleteKey / UpsertRecord / DeleteSeries / DeleteSeriesAll 等は無改造のまま変更しない（WithKeyLock を内部で呼ばない設計を維持する）
+    acceptance_criteria: "go build ./internal/store/... が成功し、既存の internal/store 全テストが変更なく通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-002
+    title: internal/store — WithKeyLock 単体テスト
+    priority: 97
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - goroutine A が WithKeyLock(key, fn) を保持中（fn 内で time.Sleep 等の意図的遅延）に、goroutine B が同一 key で WithKeyLock を呼ぶとブロックされることをタイムアウト付きで直接検証するテストを書く
+      - 異なる key に対する WithKeyLock 呼び出しは互いにブロックしないことを確認するテストを書く
+      - ロック待機中に ctx を cancel すると fn を実行せず即座に ctx.Err() が返ることを確認するテストを書く（GC-05 の前提となる待機中キャンセル挙動）
+      - 参照カウントが 0 になったエントリが keyLocks map から削除されることを確認するテストを書く
+      - go test -race でレースが出ないことを確認する
+    acceptance_criteria: "go test -race ./internal/store/... が新規 WithKeyLock テストを含め全通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  # ────────────────────────────────────────
+  # フェーズ 2: 既存ハンドラ・expiry への適用 + pending_deletions 永続層（priority 60-89）
+  # ────────────────────────────────────────
+  - task_id: TASK-003
+    title: internal/mcp — 既存ハンドラ（upsert/delete/delete_series/delete_index）へ WithKeyLock 適用
+    priority: 87
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - upsert_documents ハンドラの処理呼び出し全体を store.WithKeyLock で 1 回だけ囲む（処理本体は無改造）
+      - delete_documents ハンドラを同様に WithKeyLock で囲む
+      - delete_series ハンドラを同様に WithKeyLock で囲む
+      - delete_index ハンドラを同様に WithKeyLock で囲む
+      - 各ハンドラで WithKeyLock をネストして呼ばないことを確認する（DES-003 §3.5.2 の禁止規約）
+    acceptance_criteria: "go build ./internal/mcp/... が成功し、既存の internal/mcp 全テストが変更なく通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-004
+    title: internal/expiry — WithKeyLock 適用
+    priority: 85
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - storeForExpiry インターフェースに WithKeyLock(ctx, key, fn func() error) error を追加する
+      - runTTL の DeleteKey 呼び出しを w.st.WithKeyLock(ctx, key, func() error { return w.st.DeleteKey(ctx, key) }) に置き換える
+      - runLRU の DeleteKey 呼び出しも同様に置き換える
+      - TTL/LRU の判定ロジック本体（対象 KEY の選定）は変更しない
+      - モックの storeForExpiry 実装に WithKeyLock を追加し、DeleteKey 呼び出しが WithKeyLock 経由であることを呼び出し順序で確認するテストを書く
+    acceptance_criteria: "go test ./internal/expiry/... が既存テスト + 新規呼び出し順序テストを含め全通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-005
+    title: internal/store — pending_deletions テーブル + 削除予約メソッド実装
+    priority: 83
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+    group_id: "GROUP-PENDING (1/2)"
+    build_check: skip
+    description:
+      - pending_deletions テーブルを既存スキーマ初期化ブロックの直後に追加する（key/series/path/marked_at, PRIMARY KEY(key, series, path)）
+      - MarkSeriesForDeletion(ctx, key, series) (alreadyScheduled bool, err error) を実装する（path='' で upsert、既存有無を確認して返す）
+      - MarkDocumentForDeletion(ctx, key, series, path) error を実装する
+      - ClearPendingDeletion(ctx, key, series, path) error を実装する（path="" で series 全体解除）
+      - SweepPendingDeletions(ctx) (processed int, errs []error) を実装する（path='' なら DeleteSeriesAll、それ以外は DeleteSeries を無改造で呼ぶ。WithKeyLock は取得しない。起動時専用である旨をコードコメントに明記する）
+    acceptance_criteria: "go vet ./internal/store/... が警告なく通ること（機能テストは同一グループの TASK-006 で実施）"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-006
+    title: internal/store — pending_deletions 単体テスト
+    priority: 82
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-005
+    group_id: "GROUP-PENDING (2/2)"
+    build_check: on_group_complete
+    description:
+      - MarkSeriesForDeletion / MarkDocumentForDeletion の冪等性を確認する（2回目呼び出しで alreadyScheduled=true）
+      - SweepPendingDeletions が series 単位・path 単位それぞれで正しく物理削除することを確認する
+      - "回帰テスト（最重要）: 同一 content_hash を複数 series が参照している状態で片方だけ削除予約・スイープした場合に record が残ることを確認する"
+      - 削除予約後、スイープ前に同じ path が再度 sync された場合 ClearPendingDeletion で解除されることを確認する
+      - 個別失敗時にログ記録の上で処理継続することを確認する（silent failure 禁止方針）
+    acceptance_criteria: "go test ./internal/store/... が pending_deletions 関連の全テストケースを通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-007
+    title: cmd/docdb — 起動時スイープの差し込み
+    priority: 78
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-005
+      - TASK-006
+    group_id: null
+    build_check: per_task
+    description:
+      - store.New() 直後、起動時 DB 統計表示（keyCount/totalChunkCount 算出）より前に SweepPendingDeletions を同期実行する
+      - スイープ結果（processed 件数・エラー件数）をログ出力する
+      - 個別エラーは警告ログとして出力し起動を継続する
+    acceptance_criteria: "起動テストで、統計表示の値がスイープ後の状態を反映していること（手動投入した pending_deletions 行が起動後に消えていること）を確認する統合テストが通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+      - cmd/docdb/main.go
+
+  - task_id: TASK-008
+    title: internal/mcp — 既存ハンドラの WithKeyLock 排他性 統合テスト
+    priority: 75
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-003
+      - TASK-004
+    group_id: null
+    build_check: per_task
+    description:
+      - delete_index 実行中に別ゴルーチンから同一 KEY への upsert_documents を呼ぶと、delete_index 完了までブロックされることを確認する統合テストを書く
+      - upsert_documents 実行中に別ゴルーチンから同一 KEY への delete_documents を呼ぶと同様にブロックされることを確認する
+      - 異なる KEY に対する操作は互いにブロックされないことを確認する
+    acceptance_criteria: "go test -race ./internal/mcp/... が新規排他性テストを含め全通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  # ────────────────────────────────────────
+  # フェーズ 3: sync_documents / get_sync_status / schedule_delete_series（priority 40-69）
+  # ────────────────────────────────────────
+  - task_id: TASK-009
+    title: cmd/docdb・internal/mcp — root context 配線（GC-05 準備）
+    priority: 68
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - mcp.New のシグネチャに root context を追加する（既存の expWorker.Start(ctx) に渡している shutdown 用 context と同じもの）
+      - Handlers 構造体に root context フィールドを追加する
+      - cmd/docdb/main.go の mcp.New 呼び出しを新シグネチャに合わせて更新する
+    acceptance_criteria: "go build ./... が成功し、既存の internal/mcp 全テストが変更なく通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+      - cmd/docdb/main.go
+
+  - task_id: TASK-010
+    title: internal/mcp — sync_documents ハンドラ実装
+    priority: 65
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-005
+      - TASK-009
+    group_id: null
+    build_check: per_task
+    description:
+      - "sync_documents MCP ツールを登録する（入力: key, series, documents）"
+      - 一意な job_id を生成し即座に返す（SYN-05）。以降は root context 由来の独立 context で goroutine 実行する（GC-05）
+      - goroutine 内で store.WithKeyLock(ctx, key, fn) を 1 回だけ呼び、fn 内で以下を直接実行する（WithKeyLock を再度呼ばない、DES-003 §3.5.2）
+      - "fn 内: 既存 upsertOne で documents を処理する（DIF-01〜03 無改造、SYN-02）"
+      - "fn 内: 既存 path 一覧を取得し documents に無い path を検出、MarkDocumentForDeletion で削除予約する（SYN-03）"
+      - "fn 内: documents に含まれる path は ClearPendingDeletion で自己修復し、series 全体の削除予約があれば解除する（SYN-04）"
+      - SyncJobStatus（Handlers の sync.Mutex 保護 map）に進捗を書き込む
+      - goroutine 内で root context 由来の ctx.Done() を、WithKeyLock 待機中および fn 実行中の双方で監視し、キャンセル検知時に SyncJobStatus.Status を "failed" に更新する（GC-05）
+    acceptance_criteria: "go vet ./internal/mcp/... が警告なく通ること（機能テストは TASK-013 で実施）"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-011
+    title: internal/mcp — get_sync_status ハンドラ実装
+    priority: 63
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-010
+    group_id: null
+    build_check: per_task
+    description:
+      - "get_sync_status MCP ツールを登録する（入力: job_id）"
+      - SyncJobStatus map から進捗（processed/skipped/failed/deleted_paths_marked）と完了有無を返す（SYN-06）
+      - 存在しない・保持期限切れの job_id にはエラーを返す（SYN-06）
+      - 完了済みジョブの保持ポリシー（件数上限）を実装する（APP-003 TBD-101 の解決値として実装判断をコード内コメントに残す）
+    acceptance_criteria: "go build ./internal/mcp/... が成功すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-012
+    title: internal/mcp — schedule_delete_series ハンドラ実装
+    priority: 61
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-005
+      - TASK-009
+    group_id: null
+    build_check: per_task
+    description:
+      - "schedule_delete_series MCP ツールを登録する（入力: key, series）"
+      - store.WithKeyLock(ctx, key, fn) で MarkSeriesForDeletion を囲み、即座に削除しない（GC-01）
+      - 出力 {key, series, already_scheduled} を返す
+    acceptance_criteria: "go build ./internal/mcp/... が成功すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+  - task_id: TASK-013
+    title: internal/mcp — sync_documents/get_sync_status/schedule_delete_series 統合テスト
+    priority: 58
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-003
+      - TASK-004
+      - TASK-010
+      - TASK-011
+      - TASK-012
+    group_id: null
+    build_check: per_task
+    description:
+      - sync_documents が job_id を即座に返しブロックしないことを確認する（SYN-05）
+      - get_sync_status がジョブの進捗・完了を正しく反映し、存在しない/期限切れ job_id でエラーを返すことを確認する（SYN-06）
+      - desired-state から path が欠落した場合に削除予約が作られ、再度含まれた場合に解除されることを確認する（SYN-03/04）
+      - schedule_delete_series で series 全体を予約後、同一 key・series に sync_documents を呼ぶと予約が解除されることを確認する（自己修復）
+      - schedule_delete_series が即座に削除せず already_scheduled を正しく返すことを確認する（GC-01）
+      - "最重要回帰テスト: sync_documents 処理中に同一 KEY への upsert_documents / delete_index 呼び出しがブロックされることを確認する（SYN-08）"
+      - "最重要回帰テスト: sync_documents 処理中に同一 KEY へ TTL/LRU 相当のロジック（runTTL/runLRU が呼ぶ WithKeyLock(ctx, key, func() error { return DeleteKey(ctx, key) }) 相当の呼び出し）を直接実行するとブロックされることを確認する（SYN-08、EXP-01/EXP-02 排他確認）"
+      - root context を cancel した状態で sync_documents を実行するとジョブが failed になることを確認する（GC-05）
+      - "再発防止テスト: sync_documents が job_id を返した直後に MCP リクエスト context を cancel しても（root context は生存させたまま）ジョブが done まで完走することを確認する（GC-05、request context 非依存の直接検証）"
+    acceptance_criteria: "go test -race ./internal/mcp/... が新規3ツールの全テストケースを通過すること"
+    required_reading:
+      - docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md
+
+# === 改定履歴 ===
+revision_history:
+  - date: "2026-07-04"
+    content: 初版作成（3フェーズ13タスク）。実装戦略レビュー指摘（WithKeyLock 呼び出し側方式への設計変更）を反映
+  - date: "2026-07-04"
+    content: 計画レビュー指摘対応（ctx 非対応ロック矛盾）。TASK-001 を channel ベース実装に更新、TASK-002 に待機中キャンセルテストを追加、TASK-013 に request context 非依存の再発防止テストを追加
