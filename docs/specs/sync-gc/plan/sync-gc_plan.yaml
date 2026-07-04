@@ -192,6 +192,7 @@ tasks:
       - MarkSeriesForDeletion(ctx, key, series) (alreadyScheduled bool, err error) を実装する（path='' で upsert、既存有無を確認して返す）
       - MarkDocumentForDeletion(ctx, key, series, path) error を実装する（DetachSeriesFromPath で orphan になった record の物理削除予約）
       - ClearPendingDeletion(ctx, key, series, path) error を実装する（path="" で series 全体解除）
+      - "DeleteOrphanRecords(ctx, key, path) (removed int, err error) を実装する（series_keys が 0 件の record のみ物理削除（chunks/embeddings/BM25 整合含む、既存 deleteRecordWithBM25Tx 再利用）。紐付き record には不触・冪等。doc_count 更新。WithKeyLock は内部で取得しない。DES-003 §3.3）"
       - SweepPendingDeletions(ctx) (processed int, errs []error) を実装する（path='' なら DeleteSeriesAll、それ以外は DeleteSeries を無改造で呼ぶ。WithKeyLock は取得しない。起動時専用である旨をコードコメントに明記する）
     acceptance_criteria: "go vet ./internal/store/... が警告なく通ること（機能テストは同一グループの TASK-006 で実施）"
     required_reading:
@@ -211,7 +212,8 @@ tasks:
       - "DetachSeriesFromPath 単体テスト（SYN-03 の核心）: (a) 切り離し後、当該 series 指定の GetChunksForSearch に当該 path の chunk が現れないこと (b) record・chunks・embeddings が物理的に残存すること（orphan 保持） (c) 他 series 参照時は orphaned=false、単独参照時は orphaned=true を返すことを確認する"
       - SweepPendingDeletions が series 単位・path 単位（DetachSeriesFromPath で切り離し済みの orphan record）それぞれで正しく物理削除することを確認する
       - "回帰テスト（最重要）: 同一 content_hash を複数 series が参照している状態で片方だけ切り離し・スイープした場合に record が残ることを確認する"
-      - 削除予約後、スイープ前に同じ path が再度 sync された場合 ClearPendingDeletion で解除されることを確認する
+      - ClearPendingDeletion が該当行を削除すること・存在しない行への呼び出しが冪等であること・path="" で series 全体の削除予約を解除できることを確認する（sync 経由の統合挙動は TASK-013 で検証する）
+      - "DeleteOrphanRecords 単体テスト（補償の核心）: series_keys 0 件の record のみ物理削除され（chunks/embeddings 含む）series 紐付き record には触れないこと・orphan 不在時は 0 件処理で冪等であること・削除後に doc_count が更新されることを確認する"
       - 個別失敗時にログ記録の上で処理継続することを確認する（silent failure 禁止方針）
     acceptance_criteria: "go test ./internal/store/... が pending_deletions 関連の全テストケースを通過すること"
     required_reading:
@@ -291,7 +293,7 @@ tasks:
       - goroutine 内で store.WithKeyLock(ctx, key, fn) を 1 回だけ呼び、fn 内で以下を直接実行する（WithKeyLock を再度呼ばない、DES-003 §3.5.2）
       - "fn 内: 既存 upsertOne で documents を処理する（DIF-01〜03 無改造、SYN-02）"
       - "fn 内: 既存 path 一覧を取得し documents に無い path を検出、DetachSeriesFromPath で series から即時切り離す（series 指定検索から直ちに消える）。orphaned=true が返った record のみ MarkDocumentForDeletion で物理削除予約する（SYN-03）"
-      - "fn 内: documents に含まれ upsertOne が成功（processed/skipped）した path のみ ClearPendingDeletion で自己修復し、失敗 path の予約は保持する（DES-003 §3.3 の MANDATORY 実行条件）。series 全体の削除予約があれば解除する（SYN-04）"
+      - "fn 内: documents に含まれ upsertOne が成功（processed/skipped）した path のみ、DeleteOrphanRecords（CleanOtherSeries 個別失敗の補償。予約が存在する path に対して実行）→ ClearPendingDeletion の 2 段階で自己修復し、失敗 path の予約は保持する（DES-003 §3.3 の MANDATORY 実行条件）。series 全体の削除予約があれば解除する（SYN-04）"
       - SyncJobStatus（Handlers の sync.Mutex 保護 map）に進捗を書き込む
       - goroutine 内で root context 由来の ctx.Done() を、WithKeyLock 待機中および fn 実行中の双方で監視し、キャンセル検知時に SyncJobStatus.Status を "failed" に更新する（GC-05）
     acceptance_criteria: "go vet ./internal/mcp/... が警告なく通ること（機能テストは TASK-013 で実施）"
@@ -355,6 +357,7 @@ tasks:
       - "自己修復の API 課金ゼロ検証（SYN-04）: 切り離し・削除予約済みの path を同一内容で再 sync すると、Embedder が呼ばれず（Embedder spy）、削除予約が解除され、当該 series 指定の検索に再び現れることを確認する"
       - "orphan 非リーク検証（レビュー指摘の再発防止）: 切り離し・削除予約済みの path を別内容で再 sync すると、旧 orphan record が CleanOtherSeries（DIF-03 経路の既存機構）で物理削除され、同一 key+path の record 数が 1 になることを確認する"
       - "失敗 path の予約保持検証: documents に含まれる path の upsertOne が失敗した場合、当該 path の削除予約が解除されず残ることを確認する（DES-003 §3.3 ClearPendingDeletion の実行条件）"
+      - "CleanOtherSeries 失敗補償の検証: 削除予約中の path に store 層で直接 orphan record を人工的に用意した状態（CleanOtherSeries が掃除し損ねた状況の再現）で当該 path を含む sync を実行すると、DeleteOrphanRecords により orphan が回収されてから予約が解除され、同一 key+path に orphan が残らないことを確認する"
       - schedule_delete_series で series 全体を予約後、同一 key・series に sync_documents を呼ぶと予約が解除されることを確認する（自己修復）
       - schedule_delete_series が即座に削除せず already_scheduled を正しく返すことを確認する（GC-01）
       - "最重要回帰テスト: sync_documents 処理中に同一 KEY への upsert_documents / delete_index 呼び出しがブロックされることを確認する（SYN-08）"
@@ -375,3 +378,5 @@ revision_history:
     content: レビュー指摘対応（検索最新性）。SYN-03 の「即時 series 切り離し + orphan 物理削除予約」への変更（APP-003/DES-003 1.6）を反映。TASK-005 に DetachSeriesFromPath 実装、TASK-006 にその単体テスト、TASK-010 に fn 内の切り離し手順、TASK-013 に検索最新性回帰テストと自己修復 API 課金ゼロ検証（Embedder spy）を追加
   - date: "2026-07-04"
     content: レビュー指摘検証（orphan リーク疑義、DES-003 1.7）。record 実体単位予約への変更は不採用（既存 CleanOtherSeries / DeleteSeries の挙動により path 粒度で回収漏れなしと実コード検証）。TASK-010 に ClearPendingDeletion の成功 path 限定条件、TASK-013 に orphan 非リーク検証（別内容復活）と失敗 path 予約保持検証を追加
+  - date: "2026-07-04"
+    content: レビュー指摘対応（CleanOtherSeries 失敗時の残穴、DES-003 1.8）。TASK-005 に DeleteOrphanRecords 実装、TASK-006 にその単体テストを追加し ClearPendingDeletion テストを store 単体の記述に修正（sync 統合挙動は TASK-013 へ分離）。TASK-010 の予約解除を DeleteOrphanRecords → ClearPendingDeletion の 2 段階に変更。TASK-013 に CleanOtherSeries 失敗補償の統合テストを追加
