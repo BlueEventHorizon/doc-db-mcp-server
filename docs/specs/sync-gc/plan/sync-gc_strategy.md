@@ -30,14 +30,15 @@ DES-003 の技術的リスクは明確に偏在している。
 
 ### フェーズ 2: 既存ハンドラ・`internal/expiry`・`delete_index` への `WithKeyLock` 適用 + pending_deletions 永続層（GC-01〜04）
 
-- **目標**: `upsert_documents` / `delete_documents` / `delete_series` / `delete_index` の各ハンドラで、既存メソッド呼び出し全体を `store.WithKeyLock` で 1 回だけ囲む（処理本体は無改造、DES-003 §3.5.2 の呼び出し元一覧に従う）。`internal/expiry` の `storeForExpiry` インターフェースに `WithKeyLock` を追加し、`runTTL` / `runLRU` の `DeleteKey` 呼び出しを `WithKeyLock` で囲む（TTL/LRU 判定ロジックは無改造）。並行して `pending_deletions` テーブルと `DetachSeriesFromPath`（series 紐付けのみ即時削除・record は物理削除しない。SYN-03 の検索最新性の要、DES-003 §3.3）/ `DeleteOrphanRecords`（orphan-only の決定的回収。`CleanOtherSeries` 個別失敗の補償）/ `MarkSeriesForDeletion`（`(alreadyScheduled bool, err error)`）/ `MarkDocumentForDeletion` / `ClearPendingDeletion` / `SweepPendingDeletions`（起動時専用、`WithKeyLock` 不要）を実装し、`cmd/docdb/main.go` の起動シーケンス（DB統計表示より前）にスイープを差し込む。
+- **目標**: `upsert_documents` / `delete_documents` / `delete_series` / `delete_index` の各ハンドラで、既存メソッド呼び出し全体を `store.WithKeyLock` で 1 回だけ囲む（処理本体は無改造、DES-003 §3.5.2 の呼び出し元一覧に従う）。`internal/expiry` の `storeForExpiry` インターフェースに `WithKeyLock` を追加し、`runTTL` / `runLRU` の `DeleteKey` 呼び出しを `WithKeyLock` で囲む（TTL/LRU 判定ロジックは無改造）。並行して `pending_deletions` テーブルと `DetachSeriesFromPath`（series 紐付けのみ即時削除・record は物理削除しない。SYN-03 の検索最新性の要、DES-003 §3.3）/ `DeleteOrphanRecords`（orphan-only の決定的回収。`CleanOtherSeries` 個別失敗の補償 + 起動時スイープの path 単位処理。stale 予約行が live record を壊さない要）/ `ListPendingDeletions`（fn 冒頭での予約一括取得）/ `MarkSeriesForDeletion`（`(alreadyScheduled bool, err error)`）/ `MarkDocumentForDeletion` / `ClearPendingDeletion` / `SweepPendingDeletions`（起動時専用、`WithKeyLock` 不要。path 単位は `DeleteOrphanRecords`・series 単位は `DeleteSeriesAll`）を実装し、`cmd/docdb/main.go` の起動シーケンス（DB統計表示より前）にスイープを差し込む。
 - **スコープ**: DES-003 §3.2（スキーマ）、§3.3（store メソッド）、§3.5.2（呼び出し元一覧）、§4.1「起動時スイープ」ユースケース。
 - **検証ポイント**:
   - 自動テスト（フェーズ2完了条件、手動確認に頼らない）: `delete_index` 実行中に別ゴルーチンから同一 KEY への `upsert_documents` を呼ぶと `WithKeyLock` によりブロックされる（＝直列化される）ことを統合テストとして書く（計画書 TASK-008）
   - `MarkSeriesForDeletion` の冪等性・`alreadyScheduled` の正しい返却
   - `DetachSeriesFromPath` の単体テスト: 切り離し後に series 指定検索へ現れないこと・record/chunks/embeddings が残存すること（orphan 保持）・`orphaned` の真偽が参照 series 数に応じて正しいこと
   - `DeleteOrphanRecords` の単体テスト: series_keys 0 件の record のみ物理削除・紐付き record には不触・orphan 不在時は冪等・doc_count 更新
-  - `SweepPendingDeletions` が series 単位・path 単位（切り離し済み orphan record の回収）それぞれで正しく物理削除すること
+  - `SweepPendingDeletions` が series 単位（`DeleteSeriesAll`）・path 単位（`DeleteOrphanRecords`）それぞれで正しく物理削除すること
+  - stale 予約行の無害性検証: 予約が残ったまま record が復活した状態でスイープしても live record が保持され予約行のみ消えること（`DeleteSeries` ベースへの退行検出）
   - 回帰テスト: 同一 `content_hash` を複数 series が参照している状態で片方だけ切り離し・スイープした場合に record が残ること（DIF-02 系の安全条件を GC 側でも壊していないことの確認）
   - 個別失敗時にログ記録の上で処理継続すること（silent failure 禁止方針、GC-04）
   - 起動テストで、統計表示（`keyCount`/`totalChunkCount`）の値がスイープ後の状態を反映していること（GC-03）
@@ -45,7 +46,7 @@ DES-003 の技術的リスクは明確に偏在している。
 
 ### フェーズ 3: `sync_documents` / `get_sync_status` / `schedule_delete_series`（縦断結合 + GC-05）
 
-- **目標**: フェーズ 1・2 で固めた基盤の上に、新規 3 MCP ツールを実装する。`cmd/docdb/main.go` が保持する shutdown 用 root context（既存の `expWorker.Start(ctx)` に渡しているものと同じ）を `Handlers` に渡すよう `mcp.New` のシグネチャを変更する（この配線変更をフェーズ 3 のスコープとして明示）。`sync_documents` は **1 回の `WithKeyLock` で desired-state 判定全体（documents 処理〜削除予約記録〜自己修復）を囲み**、`fn` 内で `upsertOne` / `DetachSeriesFromPath` / `MarkDocumentForDeletion` / `DeleteOrphanRecords` / `ClearPendingDeletion` を直接呼ぶ（ネストで `WithKeyLock` を再度呼ばない、DES-003 §3.5.2 の禁止規約。予約解除は `DeleteOrphanRecords` → `ClearPendingDeletion` の 2 段階）。`SyncJobStatus` のメモリ管理（`expiry.Stats` パターン踏襲、保持ポリシーは APP-003 TBD-101 として実装時に確定しコード内コメントに根拠を残す）と `get_sync_status` ポーリングを実装。`schedule_delete_series` は `MarkSeriesForDeletion` を `WithKeyLock` で囲む薄いラッパー。
+- **目標**: フェーズ 1・2 で固めた基盤の上に、新規 3 MCP ツールを実装する。`cmd/docdb/main.go` が保持する shutdown 用 root context（既存の `expWorker.Start(ctx)` に渡しているものと同じ）を `Handlers` に渡すよう `mcp.New` のシグネチャを変更する（この配線変更をフェーズ 3 のスコープとして明示）。`sync_documents` は **1 回の `WithKeyLock` で desired-state 判定全体（documents 処理〜削除予約記録〜自己修復）を囲み**、`fn` 内で `upsertOne` / `ListPendingDeletions`（冒頭で予約一括取得）/ `DetachSeriesFromPath` / `MarkDocumentForDeletion` / `DeleteOrphanRecords` / `ClearPendingDeletion` を直接呼ぶ（ネストで `WithKeyLock` を再度呼ばない、DES-003 §3.5.2 の禁止規約。予約解除は `DeleteOrphanRecords` → `ClearPendingDeletion` の 2 段階、補償失敗時は Clear しない）。`SyncJobStatus` のメモリ管理（`expiry.Stats` パターン踏襲、保持ポリシーは APP-003 TBD-101 として実装時に確定しコード内コメントに根拠を残す）と `get_sync_status` ポーリングを実装。`schedule_delete_series` は `MarkSeriesForDeletion` を `WithKeyLock` で囲む薄いラッパー。
 - **スコープ**: DES-003 §3.1（`internal/mcp` 新規3ツール行）、§3.4、§3.6、§4（ユースケース・シーケンス図全体）。対象ファイルは `internal/mcp/mcp.go`（新規ハンドラ3種 + `Handlers` へのジョブ map・root context フィールド追加）、`internal/mcp/*_test.go`、`cmd/docdb/main.go`（`mcp.New` 呼び出しへの root context 引数追加）。
 - **検証ポイント**:
   - `sync_documents` が `job_id` を即座に返しブロックしないこと（SYN-05）
