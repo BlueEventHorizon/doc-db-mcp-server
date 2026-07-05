@@ -1,5 +1,7 @@
 # doc-db MCP Server
 
+[![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Markdown ドキュメントを **Embedding + BM25 + 全文 GREP** の 3 signal で横断検索し、
 必要に応じて **LLM Rerank** で並べ替える汎用 MCP サーバー（Streamable HTTP transport）。
 
