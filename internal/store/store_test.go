@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // テスト用の固定次元（本番は 1536 だが可読性のためテストは小さい次元）
@@ -784,5 +786,301 @@ func TestConcurrent_UpsertSerializedByMutex(t *testing.T) {
 	}
 	if n != N {
 		t.Errorf("records count = %d, want %d", n, N)
+	}
+}
+
+// -----------------------------------------------------------------------
+// WithKeyLock — KEY 単位排他ロック (DES-003 §3.5, SYN-08 / GC-05)
+// -----------------------------------------------------------------------
+
+// テストが hang した場合の全体保護タイムアウト。
+const keyLockTestTimeout = 5 * time.Second
+
+// keyLockRef は keyLocksMu を取得して key のエントリの参照カウントを返す。
+// エントリが存在しない場合は (0, false)。
+func keyLockRef(s *Store, key string) (ref int, ok bool) {
+	s.keyLocksMu.Lock()
+	defer s.keyLocksMu.Unlock()
+	e, ok := s.keyLocks[key]
+	if !ok {
+		return 0, false
+	}
+	return e.ref, true
+}
+
+// waitForKeyLockRef は key の参照カウントが want になるまでポーリングで待機する。
+// タイムアウトした場合はテストを Fatal で終了する。
+// 注: ref が want に達しても goroutine が select（ロック待機）に入った瞬間そのものは
+// 観測できないが、ref++ 後の goroutine は必ず select に進むため、
+// キャンセルテストの前提（B が待機登録済み）としては十分。
+func waitForKeyLockRef(t *testing.T, s *Store, key string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(keyLockTestTimeout)
+	for time.Now().Before(deadline) {
+		ref, _ := keyLockRef(s, key)
+		if ref == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	ref, ok := keyLockRef(s, key)
+	t.Fatalf("keyLocks[%q] ref = %d (exists=%v), want %d (timeout %v)", key, ref, ok, want, keyLockTestTimeout)
+}
+
+// TestWithKeyLock_SameKeyBlocks は goroutine A がロック保持中、
+// 同一 key の goroutine B が A の fn 完了までブロックされることを検証する（DES-003 §3.5.1 の核心）。
+func TestWithKeyLock_SameKeyBlocks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	aAcquired := make(chan struct{}) // A がロック取得して fn に入った通知
+	aRelease := make(chan struct{})  // A の fn を終了させるトリガー
+	aDone := make(chan error, 1)
+	go func() {
+		aDone <- s.WithKeyLock(ctx, "K", func() error {
+			close(aAcquired)
+			<-aRelease // 意図的にロックを保持し続ける
+			return nil
+		})
+	}()
+
+	select {
+	case <-aAcquired:
+	case <-time.After(keyLockTestTimeout):
+		t.Fatal("goroutine A がロックを取得できなかった")
+	}
+
+	bEntered := make(chan struct{}) // B の fn が実行された通知
+	bDone := make(chan error, 1)
+	go func() {
+		bDone <- s.WithKeyLock(ctx, "K", func() error {
+			close(bEntered)
+			return nil
+		})
+	}()
+
+	// B がロック待機に入ったこと（ref=2）を確認したうえで、
+	// A 保持中に B の fn が実行されないことをタイムアウト付きで検証する。
+	waitForKeyLockRef(t, s, "K", 2)
+	select {
+	case <-bEntered:
+		t.Fatal("A がロック保持中に B の fn が実行された（排他が効いていない）")
+	case <-time.After(100 * time.Millisecond):
+		// ブロックされている（期待どおり）
+	}
+
+	// A を解放すると B が実行される
+	close(aRelease)
+	select {
+	case <-bEntered:
+	case <-time.After(keyLockTestTimeout):
+		t.Fatal("A 解放後も B の fn が実行されない")
+	}
+
+	if err := <-aDone; err != nil {
+		t.Errorf("A の WithKeyLock がエラー: %v", err)
+	}
+	if err := <-bDone; err != nil {
+		t.Errorf("B の WithKeyLock がエラー: %v", err)
+	}
+}
+
+// TestWithKeyLock_DifferentKeysDoNotBlock は異なる key への WithKeyLock が
+// 互いにブロックしないことを検証する（並行度が KEY 単位を超えて落ちていないこと。DES-003 §6）。
+func TestWithKeyLock_DifferentKeysDoNotBlock(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	aAcquired := make(chan struct{})
+	aRelease := make(chan struct{})
+	aDone := make(chan error, 1)
+	go func() {
+		aDone <- s.WithKeyLock(ctx, "K1", func() error {
+			close(aAcquired)
+			<-aRelease
+			return nil
+		})
+	}()
+
+	select {
+	case <-aAcquired:
+	case <-time.After(keyLockTestTimeout):
+		t.Fatal("goroutine A がロックを取得できなかった")
+	}
+
+	// K1 保持中でも K2 の WithKeyLock は即座に完了する
+	bDone := make(chan error, 1)
+	go func() {
+		bDone <- s.WithKeyLock(ctx, "K2", func() error { return nil })
+	}()
+	select {
+	case err := <-bDone:
+		if err != nil {
+			t.Errorf("K2 の WithKeyLock がエラー: %v", err)
+		}
+	case <-time.After(keyLockTestTimeout):
+		t.Fatal("K2 の WithKeyLock が K1 のロックにブロックされた")
+	}
+
+	close(aRelease)
+	if err := <-aDone; err != nil {
+		t.Errorf("K1 の WithKeyLock がエラー: %v", err)
+	}
+}
+
+// TestWithKeyLock_CancelWhileWaiting はロック待機中に ctx を cancel すると
+// fn を実行せず即座に ctx.Err() が返ることを検証する（GC-05 の前提となる待機中キャンセル挙動）。
+func TestWithKeyLock_CancelWhileWaiting(t *testing.T) {
+	s := newTestStore(t)
+
+	aAcquired := make(chan struct{})
+	aRelease := make(chan struct{})
+	aDone := make(chan error, 1)
+	go func() {
+		aDone <- s.WithKeyLock(context.Background(), "K", func() error {
+			close(aAcquired)
+			<-aRelease
+			return nil
+		})
+	}()
+
+	select {
+	case <-aAcquired:
+	case <-time.After(keyLockTestTimeout):
+		t.Fatal("goroutine A がロックを取得できなかった")
+	}
+
+	// B は cancel 可能な ctx で同一 key を待機する
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+	bEntered := make(chan struct{})
+	bDone := make(chan error, 1)
+	go func() {
+		bDone <- s.WithKeyLock(ctxB, "K", func() error {
+			close(bEntered)
+			return nil
+		})
+	}()
+
+	// B が待機登録済み（ref=2）になってから cancel する
+	waitForKeyLockRef(t, s, "K", 2)
+	cancelB()
+
+	// B は fn を実行せず ctx.Err() を返して即座に戻る（A は解放していない）
+	select {
+	case err := <-bDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("B の戻り値 = %v, want context.Canceled", err)
+		}
+	case <-time.After(keyLockTestTimeout):
+		t.Fatal("cancel 後も B の WithKeyLock が戻らない（待機中キャンセルが効いていない）")
+	}
+	select {
+	case <-bEntered:
+		t.Error("cancel されたのに B の fn が実行された")
+	default:
+	}
+
+	// B 離脱後もエントリは A の分（ref=1）だけ残る
+	waitForKeyLockRef(t, s, "K", 1)
+
+	close(aRelease)
+	if err := <-aDone; err != nil {
+		t.Errorf("A の WithKeyLock がエラー: %v", err)
+	}
+
+	// A 終了後、エントリは map から削除される（キャンセル経路の release 込み）
+	if ref, ok := keyLockRef(s, "K"); ok {
+		t.Errorf("全 goroutine 終了後も keyLocks[K] が残存 (ref=%d)", ref)
+	}
+}
+
+// TestWithKeyLock_EntryRemovedWhenRefZero は参照カウントが 0 になったエントリが
+// keyLocks map から削除されることを検証する（メモリリーク防止の回帰テスト。DES-003 §3.5.3）。
+func TestWithKeyLock_EntryRemovedWhenRefZero(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 保持中（fn 実行中）はエントリが存在し ref=1
+	err := s.WithKeyLock(ctx, "K", func() error {
+		ref, ok := keyLockRef(s, "K")
+		if !ok {
+			t.Error("fn 実行中に keyLocks[K] が存在しない")
+		} else if ref != 1 {
+			t.Errorf("fn 実行中の ref = %d, want 1", ref)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithKeyLock: %v", err)
+	}
+
+	// 完了後はエントリが削除され、map は空
+	if ref, ok := keyLockRef(s, "K"); ok {
+		t.Errorf("完了後も keyLocks[K] が残存 (ref=%d)", ref)
+	}
+	s.keyLocksMu.Lock()
+	total := len(s.keyLocks)
+	s.keyLocksMu.Unlock()
+	if total != 0 {
+		t.Errorf("keyLocks map size = %d, want 0", total)
+	}
+
+	// fn がエラーを返す経路でもエントリは削除される
+	wantErr := errors.New("fn error")
+	if err := s.WithKeyLock(ctx, "K", func() error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Errorf("WithKeyLock = %v, want %v", err, wantErr)
+	}
+	if _, ok := keyLockRef(s, "K"); ok {
+		t.Error("fn エラー後も keyLocks[K] が残存")
+	}
+}
+
+// TestWithKeyLock_MutualExclusionStress は同一 key への多数 goroutine の
+// WithKeyLock で相互排他が成立することを race detector 込みで検証する。
+// counter は非 atomic な共有変数であり、排他が破れていれば -race が検出する。
+func TestWithKeyLock_MutualExclusionStress(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const N = 32
+	var counter int // WithKeyLock の排他のみで保護される共有変数
+	var wg sync.WaitGroup
+	errs := make(chan error, N)
+
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.WithKeyLock(ctx, "K", func() error {
+				counter++
+				return nil
+			}); err != nil {
+				errs <- err
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(keyLockTestTimeout):
+		t.Fatal("同一 key への並行 WithKeyLock が完了しない（デッドロックの可能性）")
+	}
+	close(errs)
+	for err := range errs {
+		t.Errorf("WithKeyLock: %v", err)
+	}
+
+	if counter != N {
+		t.Errorf("counter = %d, want %d（排他が破れている）", counter, N)
+	}
+	// 全 goroutine 終了後、エントリは残らない
+	if _, ok := keyLockRef(s, "K"); ok {
+		t.Error("全 goroutine 終了後も keyLocks[K] が残存")
 	}
 }

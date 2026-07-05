@@ -76,6 +76,21 @@ type Store struct {
 	db  *sql.DB
 	mu  sync.Mutex
 	dim int // Embedding ベクトル次元数（起動時に検証）
+
+	// KEY 単位の論理ロック（DES-003 §3.5、SYN-08）。
+	// s.mu（個々の SQLite 書き込みトランザクション単位の直列化）とは別レイヤーで、
+	// 「同一 KEY に対する一連の複数回の Store 呼び出し」を跨いだ直列化を担う。
+	keyLocksMu sync.Mutex
+	keyLocks   map[string]*keyLockEntry // New で make して初期化する（nil map への書き込みは panic）
+}
+
+// keyLockEntry は KEY 単位ロックの1エントリ。
+// ch はバッファ 1 の channel をミューテックス代わりに使う。
+// send（バッファへの書き込み）が「ロック取得」、receive が「解放」に相当し、
+// select { case <-ctx.Done(): ... } と組み合わせられる（sync.Mutex にはできない）。
+type keyLockEntry struct {
+	ch  chan struct{}
+	ref int // 参照中の goroutine 数（0 になったら map から削除）
 }
 
 // New は Store を初期化して返す。
@@ -97,7 +112,11 @@ func New(dbPath string, expectedDim int) (*Store, error) {
 	db.SetMaxOpenConns(n)
 	db.SetMaxIdleConns(n)
 
-	s := &Store{db: db, dim: expectedDim}
+	s := &Store{
+		db:       db,
+		dim:      expectedDim,
+		keyLocks: make(map[string]*keyLockEntry),
+	}
 
 	if err := s.initSchema(context.Background()); err != nil {
 		db.Close()
@@ -131,6 +150,56 @@ func buildDSN(dbPath string) string {
 // Close は DB 接続を閉じる。
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// -----------------------------------------------------------------------
+// KEY 単位の排他制御（DES-003 §3.5、SYN-08）
+// -----------------------------------------------------------------------
+
+// WithKeyLock は KEY 単位の論理ロックを取得した状態で fn を実行する。
+// ロック取得を待機している間に ctx がキャンセルされた場合、fn を実行せず ctx.Err() を返す
+// （GC-05: sync_documents がロック待機中でもシャットダウンに応答できるようにするため）。
+// ロック取得後（fn 実行中）のキャンセル対応は、fn 自身が受け取った ctx を見て中断するかに委ねる。
+// 参照カウントが 0 になったエントリは map から削除し、無制限な蓄積を防ぐ（DES-003 §3.5.3）。
+//
+// 呼び出しルール（DES-003 §3.5.2）:
+//   - fn 内で WithKeyLock を再度呼んではならない（非再入のため同一 goroutine でデッドロックする）
+//   - DeleteKey / UpsertRecord / DeleteSeries / DeleteSeriesAll 等の個々の Store メソッドは
+//     本ロックを内部で取得しない。KEY 単位排他が必要な呼び出し元が、対象 KEY への
+//     Store 呼び出し一式を 1 回の WithKeyLock で囲む
+func (s *Store) WithKeyLock(ctx context.Context, key string, fn func() error) error {
+	s.keyLocksMu.Lock()
+	e, ok := s.keyLocks[key]
+	if !ok {
+		e = &keyLockEntry{ch: make(chan struct{}, 1)}
+		s.keyLocks[key] = e
+	}
+	e.ref++
+	s.keyLocksMu.Unlock()
+
+	release := func() {
+		s.keyLocksMu.Lock()
+		e.ref--
+		if e.ref == 0 {
+			delete(s.keyLocks, key)
+		}
+		s.keyLocksMu.Unlock()
+	}
+
+	select {
+	case e.ch <- struct{}{}:
+		// ロック取得成功
+	case <-ctx.Done():
+		release()
+		return ctx.Err()
+	}
+
+	defer func() {
+		<-e.ch // 解放
+		release()
+	}()
+
+	return fn()
 }
 
 // rollbackErrInto は defer 内で呼び、tx.Rollback() を実行する。
@@ -204,6 +273,19 @@ CREATE TABLE IF NOT EXISTS embeddings (
     chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
     vector   BLOB NOT NULL,
     dim      INTEGER NOT NULL
+);
+
+-- 削除予約テーブル（DES-003 §3.2、SYN-03/GC-01/GC-02）。
+-- path = '' は「series 全体の削除予約」を表すセンチネル（GC-01 由来）。
+-- path が非空の行は「当該 path の orphan record（どの series からも参照されない record）を
+-- 起動時スイープで物理削除せよ」という予約（SYN-03 由来）。
+-- SQLite の PRIMARY KEY は NULL の重複を許容するため、NULL ではなく空文字列で区別する。
+CREATE TABLE IF NOT EXISTS pending_deletions (
+    key       TEXT NOT NULL,
+    series    TEXT NOT NULL,
+    path      TEXT NOT NULL DEFAULT '',
+    marked_at TEXT NOT NULL,
+    PRIMARY KEY (key, series, path)
 );
 
 -- bm25_stats / bm25_df は廃止された（v0.1.2 で削除）。

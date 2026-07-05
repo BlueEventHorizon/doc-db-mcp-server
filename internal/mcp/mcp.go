@@ -267,11 +267,20 @@ func (h *Handlers) handleUpsert(
 			"processed", out.Processed, "skipped", out.Skipped, "failed", out.Failed)
 	}()
 
-	for _, doc := range in.Documents {
-		if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
-			slog.Warn("upsert: document failed", "path", doc.Path, "error", uerr)
-			continue
+	// KEY 単位排他（SYN-08）: 複数ドキュメント分の upsertOne 呼び出しを含む
+	// ループ全体を 1 回の WithKeyLock で囲む（DES-003 §3.5.2。fn 内で再取得禁止）。
+	if lerr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		for _, doc := range in.Documents {
+			if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
+				slog.Warn("upsert: document failed", "path", doc.Path, "error", uerr)
+				continue
+			}
 		}
+		return nil
+	}); lerr != nil {
+		// ロック取得待ち中の ctx キャンセル等。silent failure 禁止のため caller に伝播する。
+		err = fmt.Errorf("key lock: %w", lerr)
+		return nil, out, err
 	}
 
 	return nil, out, nil
@@ -469,7 +478,10 @@ func (h *Handlers) handleDelete(
 	}
 
 	if len(existing) > 0 {
-		if derr := h.store.DeleteSeries(ctx, in.Key, in.Series, existing); derr != nil {
+		// KEY 単位排他（SYN-08）: DeleteSeries 呼び出しを WithKeyLock で囲む（DES-003 §3.5.2）。
+		if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+			return h.store.DeleteSeries(ctx, in.Key, in.Series, existing)
+		}); derr != nil {
 			err = fmt.Errorf("delete: %w", derr)
 			return nil, DeleteResult{}, err
 		}
@@ -508,8 +520,13 @@ func (h *Handlers) handleDeleteSeries(
 			"removed_records", out.RemovedRecords, "updated_records", out.UpdatedRecords)
 	}()
 
-	removed, updated, derr := h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
-	if derr != nil {
+	// KEY 単位排他（SYN-08）: DeleteSeriesAll 呼び出しを WithKeyLock で囲む（DES-003 §3.5.2）。
+	var removed, updated int
+	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		var werr error
+		removed, updated, werr = h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
+		return werr
+	}); derr != nil {
 		err = fmt.Errorf("delete_series: %w", derr)
 		return nil, DeleteSeriesResult{}, err
 	}
@@ -673,7 +690,10 @@ func (h *Handlers) handleDeleteIndex(
 		logHandlerDone("delete_index done", err, start, "key", in.Key, "deleted", out.Deleted)
 	}()
 
-	if derr := h.store.DeleteKey(ctx, in.Key); derr != nil {
+	// KEY 単位排他（SYN-08）: DeleteKey 呼び出しを WithKeyLock で囲む（DES-003 §3.5.2）。
+	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		return h.store.DeleteKey(ctx, in.Key)
+	}); derr != nil {
 		err = fmt.Errorf("delete key: %w", derr)
 		return nil, DeleteIndexResult{}, err
 	}

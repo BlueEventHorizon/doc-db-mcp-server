@@ -102,7 +102,7 @@ tasks:
   - task_id: TASK-001
     title: internal/store — WithKeyLock 実装
     priority: 99
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on: []
     group_id: null
@@ -120,7 +120,7 @@ tasks:
   - task_id: TASK-002
     title: internal/store — WithKeyLock 単体テスト
     priority: 97
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-001
@@ -142,7 +142,7 @@ tasks:
   - task_id: TASK-003
     title: internal/mcp — 既存ハンドラ（upsert/delete/delete_series/delete_index）へ WithKeyLock 適用
     priority: 87
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-001
@@ -161,7 +161,7 @@ tasks:
   - task_id: TASK-004
     title: internal/expiry — WithKeyLock 適用
     priority: 85
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-001
@@ -180,7 +180,7 @@ tasks:
   - task_id: TASK-005
     title: internal/store — pending_deletions テーブル + 削除予約メソッド実装
     priority: 83
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-001
