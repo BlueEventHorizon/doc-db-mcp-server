@@ -48,15 +48,15 @@ requirements_traceability:
   - requirement_id: GC-02
     title: series 単位・path 単位の削除予約を起動時に一括物理削除する
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: GC-03
     title: 起動時削除予約処理を統計情報算出より前に完了させる
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: GC-04
     title: 削除予約の物理削除失敗時にログ記録し処理継続する
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: GC-05
     title: sync_documents のジョブ用 context をリクエスト context から分離する
     design_id: DES-003
@@ -202,7 +202,7 @@ tasks:
   - task_id: TASK-006
     title: internal/store — pending_deletions 単体テスト
     priority: 82
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-005
@@ -225,7 +225,7 @@ tasks:
   - task_id: TASK-007
     title: cmd/docdb — 起動時スイープの差し込み
     priority: 78
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-005
@@ -244,7 +244,7 @@ tasks:
   - task_id: TASK-008
     title: internal/mcp — 既存ハンドラの WithKeyLock 排他性 統合テスト
     priority: 75
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-003
