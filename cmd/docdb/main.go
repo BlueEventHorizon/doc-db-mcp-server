@@ -125,6 +125,20 @@ func setupLogging(cfg *config.Config) (io.Closer, error) {
 	return closer, nil
 }
 
+// startupSweep は削除予約（pending_deletions）の起動時スイープを同期実行し、
+// 結果（processed 件数・エラー件数）をログ出力する（GC-02）。
+// 個別エラーは警告ログとして出力し、起動は継続する（GC-04、silent failure 禁止）。
+// 起動時 DB 統計の算出より前に呼ぶこと（GC-03: 統計値がスイープ後の状態を反映するため）。
+// 戻り値は統合テスト（main_test.go）がスイープ結果を検証するために返す。
+func startupSweep(ctx context.Context, st *store.Store) (processed, errCount int) {
+	processed, errs := st.SweepPendingDeletions(ctx)
+	for _, sweepErr := range errs {
+		slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）", "error", sweepErr)
+	}
+	slog.Info("起動時スイープ完了", "processed", processed, "error_count", len(errs))
+	return processed, len(errs)
+}
+
 func run(ctx context.Context) error {
 	// 設定ファイル読み込み（DES-001 §9 CFG-01）
 	cfg, err := config.Load()
@@ -164,6 +178,21 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("store 初期化失敗: %w", err)
 	}
 	defer st.Close()
+
+	// 削除予約の起動時スイープ（GC-02）。統計表示より前に同期実行する（GC-03）。
+	startupSweep(ctx, st)
+
+	// 起動時 DB 統計（KEY数・総チャンク数）。取得に失敗しても起動は継続する
+	// (統計表示はオペレータ向けの付加情報であり、サーバー機能に必須ではないため)。
+	var keyCount, totalChunkCount int
+	if keyInfos, statErr := st.ListKeys(ctx); statErr != nil {
+		slog.Warn("起動時 DB 統計の取得に失敗しました (KEY一覧)", "error", statErr)
+	} else if n, statErr := st.TotalChunkCount(ctx); statErr != nil {
+		slog.Warn("起動時 DB 統計の取得に失敗しました (総チャンク数)", "error", statErr)
+	} else {
+		keyCount, totalChunkCount = len(keyInfos), n
+		fmt.Printf("  keys:   %d 件 (総チャンク数: %d)\n", keyCount, totalChunkCount)
+	}
 
 	// 各コンポーネント
 	emb := embedder.New(embedder.Config{
@@ -210,7 +239,7 @@ func run(ctx context.Context) error {
 		Name:    "doc-db",
 		Version: version,
 	}, nil)
-	handlers := docdbmcp.New(st, ch, emb, fe, pipeline)
+	handlers := docdbmcp.New(ctx, st, ch, emb, fe, pipeline)
 	handlers.Register(mcpServer)
 
 	// Streamable HTTP transport（NFR-03 / PRE-02）
@@ -233,6 +262,8 @@ func run(ctx context.Context) error {
 			"log_path", cfg.Log.Path,
 			"db_path", cfg.Server.DBPath,
 			"embedding_model", cfg.Embedding.Model,
+			"key_count", keyCount,
+			"total_chunks", totalChunkCount,
 			"version", version)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

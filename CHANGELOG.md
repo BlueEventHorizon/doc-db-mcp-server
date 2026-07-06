@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-06
+
+### Added (sync-gc: desired-state 同期 + 削除予約の起動時ガベージコレクション)
+
+`upsert_documents` が追加専用でクライアント側のファイル削除に追従できない問題
+（削除済みファイルの record が無期限に残留し検索結果を汚染する）を解消する
+新機能一式 (APP-001 FNC-006 / DES-001 v0.9)。MCP ツールは 7 種 → 10 種になった。
+
+- **`sync_documents` ツール新設** (SYN-01〜08): documents を当該 key・series の
+  完全な現在状態 (desired-state) とみなし、一覧に含まれない既存 path を series から
+  **即時に切り離す**（当該 series 指定の検索から直ちに消える）。差分管理は既存
+  DIF-01〜03 を無改造再利用（hash 一致で Embedding 再計算なし）。ジョブ投入方式で
+  job_id を即時返却し、処理はバックグラウンドで継続（サーバーシャットダウンには
+  ロック待機中でも応答）。空リストも「現存ファイルなし」の正当な desired-state
+  として受理する
+- **`get_sync_status` ツール新設** (SYN-06/07): job_id からジョブ進捗
+  (processed / skipped / failed / deleted_paths_marked) と完了・エラーを返す。
+  ジョブ状態はメモリ保持のみ（完了ジョブは 100 件まで保持）
+- **`schedule_delete_series` ツール新設** (GC-01): series 全体の削除予約を記録する
+  （即時削除しない）。予約は次回起動まで完全に無害で、同一 key・series への
+  `sync_documents` で自己修復（予約解除）できる
+- **削除予約の起動時スイープ** (GC-02〜04): `pending_deletions` テーブルを新設し、
+  予約された series / orphan record をサーバー起動時（DB 統計表示より前）に一括
+  物理削除する。個別失敗はログ記録して起動継続
+- **KEY 単位排他ロック `WithKeyLock`** (SYN-08): 同一 KEY への書き込み系操作
+  （upsert / delete 系 / delete_index / TTL / LRU / sync）を直列化する。
+  channel ベース実装でロック待機中も ctx キャンセルに応答可能
+
+### Fixed
+
+- `DeleteKey` / `DeleteSeriesAll` が stale な削除予約を残し、同名 KEY/series の
+  再作成後に起動時スイープが新データを破壊し得た問題を修正（予約行を本体削除と
+  同一トランザクションで除去。`DeleteSeriesAll` は orphan 回収手段を保全するため
+  series-wide 予約のみ除去する非対称設計）
+- `delete_documents` の存在チェックがロック外にあり、`sync_documents` 処理中に
+  作成される path への削除要求を取りこぼす TOCTOU を修正（チェック〜削除を
+  1 つの `WithKeyLock` 内へ移動）
+
+### Docs
+
+- sync-gc の要件・設計を本体仕様へ統合: APP-001 に FNC-006 を新設（TBD-009 解決）、
+  DES-001 v0.9 に §4.3 排他制御 / §4.5 削除予約 / §5.4 sync シーケンス / §8.5
+  起動時スイープを新設し、§8.3 の「series 自動廃棄は TBD」の矛盾を解消
+
+### Chore
+
+- MIT ライセンス表記を追加
+
+## [0.1.13] - 2026-07-03
+
+### Added
+
+- 起動時に DB 統計 (KEY 数・総チャンク数) を標準出力へ表示 (`cmd/docdb/main.go`)。
+  取得に失敗しても起動は継続する
+
+### Fixed
+
+- symbolic link 周りの不具合を修正
+
+### Docs
+
+- `docs/AI_INTEGRATION_GUIDE.md` の提供ツール表を実装 (7 ツール) に合わせて修正。
+  漏れていた `delete_series` を追加し、`delete_documents` との使い分けを明記
+- 競合調査ドキュメント `COMPETITORS.md` を追加
+
+### Chore
+
+- `reference/` 配下の古い forge / doc-advisor 関連ドキュメントを整理・削除
+
 ## [0.1.12] - 2026-07-02
 
 ### Added (config.log セクション + 起動時可視化 + リクエストログ)
@@ -397,7 +466,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.2.0
 [0.1.12]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.12
 [0.1.11]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.11
 [0.1.10]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.10

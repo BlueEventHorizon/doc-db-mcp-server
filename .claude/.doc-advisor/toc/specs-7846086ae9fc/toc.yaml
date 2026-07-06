@@ -5,72 +5,226 @@
 metadata:
   name: Document Search Index (specs)
   key: specs
-  generated_at: 2026-06-21T05:00:08Z
-  file_count: 2
+  generated_at: 2026-07-03T17:22:58Z
+  file_count: 7
 
 docs:
-  docs/specs/base/design/DES-001_doc_db_mcp_server_design.md:
-    title: DES-001 doc-db MCP Server Design
-    purpose: Specifies the complete architecture, data model, search pipeline, and implementation guidelines for a hybrid search MCP server in Go, providing vector embedding plus BM25 plus LLM reranking capabilities for markdown documents
+  docs/specs/base/design/ADR-001_feature_split_criteria_for_additive_changes.md:
+    title: "ADR-001: Feature Addition Criteria Decision"
+    purpose: Establishes criteria for determining whether changes constitute additive features based on actual impact scope (new tools, data structures, process changes) rather than requirement document creation alone
     content_details:
-      - Package architecture with layered dependencies
-      - SQLite schema with WAL mode concurrency control
-      - Embedding record and series_keys multi-to-many management
-      - Hybrid search pipeline with vector, BM25, and LLM reranking
-      - Chunker with markdown heading boundary splitting
-      - BM25 tokenizer with ID pattern matching and Unicode normalization
-      - OpenAI Embedding API integration with batch handling and retry logic
-      - Expiry worker with TTL and LRU policies per key
-      - SSRF protection for URL fetching
-      - Configuration via environment variables and error handling policies
+      - "Feature determination triggers: new MCP tools, API endpoints, persistent data structures"
+      - "Additional triggers: startup sequence modifications, design policy conflicts and replacements"
+      - Exemption criteria for small-scale edits like typos and table row additions
+      - Retrofit of FNC-006/DES-003 from base specs to temporary-feature-sync-gc directory
+      - Integration with additive_development_spec.md operational interpretation
+      - Checklist-based decision process for ambiguous feature classification
+      - "Context: document creation form alone is insufficient for feature determination"
     applicable_tasks:
-      - MCP server implementation
-      - Go backend development
-      - Search system design
-      - SQLite database schema
-      - Embedding pipeline design
-      - Hybrid search implementation
-      - API integration
+      - Feature development planning and classification
+      - Architecture decision review
+      - Development specification interpretation
+      - Additive feature identification
+      - Spec merge and integration workflow
     keywords:
-      - MCP
+      - ADR-001
+      - additive-feature
+      - feature-split-criteria
+      - impact-scope
+      - MCP-tool
+      - temporary-feature-design
+      - FNC-006
+      - DES-003
+  docs/specs/base/design/DES-001_doc_db_mcp_server_design.md:
+    title: "DES-001: doc-db MCP Server Design"
+    purpose: Defines the comprehensive design of the hybrid markdown search MCP server using Go, pure-Go SQLite, and two-layer search architecture combining embedding + BM25 + GREP signals with AI agent final judgment
+    content_details:
+      - "Two-layer architecture: Layer 1 (server) provides over-recall candidate pool from three signal parallel search; Layer 2 (AI agent) performs final relevance judgment"
+      - "Three signal parallel search: embedding vectors with cosine similarity, BM25 lexical with NFKC normalization and ID pattern boost, full-text GREP substring matching with origin_signals tracking"
+      - "Candidate merge and ranking: chunk_id deduplication, sorted by signal hit count, embedding score, chunk_id; ranking fine-tuning minimal to preserve recall"
+      - "SQLite pure-Go schema: records, series_keys, chunks, embeddings tables with WAL mode and connection pool for concurrent read-write access"
+      - "Hash-based dedup (DIF-02): identical key+path+hash skips re-embedding, appends series to existing record, cleans other records to maintain uniqueness"
+      - Markdown chunking on heading boundaries with heading_path context tracking for search result explanation
+      - OpenAI Embedding API (text-embedding-3-large default 3072-dim) with batch limit 100, exponential backoff, 60s timeout
+      - LLM Rerank optional mode using gpt-4o-mini for ranking optimization with fallback to merge-order on failure
+      - "Expiry worker: TTL-based (30 days default) and LRU-based (10,000 chunks limit) cleanup with per-key policy override via manage_index tool"
+      - YAML configuration (~/.doc-db/doc-db.yaml) with fail-fast validation, API-key-only environment variables, no override for other settings
+    applicable_tasks:
+      - MCP server design review and architecture evaluation
+      - Hybrid search system implementation and feature development
+      - Search signal quality tuning and ranking optimization
+      - SQLite concurrent access and WAL mode configuration
+      - Embedding model selection and vector search accuracy
+      - Configuration management and deployment
+      - Performance optimization and scale limit assessment
+      - Error handling and observability testing
+      - API integration and external service reliability
+      - Data model evolution and schema management
+    keywords:
+      - DES-001
       - doc-db
-      - Go
-      - SQLite
-      - embedding
-      - BM25
-      - hybrid search
-      - reranking
-      - Streamable HTTP
+      - MCP-server
+      - two-layer-search
+      - embedding-vector
+      - BM25-lexical
+      - GREP-signal
+      - SQLite-WAL
+      - OpenAI-API
+      - expiry-policy
   docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md:
     title: APP-001 doc-db MCP Server Requirements
-    purpose: Specifies functional and non-functional requirements for a hybrid document search MCP server that processes Markdown, manages embeddings, and provides vector plus lexical plus LLM rerank search capabilities.
+    purpose: Defines functional and non-functional requirements for a document search MCP server combining vector embeddings, BM25 lexical search, GREP, and optional LLM reranking
     content_details:
-      - Hybrid search architecture with vector embedding, lexical matching, and LLM reranking stages
-      - OpenAI API key configuration with fallback mechanism (OPENAI_API_DOCDB_KEY / OPENAI_API_KEY)
-      - upsert_documents tool with support for direct content or URL-based document ingestion
-      - Chunk division at Markdown heading boundaries (H1–H6) with heading hierarchy paths
-      - Differential embedding management with hash-based deduplication and series_keys sharing
-      - Lexical matching algorithm for ID patterns and entity name exact matches
-      - LLM Rerank fallback when embedding plus lexical scores are combined
-      - delete_documents tool with series-aware record cleanup and physical deletion
-      - query tool with mode selection (emb / lex / hybrid / rerank) and top_n limiting
-      - TTL and LRU capacity-based expiration policies with per-KEY override capability
+      - "Three-signal search pipeline: Embedding + BM25 lexical + full-text GREP for recall-optimized candidate collection"
+      - Hash-based deduplication (DIF-02) where same content shares embeddings across multiple series versions
+      - Series-based versioning system to track documents across Git branches and versions
+      - "MCP tools: upsert_documents with content/url/local_path input modes"
+      - "Delete operations: delete_documents for specific paths and delete_series for branch cleanup"
+      - TTL and LRU expiration policies for automatic index lifecycle management
+      - Two-layer search architecture delegating content judgment to upper-layer AI agents
+      - Query output with origin_signals field indicating which signals matched each result chunk
+      - Error handling for API key validation, missing indexes, embedding failures
+      - OPENAI_API_DOCDB_KEY environment variable for credential management
     applicable_tasks:
-      - Define document search system architecture
-      - Plan embedding and vector storage design
-      - Implement MCP tool interface for document operations
-      - Design hybrid search scoring algorithm
-      - Set up OpenAI API integration for embeddings and reranking
-      - Implement chunk-level metadata tracking and series management
-      - Specify error handling and recovery scenarios
+      - Implementing multi-signal document search MCP server
+      - Designing hash-based embedding deduplication logic
+      - Building MCP protocol-compliant HTTP transport layer
+      - Adding TTL and LRU-based index expiration
+      - Implementing full-text GREP search signal for special terms and IDs
+      - Handling partial failures in embedding API calls
+      - Setting up two-layer search architecture with recall-first philosophy
     keywords:
+      - embedding
+      - BM25
+      - GREP
       - MCP server
-      - hybrid search
-      - vector embedding
-      - lexical matching
-      - LLM rerank
-      - chunk division
-      - series deduplication
-      - OpenAI API
-      - expiration policy
-      - lexical scoring
+      - deduplication
+      - DIF-02
+      - PHIL-01
+      - origin_signals
+      - series
+      - TTL
+  docs/specs/install/design/DES-002_install_design.md:
+    title: DES-002 doc-db MCP Server Installation Design
+    purpose: Defines Homebrew installation architecture for doc-db MCP server, including Formula design, version consistency management, and post-installation user experience
+    content_details:
+      - Self-hosted tap strategy without separate homebrew-doc-db repository to minimize maintenance
+      - Go build integration with version injection via ldflags -X main.version for Formula compatibility
+      - Version canonical location in VERSION file with CHANGELOG and Formula tag synchronization
+      - Smoke test implementation using doc-db --version flag without configuration or API key dependencies
+      - Configuration file example installation to share directory with post-install caveats messaging
+      - Required post-installation steps for configuration, API key setup, and MCP client registration
+      - Verification script design with verify_version_consistency.sh and verify_release_tag.sh for release validation
+      - macOS Ventura+ requirement and Go toolchain dependency specification in Formula
+      - Two-phase release workflow for version bump followed by git tag and revision confirmation
+    applicable_tasks:
+      - Homebrew Formula implementation and maintenance
+      - Version management and release workflow execution
+      - Installation process testing and smoke test validation
+      - Configuration file schema and example creation
+      - User onboarding and post-installation guidance documentation
+      - Release tag management and git commit verification
+      - Binary distribution setup and packaging
+      - Installation verification through actual brew install testing
+    keywords:
+      - Formula
+      - ldflags
+      - caveats
+      - revision
+      - Homebrew
+      - git tag
+      - VERSION file
+      - go build
+      - MCP
+  docs/specs/install/requirements/APP-002_install_requirements.md:
+    title: APP-002 doc-db MCP Server Installation Requirements Specification
+    purpose: Defines installation requirements for doc-db MCP Server on macOS via Homebrew, including distribution format, version consistency validation, and post-installation user guidance
+    content_details:
+      - Homebrew self-tap distribution format with Formula in repository root
+      - Version consistency validation between VERSION file CHANGELOG and Formula tag/revision fields
+      - Post-installation guidance via Homebrew caveats for configuration and MCP registration
+      - Configuration file placement (~/.doc-db/doc-db.yaml) and OpenAI API key environment variable setup
+      - Binary versioning and version embedding via ldflags injection during go build
+      - macOS version dependency (13/Ventura+) and Go toolchain (1.22+) requirements
+      - MCP server registration format for Claude Code and Claude Desktop with HTTP transport
+      - Formula test requirement for doc-db --version output verification
+    applicable_tasks:
+      - Homebrew Formula development and testing
+      - Version bump and release workflow implementation
+      - MCP server installation setup for Claude Code and Claude Desktop
+      - Release tag creation and validation procedures
+      - Configuration file and environment setup verification
+    keywords:
+      - Homebrew
+      - Formula
+      - Installation
+      - Version consistency
+      - MCP registration
+      - macOS
+      - Configuration file
+      - Release workflow
+      - ldflags
+      - Binary distribution
+  docs/specs/sync-gc/design/DES-003_desired_state_sync_and_deferred_gc_design.md:
+    title: DES-003 Desired-State Sync Job and Deferred Garbage Collection Design
+    purpose: Specifies the desired-state synchronization mechanism and startup garbage collection design for removing deleted documents and expired series from the database
+    content_details:
+      - desired-state synchronization job (sync_documents) with path comparison logic
+      - deferred garbage collection sweep triggered at server startup
+      - polling-based job status tracking (get_sync_status)
+      - series deletion scheduling with immediate detection (schedule_delete_series)
+      - KEY-unit exclusive locking (WithKeyLock) with channel-based context cancellation
+      - pending_deletions table schema storing deletion intentions with (key, series, path) primary key
+      - background job execution with separate root context independent of request context
+      - startup sequence sweep of pending deletions before MCP server readiness
+      - mutex-protected SyncJobStatus state management with in-memory persistence
+    applicable_tasks:
+      - desired-state sync feature implementation
+      - garbage collection system design and implementation
+      - database locking mechanism design and implementation
+      - concurrent write operation testing
+      - series and document deletion workflow implementation
+    keywords:
+      - desired-state
+      - garbage collection
+      - sync_documents
+      - schedule_delete_series
+      - get_sync_status
+      - WithKeyLock
+      - pending_deletions
+      - job state management
+      - context cancellation
+  docs/specs/sync-gc/requirements/APP-003_sync_gc_requirements.md:
+    title: APP-003 Sync Documents and Startup Garbage Collection Requirements
+    purpose: Specifies requirements for desired-state synchronization of documents and automatic garbage collection of deletion-reserved records at server startup
+    content_details:
+      - Sync documents MCP tool with job_id-based async processing and status monitoring
+      - Desired-state synchronization with KEY-level exclusive locking
+      - Deletion reservation at path and series levels
+      - Self-healing mechanism for re-added paths in deletion reservation
+      - Startup garbage collection sweep triggered before statistics computation
+      - Background job isolation with independent context lifecycle
+      - "Three MCP tools: sync_documents, get_sync_status, schedule_delete_series"
+      - Error handling and self-recovery on partial deletion failures
+      - Conflict resolution between deletion reservations and concurrent write operations
+    applicable_tasks:
+      - Implementing sync_documents MCP tool
+      - Implementing get_sync_status MCP tool
+      - Implementing schedule_delete_series MCP tool
+      - Design of KEY-level mutual exclusion locking
+      - Startup garbage collection implementation
+      - Background job status tracking and lifecycle management
+      - Deletion reservation persistence and recovery
+      - Integration of TTL/LRU workers with sync operations
+      - Error handling for partial deletion failures
+    keywords:
+      - sync_documents
+      - desired-state synchronization
+      - garbage collection
+      - deletion reservation
+      - KEY-level exclusive locking
+      - job_id
+      - get_sync_status
+      - schedule_delete_series
+      - SYN-08
+      - GC-02

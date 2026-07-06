@@ -1,10 +1,12 @@
 # doc-db MCP Server
 
+[![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Markdown ドキュメントを **Embedding + BM25 + 全文 GREP** の 3 signal で横断検索し、
 必要に応じて **LLM Rerank** で並べ替える汎用 MCP サーバー（Streamable HTTP transport）。
 
-**現バージョン: v0.1.12**（`VERSION` / `CHANGELOG.md` が canonical）。
-基盤コンポーネント・MCP ツール 7 種・3 signal 検索パイプライン・LLM Rerank・
+**現バージョン: v0.2.0**（`VERSION` / `CHANGELOG.md` が canonical）。
+基盤コンポーネント・MCP ツール 10 種・3 signal 検索パイプライン・LLM Rerank・
 Homebrew 自家 tap 配布まで実装済み。
 
 ## 何の問題を解決するのか
@@ -44,51 +46,71 @@ LLM Rerank は **ranking 最適化のためのオプション**であり、recal
 | **local_path 経路**     | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+） |
 | **重複 Embedding 排除** | 同一内容は hash で検出し Embedding を共有。branch/series を低コストで多重管理 |
 | **series 削除**         | branch 単位で `delete_series` により record から除去（v0.1.9+）               |
+| **desired-state 同期**  | `sync_documents` で削除ファイルにも追従（欠落 path を即時切り離し。v0.2.0+）  |
 | **シングルバイナリ**    | pure-Go SQLite。Homebrew tap で 1 コマンド導入                                |
 | **TTL / LRU 自動廃棄**  | 期限切れ・容量超過のインデックスを Expiry ワーカーが自動削除                  |
 | **SSRF 防御**           | URL 登録はプライベート IP をデフォルトで拒否                                  |
 
 ## アーキテクチャ
 
+MCP クライアントから見た全体構成:
+
+```mermaid
+flowchart TD
+    Client["MCP クライアント<br/>(Claude Code / Desktop 等)"]
+    Client -->|"Streamable HTTP (MCP 2025-03)<br/>http://localhost:58080/mcp"| Tools
+
+    subgraph "MCP Server (go-sdk) — 10 tools"
+        Tools["upsert_documents / delete_documents / delete_series<br/>query / list_indexes / delete_index / manage_index<br/>sync_documents / get_sync_status / schedule_delete_series"]
+        Chunker["Chunker<br/>(見出し境界チャンク分割)"]
+        Embedder["Embedder<br/>(OpenAI Embedding API)"]
+        SearchPipeline["Search Pipeline<br/>emb + lex + grep 並列"]
+        Reranker["Reranker<br/>(LLM Rerank)"]
+        Store["Store (SQLite)<br/>WAL / chunks / embeddings"]
+
+        Tools --> Chunker
+        Tools --> Embedder
+        Tools --> SearchPipeline
+        SearchPipeline --> Reranker
+        Chunker --> Store
+        Embedder --> Store
+        SearchPipeline --> Store
+    end
+
+    Expiry["Expiry Worker<br/>(TTL / LRU 自動廃棄)"] -.->|"廃棄"| Store
 ```
-MCP クライアント (Claude Code / Desktop 等)
-        │  Streamable HTTP (MCP 2025-03)
-        │  http://localhost:58080/mcp
-        ▼
-┌─────────────────────────────────────────────────────┐
-│  MCP Server (go-sdk) — 7 tools                      │
-│  upsert_documents / delete_documents / delete_series│
-│  query / list_indexes / delete_index / manage_index │
-│                          │                          │
-│  ┌───────────┬───────────┼───────────┬───────────┐  │
-│  │ Chunker   │ Embedder  │ Search    │ Reranker  │  │
-│  │ (見出し   │ (OpenAI)  │ Pipeline  │ (LLM)     │  │
-│  │  境界)    │           │ emb+lex+  │           │  │
-│  │           │           │ grep      │           │  │
-│  └─────┬─────┴─────┬─────┴─────┬─────┴─────┬─────┘  │
-│        └───────────┴─────┬─────┴───────────┘        │
-│                    ┌─────▼─────────┐                │
-│                    │ Store(SQLite) │ ◄── Expiry     │
-│                    │ WAL / chunks  │    Worker      │
-│                    │ / embeddings  │  (TTL/LRU)     │
-│                    └───────────────┘                │
-└─────────────────────────────────────────────────────┘
+
+`query` 内部の 3 signal 検索パイプライン（PHIL-01 の詳細）:
+
+```mermaid
+flowchart LR
+    Query(["クエリ"]) --> Emb["Embedding 検索<br/>(ベクトル類似度)"]
+    Query --> Lex["BM25 検索<br/>(語彙頻度)"]
+    Query --> Grep["全文 GREP<br/>(literal 一致)"]
+
+    Emb --> Merge["候補プール統合<br/>(origin_signals 付与)"]
+    Lex --> Merge
+    Grep --> Merge
+
+    Merge -->|"mode=rerank のみ"| Rerank["LLM Rerank<br/>(ranking 最適化)"]
+    Merge -->|"mode=all (デフォルト)"| Result(["検索結果"])
+    Rerank --> Result
 ```
 
 ### レイヤー構成
 
-```
-cmd/docdb           エントリポイント・設定読み込み・配線
-internal/mcp        MCP ツールハンドラ（7 種）
-internal/search     3 signal 検索パイプライン（emb / lex / grep / rerank）
-internal/reranker   OpenAI Chat Completions ベース LLM Rerank
-internal/chunker    Markdown → 見出し境界チャンク分割
-internal/embedder   OpenAI Embedding API（部分失敗対応）
-internal/fetcher    URL → コンテンツ取得（SSRF 防御付き）
-internal/expiry     TTL / LRU 自動廃棄ワーカー
-internal/store      SQLite 読み書き・WAL・アトミック AppendAndCleanSeries
-internal/config     YAML 設定ローダー（`~/.doc-db/doc-db.yaml`）
-```
+| パッケージ          | 責務                                                   |
+| ------------------- | ------------------------------------------------------ |
+| `cmd/docdb`         | エントリポイント・設定読み込み・配線                   |
+| `internal/mcp`      | MCP ツールハンドラ（10 種）                            |
+| `internal/search`   | 3 signal 検索パイプライン（emb / lex / grep / rerank） |
+| `internal/reranker` | OpenAI Chat Completions ベース LLM Rerank              |
+| `internal/chunker`  | Markdown → 見出し境界チャンク分割                      |
+| `internal/embedder` | OpenAI Embedding API（部分失敗対応）                   |
+| `internal/fetcher`  | URL → コンテンツ取得（SSRF 防御付き）                  |
+| `internal/expiry`   | TTL / LRU 自動廃棄ワーカー                             |
+| `internal/store`    | SQLite 読み書き・WAL・アトミック AppendAndCleanSeries  |
+| `internal/config`   | YAML 設定ローダー（`~/.doc-db/doc-db.yaml`）           |
 
 上位レイヤーのみが下位を参照する。循環依存なし。
 
@@ -108,7 +130,7 @@ doc-db --version
 git clone https://github.com/BlueEventHorizon/doc-db-mcp-server.git
 cd doc-db-mcp-server
 make build            # ldflags 経由で VERSION を注入
-./doc-db --version    # 0.1.12
+./doc-db --version    # 0.2.0
 ```
 
 ## セットアップ
@@ -201,15 +223,18 @@ claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 
 ## MCP ツール一覧
 
-| ツール             | 説明                                                                         |
-| ------------------ | ---------------------------------------------------------------------------- |
-| `upsert_documents` | ドキュメントを登録・更新。`content` / `url` / `local_path` の 3 経路（排他） |
-| `delete_documents` | 指定 series の特定 path ドキュメントを削除                                   |
-| `delete_series`    | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用）   |
-| `query`            | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank                        |
-| `list_indexes`     | 登録済み KEY 一覧を取得                                                      |
-| `delete_index`     | KEY 全体を削除                                                               |
-| `manage_index`     | KEY のメタ情報操作（TTL / max_chunks 等）                                    |
+| ツール                   | 説明                                                                                                                                                 |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upsert_documents`       | ドキュメントを登録・更新。`content` / `url` / `local_path` の 3 経路（排他）                                                                         |
+| `delete_documents`       | 指定 series の特定 path ドキュメントを削除                                                                                                           |
+| `delete_series`          | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用）                                                                           |
+| `query`                  | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank                                                                                                |
+| `list_indexes`           | 登録済み KEY 一覧を取得                                                                                                                              |
+| `delete_index`           | KEY 全体を削除                                                                                                                                       |
+| `manage_index`           | KEY のメタ情報操作（TTL / max_chunks 等）                                                                                                            |
+| `sync_documents`         | desired-state 同期（v0.2.0+）。documents を完全な現在状態とみなし、一覧に無い既存 path を series から即時切り離す。job_id を即時返却する非同期ジョブ |
+| `get_sync_status`        | sync ジョブの進捗・完了・エラーを job_id でポーリング（v0.2.0+）                                                                                     |
+| `schedule_delete_series` | series 全体の削除予約（v0.2.0+）。即時削除せず次回起動時に物理削除。再 sync で取り消し可能                                                           |
 
 ### `query` の mode
 
@@ -277,6 +302,15 @@ Embedding を再計算しない**。既存 record の `series_keys` に新しい
   — Embedder spy で「同一ハッシュ経路で Embedding API が呼ばれない」ことを保証
 
 branch cleanup は `delete_series` (v0.1.9+) または SKILL `/delete-db-series <name>` で。
+
+#### desired-state 同期 (v0.2.0+)
+
+`upsert_documents` は追加専用のため、クライアント側で削除されたファイルには追従できない。
+`sync_documents` に **完全な現在のファイル一覧** を渡すと、一覧に無い既存 path が series
+から即時に切り離され、当該 series 指定の検索から直ちに消える。切り離しで orphan になった
+record は物理削除予約として記録され、次回サーバー起動時に一括物理削除される（それまでは
+同一内容の再 sync で Embedding 再計算なしに復元できる = 自己修復）。branch 削除の検知時は
+`schedule_delete_series` で series 全体を予約できる（即時削除しない・再 sync で取り消し可能）。
 
 ## ドキュメント
 

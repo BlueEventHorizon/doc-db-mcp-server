@@ -95,7 +95,7 @@ func newHarness(t *testing.T) *testHarness {
 	fe := &fakeFetcher{}
 	ch := chunker.New(1500)
 	pipe := search.New(st, &SearchEmbedderAdapter{Inner: emb}, nil, search.Config{})
-	h := New(st, ch, emb, fe, pipe)
+	h := New(context.Background(), st, ch, emb, fe, pipe)
 	return &testHarness{t: t, store: st, embedder: emb, fetcher: fe, handlers: h}
 }
 

@@ -207,6 +207,29 @@ def _emit_and_exit(payload: dict, code: int = 0) -> None:
     sys.exit(code)
 
 
+def _walk_md_files(root: Path) -> list[Path]:
+    """root 配下の *.md をシンボリックリンクを辿って再帰的に列挙する。
+
+    pathlib.Path.rglob は再帰の途中で遭遇した symlink ディレクトリを辿らない仕様
+    (無限ループ防止のための意図的な設計) のため、monorepo で仕様/ルール文書を
+    symlink 経由で共有している構成だと該当ファイルがエラーも警告もなく欠落する。
+    os.walk(followlinks=True) で明示的に辿り、symlink loop (自己参照的な循環)
+    対策として実体パスの訪問済みセットで検知・打ち切りする。
+    """
+    seen_real_dirs: set[str] = set()
+    result: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen_real_dirs:
+            dirnames[:] = []
+            continue
+        seen_real_dirs.add(real)
+        for fname in filenames:
+            if fname.endswith(".md"):
+                result.append(Path(dirpath) / fname)
+    return result
+
+
 def resolve(type_key: str, project_root: Path) -> list[str]:
     cfg_path = project_root / ".doc_structure.yaml"
     if not cfg_path.exists():
@@ -236,7 +259,7 @@ def resolve(type_key: str, project_root: Path) -> list[str]:
             if not p.exists():
                 continue
             if p.is_dir():
-                for md in p.rglob("*.md"):
+                for md in _walk_md_files(p):
                     if md.is_file():
                         rel = md.relative_to(project_root)
                         files.add(str(rel))
