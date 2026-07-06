@@ -22,7 +22,7 @@ class DocDb < Formula
   # Both values must be updated together at release time and validated by
   # scripts/verify_version_consistency.sh and scripts/verify_release_tag.sh.
   url "https://github.com/BlueEventHorizon/doc-db-mcp-server.git",
-      tag:      "v0.1.13",
+      tag:      "v0.2.0",
       revision: "0000000000000000000000000000000000000000"
   license "MIT"
 
