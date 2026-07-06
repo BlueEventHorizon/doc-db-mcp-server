@@ -196,7 +196,8 @@ git push
 Claude Code の MCP 登録は不要。他プロジェクトへ 5 ディレクトリを rsync すれば単独で動く設計。
 
 - **`docdb_client.py`** (5 SKILL に同一コピー): MCP Streamable HTTP handshake を stdlib のみで実装。
-  `upsert` はデフォルト 30 件バッチ + 進捗を stderr に表示（600+ ファイルでもハングに見えない）
+  `sync`（v0.2.0+ 推奨）は desired-state 同期を 1 回投入 + `get_sync_status` ポーリングで進捗を
+  stderr に表示（削除ファイルにも追従）。`upsert`（旧方式、削除非追従）は 30 件バッチで残置
 - **`resolve_docs.py`** (5 SKILL に同一コピー): `.doc_structure.yaml` v3.0 を stdlib のみでパース。
   forge の `resolve_doc_structure.py::parse_config` 互換の行ベース YAML parser を内蔵
 

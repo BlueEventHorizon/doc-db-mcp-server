@@ -98,23 +98,38 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 
 ## 3. 提供ツール (MCP)
 
-doc-db は 7 つの MCP ツールを提供します。詳細スキーマは `tools/list` で取得できます。
+doc-db は 10 個の MCP ツールを提供します。詳細スキーマは `tools/list` で取得できます。
 
-| Tool                   | 目的                                                                         |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| **`upsert_documents`** | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)                   |
-| **`delete_documents`** | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須)                |
-| **`delete_series`**    | KEY 内の全 record から指定 series を除去 (branch cleanup 用途、`paths` 不要) |
-| **`query`**            | 候補プールを検索 (3 signal 並列)                                             |
-| **`list_indexes`**     | 登録済み KEY の一覧 + メタ情報                                               |
-| **`delete_index`**     | KEY 全体を物理削除 (破壊的)                                                  |
-| **`manage_index`**     | KEY ごとの廃棄ポリシー (TTL / max_chunks) 設定                               |
+| Tool                         | 目的                                                                                     |
+| ---------------------------- | ---------------------------------------------------------------------------------------- |
+| **`upsert_documents`**       | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)                               |
+| **`sync_documents`**         | desired-state 同期 (v0.2.0+)。完全な現在ファイル一覧を渡し、削除にも追従する非同期ジョブ |
+| **`get_sync_status`**        | sync ジョブの進捗・完了・エラーを job_id でポーリング (v0.2.0+)                          |
+| **`delete_documents`**       | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須)                            |
+| **`delete_series`**          | KEY 内の全 record から指定 series を除去 (branch cleanup 用途、`paths` 不要)             |
+| **`schedule_delete_series`** | series 全体の削除予約 (v0.2.0+)。即時削除せず次回起動時に物理削除・取り消し可能          |
+| **`query`**                  | 候補プールを検索 (3 signal 並列)                                                         |
+| **`list_indexes`**           | 登録済み KEY の一覧 + メタ情報                                                           |
+| **`delete_index`**           | KEY 全体を物理削除 (破壊的)                                                              |
+| **`manage_index`**           | KEY ごとの廃棄ポリシー (TTL / max_chunks) 設定                                           |
 
-**`delete_documents` と `delete_series` の使い分け**:
+**`upsert_documents` と `sync_documents` の使い分け**:
 
-- `delete_documents`: 特定 path 群から series を除去したい時 (個別ドキュメント削除)
-- `delete_series`: Git feature branch 削除後などに KEY 全体から series を一括除去したい時
-  (path を列挙する必要がない)
+- `upsert_documents`: 追加・更新のみ (削除されたファイルには追従しない)。少数ファイルの
+  差分投入や動的生成ドキュメント向け
+- `sync_documents`: **ファイル一覧全体を管理する定期同期向け (推奨)**。documents を
+  「当該 key・series の完全な現在状態」とみなし、一覧に無い既存 path を series から
+  即時に切り離す (当該 series 指定の検索から直ちに消える)。差分管理は upsert と同一
+  (hash 一致で embedding 再計算なし) なので、全ファイルを毎回渡しても課金は差分のみ。
+  job_id が即時返却されるため、`get_sync_status` で完了をポーリングする
+
+**削除系 3 ツールの使い分け**:
+
+- `delete_documents`: 特定 path 群から series を除去したい時 (個別ドキュメント削除・即時)
+- `delete_series`: KEY 全体から series を一括除去したい時 (即時物理削除。path 列挙不要)
+- `schedule_delete_series`: branch 削除を検知したが**即時削除はしたくない**時。予約は
+  次回サーバー起動まで完全に無害で、同一 key・series への `sync_documents` で取り消せる
+  (誤操作に安全)
 
 ---
 
@@ -259,15 +274,43 @@ if (r.warnings?.length > 0) {
 
 ### 5.3 branch 更新
 
+**推奨 (v0.2.0+)**: `sync_documents` で desired-state 同期する。ファイルの追加・更新に
+加えて**削除にも追従**する (一覧に無い path は series から即時に消える)。
+
 ```javascript
-// feature ブランチに切替えた → 該当 series を更新
+// feature ブランチに切替えた → 現在の全ファイル一覧を渡して同期
+const { job_id } = await mcp.call("sync_documents", {
+  key: "myrepo-docs",
+  series: "feature-auth",
+  documents: [...allCurrentFiles], // 完全な現在状態。差分は hash で自動判定 (課金は差分のみ)
+});
+
+// 完了をポーリング
+let status;
+do {
+  await sleep(1000);
+  status = await mcp.call("get_sync_status", { job_id });
+} while (status.status === "running");
+// status: { status: "done", processed, skipped, failed, deleted_paths_marked, errors? }
+
+// branch 削除を検知したら series 全体を削除予約 (即時削除しない・sync で取り消し可能)
+await mcp.call("schedule_delete_series", {
+  key: "myrepo-docs",
+  series: "old-feature",
+});
+```
+
+従来方式 (upsert + 明示削除) も引き続き使える:
+
+```javascript
+// 追加・更新のみ (削除ファイルには追従しない)
 await mcp.call("upsert_documents", {
   key: "myrepo-docs",
   series: "feature-auth",
   documents: [...]
 });
 
-// 不要になった series を削除
+// 不要になった path を明示削除
 await mcp.call("delete_documents", {
   key: "myrepo-docs",
   series: "old-feature",

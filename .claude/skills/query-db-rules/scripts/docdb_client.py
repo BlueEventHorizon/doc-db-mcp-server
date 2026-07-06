@@ -284,6 +284,72 @@ def cmd_upsert_batch(args: argparse.Namespace) -> int:
     return 0 if result["failed"] == 0 else 2
 
 
+def sync_and_wait(client: Client, key: str, series: str, documents: list[dict],
+                  wait_seconds: int, poll_interval: float = 2.0) -> dict:
+    """sync_documents を 1 回投入し、get_sync_status を done/failed までポーリングする。
+
+    sync_documents (v0.2.0+) は documents を「当該 key・series の完全な現在状態」と
+    みなす desired-state 同期。一覧に無い既存 path は series から即時に切り離される
+    (削除ファイルへの追従)。差分管理は upsert と同一 (hash 一致で embedding 再計算
+    なし) のため、全件を毎回渡しても課金は差分のみ。job_id が即時返却され、実処理は
+    サーバー側バックグラウンドで進む — バッチ分割は不要。
+
+    返り値: 最終の get_sync_status 結果に job_id / total を加えた dict。
+    ポーリングが wait_seconds を超えた場合は status="timeout" (ジョブ自体は
+    サーバー側で継続しており、再実行すれば冪等に収束する)。
+    """
+    try:
+        r = client.call("sync_documents", {"key": key, "series": series, "documents": documents})
+    except RuntimeError as e:
+        if "sync_documents" in str(e) or "not found" in str(e).lower():
+            raise RuntimeError(
+                f"{e}\nsync_documents は doc-db v0.2.0+ の機能です。"
+                f"`brew upgrade doc-db` でサーバを更新してください。") from e
+        raise
+    job_id = r.get("job_id")
+    if not job_id:
+        raise RuntimeError(f"sync_documents が job_id を返しませんでした: {r}")
+
+    print(f"sync accepted: job_id={job_id} total={len(documents)} "
+          f"key={key} series={series}", file=sys.stderr)
+
+    started = time.monotonic()
+    last_line = ""
+    while True:
+        st = client.call("get_sync_status", {"job_id": job_id})
+        status = st.get("status", "")
+        line = (f"  [{status:>7}] processed={st.get('processed', 0):>4} "
+                f"skipped={st.get('skipped', 0):>4} failed={st.get('failed', 0):>3} "
+                f"detached={st.get('deleted_paths_marked', 0):>3}")
+        if line != last_line:
+            print(line, file=sys.stderr)
+            last_line = line
+        if status in ("done", "failed"):
+            st["job_id"] = job_id
+            st["total"] = len(documents)
+            return st
+        if time.monotonic() - started > wait_seconds:
+            st["job_id"] = job_id
+            st["total"] = len(documents)
+            st["status"] = "timeout"
+            print(f"WARNING: {wait_seconds}s 以内に完了しませんでした。ジョブは"
+                  f"サーバー側で継続中です (get_sync_status job_id={job_id} で確認可、"
+                  f"再実行しても DIF-02 により課金は差分のみ)", file=sys.stderr)
+            return st
+        time.sleep(poll_interval)
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    documents = _normalize_entries(json.loads(args.entries_json))
+    client = Client(timeout=args.timeout)
+    result = sync_and_wait(client, args.key, args.series, documents, args.wait)
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    if result.get("status") != "done":
+        return 2
+    return 0 if int(result.get("failed", 0) or 0) == 0 else 2
+
+
 def cmd_delete_series(args: argparse.Namespace) -> int:
     client = Client(timeout=args.timeout)
     result = client.call("delete_series", {"key": args.key, "series": args.series})
@@ -329,6 +395,18 @@ def main() -> int:
     p_ub.add_argument("--limit", type=int, default=DEFAULT_BATCH_SIZE,
                       help=f"このバッチで処理する件数 (デフォルト {DEFAULT_BATCH_SIZE})")
     p_ub.set_defaults(func=cmd_upsert_batch)
+
+    p_sync = sub.add_parser("sync",
+                            help="doc-db sync_documents (v0.2.0+、desired-state 同期)。"
+                                 "entries を完全な現在状態として 1 回で投入し、"
+                                 "get_sync_status を完了までポーリングする。削除にも追従。")
+    p_sync.add_argument("--key", required=True)
+    p_sync.add_argument("--series", required=True)
+    p_sync.add_argument("--entries-json", required=True, dest="entries_json",
+                        help="[{path, local_path}, ...] の JSON 文字列 (当該 key・series の完全な現在状態)")
+    p_sync.add_argument("--wait", type=int, default=DEFAULT_TIMEOUT,
+                        help=f"ジョブ完了待ちの上限秒 (デフォルト {DEFAULT_TIMEOUT})")
+    p_sync.set_defaults(func=cmd_sync)
 
     p_ds = sub.add_parser("delete-series", help="doc-db delete_series を実行")
     p_ds.add_argument("--key", required=True)
