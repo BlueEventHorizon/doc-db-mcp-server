@@ -1,6 +1,6 @@
 package mcp
 
-// TASK-008 — 既存ハンドラの WithKeyLock 排他性 統合テスト (DES-003 §3.5 / APP-003 SYN-08)
+// TASK-008 — 既存ハンドラの WithKeyLock 排他性 統合テスト (DES-001 §4.3 / APP-001 FNC-006 SYN-08)
 //
 // internal/store/store_test.go の WithKeyLock 直接テスト（チャネル同期パターン）を
 // 「fn の中身がハンドラ実体」の形に移植し、MCP ハンドラ層で KEY 単位排他が
@@ -117,7 +117,7 @@ func startGatedUpsert(t *testing.T, h *testHarness, entered <-chan struct{}, key
 // TestKeyLockIntegration_DeleteIndexAndUpsert_SameKeySerialized は、同一 KEY への
 // delete_index と upsert_documents が WithKeyLock で直列化されることを検証する
 // （SYN-08。ホルダー = upsert / 待機側 = delete_index。方向の根拠は冒頭コメント参照）。
-// ブロックされずに割り込むと「削除中の KEY への不整合書き込み」が再発する（DES-003 §3.5）。
+// ブロックされずに割り込むと「削除中の KEY への不整合書き込み」が再発する（DES-001 §4.3）。
 func TestKeyLockIntegration_DeleteIndexAndUpsert_SameKeySerialized(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -244,7 +244,7 @@ func TestKeyLockIntegration_UpsertBlocksDeleteDocuments_SameKey(t *testing.T) {
 }
 
 // TestKeyLockIntegration_DifferentKeysDoNotBlock は、KEY が異なれば操作が互いに
-// ブロックされないことを検証する（並行度が KEY 単位を超えて落ちていないこと。DES-003 §3.5.3）。
+// ブロックされないことを検証する（並行度が KEY 単位を超えて落ちていないこと。DES-001 §4.3）。
 func TestKeyLockIntegration_DifferentKeysDoNotBlock(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

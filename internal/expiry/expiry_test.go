@@ -25,7 +25,7 @@ type mockStore struct {
 	lockErrForKey   map[string]error // WithKeyLock 自体を失敗させる（fn は実行しない）
 
 	// calls は WithKeyLock / DeleteKey の呼び出し順序を記録する
-	// （DeleteKey が WithKeyLock 経由であることの検証用、DES-003 §6）。
+	// （DeleteKey が WithKeyLock 経由であることの検証用、DES-001 §11）。
 	calls []string
 }
 
@@ -237,7 +237,7 @@ func TestRunLRU_TotalCountError_Propagates(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// WithKeyLock 経由の DeleteKey（DES-003 §3.5.2 SYN-08）
+// WithKeyLock 経由の DeleteKey（DES-001 §4.3 SYN-08）
 // -----------------------------------------------------------------------
 
 func TestRunTTL_DeleteKeyIsCalledInsideWithKeyLock(t *testing.T) {

@@ -34,7 +34,7 @@ type storeForExpiry interface {
 	TotalChunkCount(ctx context.Context) (int, error)
 	ListKeysByLRU(ctx context.Context) ([]store.KeyLRUInfo, error)
 	DeleteKey(ctx context.Context, key string) error
-	// WithKeyLock は KEY 単位排他ロック（DES-003 §3.5 SYN-08）。
+	// WithKeyLock は KEY 単位排他ロック（DES-001 §4.3 SYN-08）。
 	// DeleteKey 自身はロックを取得しない規約のため、呼び出し元（本ワーカー）が
 	// DeleteKey をこのロックで囲む。
 	WithKeyLock(ctx context.Context, key string, fn func() error) error
@@ -182,7 +182,7 @@ func (w *Worker) runTTL(ctx context.Context) error {
 	}
 
 	for _, key := range keys {
-		// KEY 単位排他ロック内で削除する（DES-003 §3.5.2 SYN-08:
+		// KEY 単位排他ロック内で削除する（DES-001 §4.3 SYN-08:
 		// sync_documents 等の同一 KEY への書き込みと直列化する）
 		err := w.st.WithKeyLock(ctx, key, func() error {
 			return w.st.DeleteKey(ctx, key)
@@ -222,7 +222,7 @@ func (w *Worker) runLRU(ctx context.Context) error {
 		if total <= w.cfg.MaxChunks {
 			break
 		}
-		// KEY 単位排他ロック内で削除する（DES-003 §3.5.2 SYN-08:
+		// KEY 単位排他ロック内で削除する（DES-001 §4.3 SYN-08:
 		// sync_documents 等の同一 KEY への書き込みと直列化する）
 		err := w.st.WithKeyLock(ctx, info.Key, func() error {
 			return w.st.DeleteKey(ctx, info.Key)

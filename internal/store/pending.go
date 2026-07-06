@@ -1,5 +1,5 @@
 // pending.go は削除予約（pending_deletions テーブル）まわりの Store メソッドを実装する。
-// DES-003 §3.2（スキーマ）・§3.3（メソッド仕様）、APP-003 SYN-03/04・GC-01〜04 に対応。
+// DES-001 §4.1（スキーマ）・§4.5（メソッド仕様）、APP-001 FNC-006 SYN-03/04・GC-01〜04 に対応。
 //
 // pending_deletions.path の意味:
 //   - path = ”（空文字列）: series 全体の削除予約（GC-01、schedule_delete_series 由来）。
@@ -20,7 +20,7 @@ import (
 //
 // record・chunks・embeddings は削除しない。これは既存の DeleteSeries / CleanOtherSeries が持つ
 // 「series_keys が空になった record は即時物理削除」という不変条件の意図的な例外である
-// （DES-003 §3.3）。record を残す目的は、SYN-04 の自己修復を Embedding 再計算なし
+// （DES-001 §4.5）。record を残す目的は、SYN-04 の自己修復を Embedding 再計算なし
 // （API 課金ゼロ）で成立させること。物理削除は起動時スイープ（SweepPendingDeletions）まで遅延する。
 //
 // 戻り値 orphaned は、切り離し後に当該 key+path 配下にどの series からも参照されない record が
@@ -199,7 +199,7 @@ func (s *Store) ClearPendingDeletion(ctx context.Context, key, series, path stri
 //   - paths: path 単位予約（path が非空の行）の一覧
 //   - seriesWide: series 全体予約（GC-01 由来、path=” 行）の有無
 //
-// sync_documents の fn 冒頭で呼び、補償 + 予約解除（DES-003 §3.3 [MANDATORY]）の対象 path と
+// sync_documents の fn 冒頭で呼び、補償 + 予約解除（DES-001 §4.5 [MANDATORY]）の対象 path と
 // SYN-04 の series 全体予約解除の要否を判定する。読み取りのみのため s.mu は取得しない。
 func (s *Store) ListPendingDeletions(ctx context.Context, key, series string) (paths []string, seriesWide bool, err error) {
 	rows, err := s.db.QueryContext(ctx,
@@ -231,14 +231,14 @@ func (s *Store) ListPendingDeletions(ctx context.Context, key, series string) (p
 // DeleteOrphanRecords は指定 key+path の record のうち series_keys が 0 件のもののみを
 // 物理削除する（chunks / embeddings は CASCADE、BM25 整合は deleteRecordWithBM25Tx に準拠）。
 // series の紐付きが残る record には一切触れないため、冪等かつ常に安全である
-// （stale な削除予約に対して呼ばれても live record を壊さない。DES-003 §3.3）。
+// （stale な削除予約に対して呼ばれても live record を壊さない。DES-001 §4.5）。
 //
 // 呼び出し元は 2 箇所:
 //   - sync_documents の fn 内で ClearPendingDeletion の直前（CleanOtherSeries の個別失敗の補償）
 //   - SweepPendingDeletions の path 単位処理（起動時）
 //
 // record 削除を伴うため doc_count を更新する。
-// WithKeyLock は内部で取得しない（呼び出し元が保持済み、または起動時専用で不要。DES-003 §3.5.2）。
+// WithKeyLock は内部で取得しない（呼び出し元が保持済み、または起動時専用で不要。DES-001 §4.3）。
 // 単一トランザクション + s.mu で直列化する。
 func (s *Store) DeleteOrphanRecords(ctx context.Context, key, path string) (removed int, retErr error) {
 	s.mu.Lock()
@@ -302,7 +302,7 @@ func (s *Store) DeleteOrphanRecords(ctx context.Context, key, path string) (remo
 //     DeleteSeries は使わない: stale な予約行（Clear 失敗・upsert_documents 経由の復活等）が
 //     残っていた場合、DeleteSeries の series 剥がしは復活済み record から series を剥がして
 //     破壊し得る。DeleteOrphanRecords は series 紐付きが残る record に一切触れないため、
-//     stale 行は 0 件処理の冪等動作で行だけが消える（DES-003 §3.3）
+//     stale 行は 0 件処理の冪等動作で行だけが消える（DES-001 §4.5）
 //
 // 成功した行は pending_deletions から削除する。個別失敗はログ + errs に集約して処理を継続する
 // （silent failure 禁止方針、GC-04）。行の消し忘れ・失敗行は次回起動時に再試行されるだけで
@@ -311,7 +311,7 @@ func (s *Store) DeleteOrphanRecords(ctx context.Context, key, path string) (remo
 // [起動時専用] 本メソッドはサーバー起動時（MCP リクエストを受け付ける前、DB 統計表示より前。
 // GC-03）にのみ呼ばれる前提であり、WithKeyLock を取得しない（並行する書き込みが存在しない
 // 時間帯のため不要）。将来、起動時以外（手動トリガー等）でスイープを実行する変更を加える場合は、
-// この前提が崩れるため各行ごとに WithKeyLock で囲むよう設計を見直すこと（DES-003 §3.3）。
+// この前提が崩れるため各行ごとに WithKeyLock で囲むよう設計を見直すこと（DES-001 §4.5）。
 func (s *Store) SweepPendingDeletions(ctx context.Context) (processed int, errs []error) {
 	type pendingRow struct {
 		key, series, path string

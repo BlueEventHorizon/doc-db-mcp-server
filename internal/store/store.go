@@ -77,7 +77,7 @@ type Store struct {
 	mu  sync.Mutex
 	dim int // Embedding ベクトル次元数（起動時に検証）
 
-	// KEY 単位の論理ロック（DES-003 §3.5、SYN-08）。
+	// KEY 単位の論理ロック（DES-001 §4.3、SYN-08）。
 	// s.mu（個々の SQLite 書き込みトランザクション単位の直列化）とは別レイヤーで、
 	// 「同一 KEY に対する一連の複数回の Store 呼び出し」を跨いだ直列化を担う。
 	keyLocksMu sync.Mutex
@@ -153,16 +153,16 @@ func (s *Store) Close() error {
 }
 
 // -----------------------------------------------------------------------
-// KEY 単位の排他制御（DES-003 §3.5、SYN-08）
+// KEY 単位の排他制御（DES-001 §4.3、SYN-08）
 // -----------------------------------------------------------------------
 
 // WithKeyLock は KEY 単位の論理ロックを取得した状態で fn を実行する。
 // ロック取得を待機している間に ctx がキャンセルされた場合、fn を実行せず ctx.Err() を返す
 // （GC-05: sync_documents がロック待機中でもシャットダウンに応答できるようにするため）。
 // ロック取得後（fn 実行中）のキャンセル対応は、fn 自身が受け取った ctx を見て中断するかに委ねる。
-// 参照カウントが 0 になったエントリは map から削除し、無制限な蓄積を防ぐ（DES-003 §3.5.3）。
+// 参照カウントが 0 になったエントリは map から削除し、無制限な蓄積を防ぐ（DES-001 §4.3）。
 //
-// 呼び出しルール（DES-003 §3.5.2）:
+// 呼び出しルール（DES-001 §4.3）:
 //   - fn 内で WithKeyLock を再度呼んではならない（非再入のため同一 goroutine でデッドロックする）
 //   - DeleteKey / UpsertRecord / DeleteSeries / DeleteSeriesAll 等の個々の Store メソッドは
 //     本ロックを内部で取得しない。KEY 単位排他が必要な呼び出し元が、対象 KEY への
@@ -275,7 +275,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     dim      INTEGER NOT NULL
 );
 
--- 削除予約テーブル（DES-003 §3.2、SYN-03/GC-01/GC-02）。
+-- 削除予約テーブル（DES-001 §4.1、SYN-03/GC-01/GC-02）。
 -- path = '' は「series 全体の削除予約」を表すセンチネル（GC-01 由来）。
 -- path が非空の行は「当該 path の orphan record（どの series からも参照されない record）を
 -- 起動時スイープで物理削除せよ」という予約（SYN-03 由来）。

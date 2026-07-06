@@ -1,12 +1,12 @@
 // sync.go は sync_documents（desired-state 同期ジョブ）の MCP ツールハンドラと
-// ジョブ状態管理を実装する。DES-003 §3.4〜3.6、APP-003 SYN-01〜08 / GC-05 に対応。
+// ジョブ状態管理を実装する。DES-001 §4.3 / §5.4、APP-001 FNC-006 SYN-01〜08 / GC-05 に対応。
 //
 // 処理の骨格:
 //   - handleSyncDocuments は job_id を即座に返し（SYN-05）、実処理は rootCtx 由来の
 //     独立 context で goroutine 実行する（GC-05。MCP リクエスト context には依存しない）
 //   - goroutine 内では store.WithKeyLock(ctx, key, fn) を 1 回だけ呼び、fn 内で
 //     desired-state 判定全体（documents 処理 → 既存 path 一覧取得 → series 切り離し →
-//     削除予約の記録・解除）を直接実行する（SYN-08、DES-003 §3.5.2。fn 内で
+//     削除予約の記録・解除）を直接実行する（SYN-08、DES-001 §4.3。fn 内で
 //     WithKeyLock を再度呼ばない）
 package mcp
 
@@ -23,7 +23,7 @@ import (
 )
 
 // -----------------------------------------------------------------------
-// ジョブ状態管理（DES-003 §3.4、SYN-06/07）
+// ジョブ状態管理（DES-001 §5.4、SYN-06/07）
 // -----------------------------------------------------------------------
 
 // SyncJobStatus は sync_documents ジョブ 1 件の進捗状態。
@@ -43,7 +43,7 @@ type SyncJobStatus struct {
 }
 
 // maxCompletedSyncJobs は完了済み（done / failed）ジョブの保持上限。
-// APP-003 TBD-101（保持ポリシー: 件数上限 or 経過時間）に対し、件数上限方式を採用する。
+// APP-001 TBD-101（保持ポリシー: 件数上限 or 経過時間）に対し、件数上限方式を採用する。
 // 根拠: ジョブ投入はクライアント主導のポーリング前提（SYN-06）であり、完了直後に
 // get_sync_status で読まれる運用が通常。時間ベースはタイマー管理が必要になる一方、
 // 件数上限は新規ジョブ登録時の同期的な追い出しだけで済み、メモリ上限も確定的になる。
@@ -112,7 +112,7 @@ type GetSyncStatusInput struct {
 	JobID string `json:"job_id" jsonschema:"sync_documents が返したジョブ識別子。"`
 }
 
-// GetSyncStatusResult は get_sync_status の出力（APP-003 出力仕様）。
+// GetSyncStatusResult は get_sync_status の出力（APP-001 FNC-006 出力仕様）。
 type GetSyncStatusResult struct {
 	Status             string   `json:"status" jsonschema:"ジョブの状態。'running' = 処理中 / 'done' = 完了 / 'failed' = 失敗 (シャットダウン中断含む)。"`
 	Processed          int      `json:"processed" jsonschema:"新規 / 内容変更で処理されたドキュメント数。"`
@@ -189,7 +189,7 @@ func (h *Handlers) handleSyncDocuments(
 	if in.Key == "" || in.Series == "" {
 		return nil, SyncResult{}, errors.New("key と series は必須")
 	}
-	// documents が空のリストであっても拒否しない: APP-003 SYN-01 は documents を「完全な現在状態」
+	// documents が空のリストであっても拒否しない: APP-001 FNC-006 SYN-01 は documents を「完全な現在状態」
 	// と定義しており、空は「この series に現存ファイルがない」という正当な desired-state。
 	// この場合、既存 path は全て切り離し + orphan 予約となり（SYN-03）、誤送信でも同一内容の
 	// 再 sync で Embedding 再計算なしに復元できる（SYN-04 の自己修復。即時物理削除する
@@ -249,11 +249,11 @@ func (h *Handlers) runSyncJob(jobID, key, series string, documents []UpsertDocum
 }
 
 // syncLocked は WithKeyLock の fn として実行される desired-state 判定の本体。
-// この中では WithKeyLock を再度呼ばない（DES-003 §3.5.2 の禁止規約）。
+// この中では WithKeyLock を再度呼ばない（DES-001 §4.3 の禁止規約）。
 // 戻り値が非 nil の場合、呼び出し元（runSyncJob）がジョブを "failed" にする。
 func (h *Handlers) syncLocked(ctx context.Context, jobID, key, series string, documents []UpsertDocument) error {
 	// fn 冒頭: 当該 key+series の削除予約（path 一覧 + series 全体予約の有無）を 1 回で取得する
-	// （DES-003 §3.3 [MANDATORY]。補償 + 予約解除の対象 path と SYN-04 の series 全体予約解除の
+	// （DES-001 §4.5 [MANDATORY]。補償 + 予約解除の対象 path と SYN-04 の series 全体予約解除の
 	// 要否を判定する）。
 	pendingPaths, seriesWide, err := h.store.ListPendingDeletions(ctx, key, series)
 	if err != nil {
@@ -345,7 +345,7 @@ func (h *Handlers) syncLocked(ctx context.Context, jobID, key, series string, do
 
 	// 3. 自己修復（SYN-04）: documents に含まれ upsertOne が成功し、かつ削除予約が存在する
 	// path のみ、DeleteOrphanRecords（CleanOtherSeries 個別失敗の補償）→ ClearPendingDeletion
-	// の 2 段階で予約を解除する（DES-003 §3.3 [MANDATORY]）。
+	// の 2 段階で予約を解除する（DES-001 §4.5 [MANDATORY]）。
 	// 失敗（failed）した path の予約は保持する（新 record が無く、解除すると旧 orphan の
 	// 回収手段が失われるため）。
 	for _, p := range pendingPaths {

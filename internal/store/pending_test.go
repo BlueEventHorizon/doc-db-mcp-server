@@ -1,5 +1,5 @@
 // pending_test.go は pending_deletions（削除予約）まわりの Store メソッドの単体テスト。
-// DES-003 §3.3（メソッド仕様）・§6（テスト設計）、APP-003 SYN-03/04・GC-01〜04 に対応。
+// DES-001 §4.5（メソッド仕様）・§11（テスト設計）、APP-001 FNC-006 SYN-03/04・GC-01〜04 に対応。
 // sync_documents 経由の統合挙動は internal/mcp 側（TASK-013）で検証するため、ここでは扱わない。
 package store
 
@@ -174,7 +174,7 @@ func TestDetachSeriesFromPath_OrphanedAndPhysicallyRetained(t *testing.T) {
 	// (b) record・chunks・embeddings は物理的に残存（orphan 保持、SYN-04 の自己修復用）
 	recordAlive(t, s, recID, 2)
 
-	// 既知の制約（DES-003 §3.3）: series 未指定の KEY 全体検索には物理削除まで現れ得る
+	// 既知の制約（DES-001 §4.5）: series 未指定の KEY 全体検索には物理削除まで現れ得る
 	if all := searchPaths(t, s, "K", ""); !all["gone.md"] {
 		t.Error("KEY 全体検索（series 未指定）に orphan が現れない（想定と異なる挙動）")
 	}
@@ -321,7 +321,7 @@ func TestClearPendingDeletion_RemovesRowAndIsIdempotent(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// DeleteOrphanRecords — 補償の核心（DES-003 §3.3）
+// DeleteOrphanRecords — 補償の核心（DES-001 §4.5）
 // -----------------------------------------------------------------------
 
 // TestDeleteOrphanRecords_RemovesOrphanOnlyAndUpdatesDocCount は

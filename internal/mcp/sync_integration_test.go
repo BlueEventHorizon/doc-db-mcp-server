@@ -1,7 +1,7 @@
 package mcp
 
 // TASK-013 — sync_documents / get_sync_status / schedule_delete_series 統合テスト
-// (DES-003 §6 統合テスト対象、APP-003 SYN-01〜08 / GC-01 / GC-05)
+// (DES-001 §11 統合テスト対象、APP-001 FNC-006 SYN-01〜08 / GC-01 / GC-05)
 //
 // 検証項目（計画書の 14 項目に対応）:
 //    1. sync_documents が job_id を即座に返しブロックしない（SYN-05）
@@ -10,7 +10,7 @@ package mcp
 //    4. orphan record にのみ削除予約が作られ、再度含まれると解除される（SYN-03/04）
 //    5. 自己修復の API 課金ゼロ検証（Embedder spy、SYN-04）
 //    6. orphan 非リーク検証: 別内容で復活すると旧 orphan が物理削除され record 数 1（DIF-03 経路）
-//    7. 失敗 path の予約保持検証（DES-003 §3.3 ClearPendingDeletion の実行条件）
+//    7. 失敗 path の予約保持検証（DES-001 §4.5 ClearPendingDeletion の実行条件）
 //    8. CleanOtherSeries 失敗補償の検証（人工 orphan の回収 → 予約解除）
 //    9. schedule_delete_series の series 全体予約が sync_documents で解除される（自己修復）
 //   10. schedule_delete_series が即座に削除せず already_scheduled を正しく返す（GC-01）
@@ -267,7 +267,7 @@ func TestGetSyncStatus_SYN06_EvictedJobIDErrors(t *testing.T) {
 
 // TestSyncDocuments_SYN03_DetachedPathDisappearsFromSeriesSearch は、desired-state から
 // 欠落した path が sync 完了直後に当該 series 指定の検索から消えることを検証する。
-// 「削除予約はされたが検索に残り続ける」実装（DES-003 1.5 以前の仕様）への退行を検出する。
+// 「削除予約はされたが検索に残り続ける」実装（旧設計: 即時切り離し導入前）への退行を検出する。
 func TestSyncDocuments_SYN03_DetachedPathDisappearsFromSeriesSearch(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -466,7 +466,7 @@ func TestSyncDocuments_OrphanDoesNotLeakOnDifferentContentResync(t *testing.T) {
 
 // TestSyncDocuments_FailedPathKeepsReservation は、documents に含まれる path の upsertOne が
 // 失敗した場合、当該 path の削除予約が解除されずに残ることを検証する
-// （DES-003 §3.3 ClearPendingDeletion の実行条件: 成功 path のみ解除）。
+// （DES-001 §4.5 ClearPendingDeletion の実行条件: 成功 path のみ解除）。
 func TestSyncDocuments_FailedPathKeepsReservation(t *testing.T) {
 	h := newHarness(t)
 
@@ -508,7 +508,7 @@ func TestSyncDocuments_FailedPathKeepsReservation(t *testing.T) {
 // TestSyncDocuments_CompensatesOrphanBeforeClearingReservation は、削除予約中の path に
 // store 層で直接 orphan record を人工的に用意した状態（CleanOtherSeries が掃除し損ねた状況の
 // 再現）で当該 path を含む sync を実行すると、DeleteOrphanRecords により orphan が回収されて
-// から予約が解除され、同一 key+path に orphan が残らないことを検証する（DES-003 §3.3 2 段階解除）。
+// から予約が解除され、同一 key+path に orphan が残らないことを検証する（DES-001 §4.5 2 段階解除）。
 func TestSyncDocuments_CompensatesOrphanBeforeClearingReservation(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

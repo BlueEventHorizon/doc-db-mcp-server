@@ -37,7 +37,7 @@ import (
 type Handlers struct {
 	// rootCtx はサーバーシャットダウンで cancel される長寿命の root context
 	// （cmd/docdb の signal.NotifyContext 由来）。sync_documents のバックグラウンド
-	// ジョブを MCP リクエスト context から切り離すために使う（DES-003 §3.6 GC-05）。
+	// ジョブを MCP リクエスト context から切り離すために使う（DES-001 §5.4 GC-05）。
 	// TASK-010 の sync_documents 実装で使用する。
 	rootCtx  context.Context
 	store    *store.Store
@@ -46,7 +46,7 @@ type Handlers struct {
 	fetcher  fetcher.Fetcher
 	search   *search.Pipeline
 
-	// syncJobs は sync_documents ジョブの進捗状態（DES-003 §3.4、SYN-06/07）。
+	// syncJobs は sync_documents ジョブの進捗状態（DES-001 §5.4、SYN-06/07）。
 	// syncJobsMu で保護する。メモリ保持のみで永続化しない。実装は sync.go。
 	syncJobsMu sync.Mutex
 	syncJobs   map[string]*SyncJobStatus
@@ -360,7 +360,7 @@ func (h *Handlers) handleUpsert(
 	}()
 
 	// KEY 単位排他（SYN-08）: 複数ドキュメント分の upsertOne 呼び出しを含む
-	// ループ全体を 1 回の WithKeyLock で囲む（DES-003 §3.5.2。fn 内で再取得禁止）。
+	// ループ全体を 1 回の WithKeyLock で囲む（DES-001 §4.3。fn 内で再取得禁止）。
 	if lerr := h.store.WithKeyLock(ctx, in.Key, func() error {
 		for _, doc := range in.Documents {
 			if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
@@ -554,7 +554,7 @@ func (h *Handlers) handleDelete(
 	}()
 
 	// KEY 単位排他（SYN-08）: 存在チェック（DEL-02 の warning 構築）から DeleteSeries までを
-	// 1 つの WithKeyLock で囲む（DES-003 §3.5.2）。チェックをロック外に置くと、sync_documents が
+	// 1 つの WithKeyLock で囲む（DES-001 §4.3）。チェックをロック外に置くと、sync_documents が
 	// ロック保持中に作成する path を「存在しない」と誤判定してブロックせず即完了し、削除要求を
 	// 取りこぼす（TOCTOU）。
 	var warnings []string
@@ -618,7 +618,7 @@ func (h *Handlers) handleDeleteSeries(
 			"removed_records", out.RemovedRecords, "updated_records", out.UpdatedRecords)
 	}()
 
-	// KEY 単位排他（SYN-08）: DeleteSeriesAll 呼び出しを WithKeyLock で囲む（DES-003 §3.5.2）。
+	// KEY 単位排他（SYN-08）: DeleteSeriesAll 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
 	var removed, updated int
 	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
 		var werr error
@@ -788,7 +788,7 @@ func (h *Handlers) handleDeleteIndex(
 		logHandlerDone("delete_index done", err, start, "key", in.Key, "deleted", out.Deleted)
 	}()
 
-	// KEY 単位排他（SYN-08）: DeleteKey 呼び出しを WithKeyLock で囲む（DES-003 §3.5.2）。
+	// KEY 単位排他（SYN-08）: DeleteKey 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
 	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
 		return h.store.DeleteKey(ctx, in.Key)
 	}); derr != nil {

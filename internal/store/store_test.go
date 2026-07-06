@@ -790,7 +790,7 @@ func TestConcurrent_UpsertSerializedByMutex(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// WithKeyLock — KEY 単位排他ロック (DES-003 §3.5, SYN-08 / GC-05)
+// WithKeyLock — KEY 単位排他ロック (DES-001 §4.3, SYN-08 / GC-05)
 // -----------------------------------------------------------------------
 
 // テストが hang した場合の全体保護タイムアウト。
@@ -828,7 +828,7 @@ func waitForKeyLockRef(t *testing.T, s *Store, key string, want int) {
 }
 
 // TestWithKeyLock_SameKeyBlocks は goroutine A がロック保持中、
-// 同一 key の goroutine B が A の fn 完了までブロックされることを検証する（DES-003 §3.5.1 の核心）。
+// 同一 key の goroutine B が A の fn 完了までブロックされることを検証する（DES-001 §4.3 の核心）。
 func TestWithKeyLock_SameKeyBlocks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -886,7 +886,7 @@ func TestWithKeyLock_SameKeyBlocks(t *testing.T) {
 }
 
 // TestWithKeyLock_DifferentKeysDoNotBlock は異なる key への WithKeyLock が
-// 互いにブロックしないことを検証する（並行度が KEY 単位を超えて落ちていないこと。DES-003 §6）。
+// 互いにブロックしないことを検証する（並行度が KEY 単位を超えて落ちていないこと。DES-001 §11）。
 func TestWithKeyLock_DifferentKeysDoNotBlock(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -996,7 +996,7 @@ func TestWithKeyLock_CancelWhileWaiting(t *testing.T) {
 }
 
 // TestWithKeyLock_EntryRemovedWhenRefZero は参照カウントが 0 になったエントリが
-// keyLocks map から削除されることを検証する（メモリリーク防止の回帰テスト。DES-003 §3.5.3）。
+// keyLocks map から削除されることを検証する（メモリリーク防止の回帰テスト。DES-001 §4.3）。
 func TestWithKeyLock_EntryRemovedWhenRefZero(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
