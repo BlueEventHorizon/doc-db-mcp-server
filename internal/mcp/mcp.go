@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -34,15 +35,28 @@ import (
 
 // Handlers は MCP ツール群が共有する依存性。
 type Handlers struct {
+	// rootCtx はサーバーシャットダウンで cancel される長寿命の root context
+	// （cmd/docdb の signal.NotifyContext 由来）。sync_documents のバックグラウンド
+	// ジョブを MCP リクエスト context から切り離すために使う（DES-001 §5.4 GC-05）。
+	// TASK-010 の sync_documents 実装で使用する。
+	rootCtx  context.Context
 	store    *store.Store
 	chunker  *chunker.Chunker
 	embedder embedder.Embedder
 	fetcher  fetcher.Fetcher
 	search   *search.Pipeline
+
+	// syncJobs は sync_documents ジョブの進捗状態（DES-001 §5.4、SYN-06/07）。
+	// syncJobsMu で保護する。メモリ保持のみで永続化しない。実装は sync.go。
+	syncJobsMu sync.Mutex
+	syncJobs   map[string]*SyncJobStatus
 }
 
 // New は Handlers を初期化する。
+// rootCtx にはサーバーシャットダウンで cancel される長寿命の root context
+// （expiry.Worker.Start に渡すものと同じ）を渡すこと（GC-05）。
 func New(
+	rootCtx context.Context,
 	st *store.Store,
 	ch *chunker.Chunker,
 	emb embedder.Embedder,
@@ -50,15 +64,19 @@ func New(
 	sp *search.Pipeline,
 ) *Handlers {
 	return &Handlers{
+		rootCtx:  rootCtx,
 		store:    st,
 		chunker:  ch,
 		embedder: emb,
 		fetcher:  fe,
 		search:   sp,
+		syncJobs: make(map[string]*SyncJobStatus),
 	}
 }
 
-// Register は MCP ツール 7 種を MCP サーバーに登録する（FNC-001/002/003/004 + delete_series）。
+// Register は MCP ツール 10 種を MCP サーバーに登録する
+// （FNC-001/002/003/004 + delete_series + FNC-006 の sync_documents / get_sync_status /
+// schedule_delete_series）。
 //
 // 各ツールの description は AI consumer (skill / agent) が tools/list だけで
 // 使い方を理解できる粒度で記述する。概念モデル (KEY/series)、いつ使うか、
@@ -200,6 +218,80 @@ delete_index は KEY 全体を消す。プロジェクト終了時のクリー�
 
 長期保持したい重要 KEY や、逆に短期間で自動廃棄したいテンポラリ KEY の制御に使う。`,
 	}, h.handleManageIndex)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "sync_documents",
+		Description: `指定 KEY+series のインデックスを desired-state (documents の完全な現在状態) に同期する。
+
+【upsert_documents との違い】
+  upsert_documents は追加専用 (クライアント側で削除されたファイルを検出できない)。
+  sync_documents は documents を「当該 key・series の完全な現在ファイル一覧」とみなし、
+  一覧に含まれない既存 path を series から即時に切り離す (当該 series 指定の検索から
+  直ちに消える)。差分管理 (hash 一致で embedding 再利用) は upsert_documents と同一。
+
+【動作 (非同期ジョブ)】
+  1. 一意な job_id を即座に返す (処理完了を待たない)
+  2. サーバー内部で処理を継続: documents を差分処理 → 一覧に無い既存 path を
+     series から切り離し → どの series からも参照されなくなった record は
+     物理削除予約として記録 (物理削除はサーバー次回起動時)
+  3. 進捗は get_sync_status(job_id) でポーリングする
+
+【自己修復】
+  削除予約済みの path が再度 documents に含まれ処理に成功すると、予約は自動解除される。
+  内容が不変なら embedding は再計算されない (API 課金ゼロ)。
+  schedule_delete_series による series 全体の削除予約も、この series への
+  sync_documents 呼び出しで解除される。
+
+【注意】
+  - documents は当該 key・series の完全な現在状態であること (クライアントの責務)。
+    部分的なリストを送ると、含まれない path が series から切り離される
+  - 同一 KEY への他の書き込み操作は本ジョブ完了までブロックされる (拒否ではない)
+  - ジョブ状態はメモリ保持のみ。サーバー再起動で失われるが、再度 sync_documents を
+    呼べば冪等に補われる`,
+	}, h.handleSyncDocuments)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "get_sync_status",
+		Description: `sync_documents ジョブの進捗・完了有無をポーリングする。
+
+【入力】
+  job_id: sync_documents が返したジョブ識別子
+
+【出力の解釈】
+  - status: "running" = 処理中 / "done" = 完了 / "failed" = 失敗
+    (サーバーシャットダウンによる中断も failed になる)
+  - processed / skipped / failed: upsert_documents と同じ意味の件数
+    (skipped = hash 一致で embedding 再利用、API 課金ゼロ)
+  - deleted_paths_marked: desired-state から欠落し物理削除予約された path 数
+  - errors: 個別ドキュメントの失敗詳細。status="done" でも errors が
+    非空なら部分失敗あり (silent failure 禁止方針により全て観測可能)
+
+【エラー】
+  存在しない job_id はエラーになる。原因は未発行・完了済みジョブの保持上限
+  (100 件) 超過による追い出し・サーバー再起動によるジョブ状態消失のいずれか。
+  ジョブ状態が失われていても、再度 sync_documents を呼べば冪等に補われる。`,
+	}, h.handleGetSyncStatus)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "schedule_delete_series",
+		Description: `指定 KEY+series を即座に削除せず、削除予約として記録する (branch 削除向け)。
+
+【delete_series (即時削除) との違い】
+  - delete_series: 呼んだ時点で record / チャンク / ベクトルを物理削除する
+  - schedule_delete_series: 予約を記録するだけで実データには一切触れない。
+    物理削除はサーバー次回起動時に行われる (それまで完全に無害)
+
+【典型ユースケース】
+  Git branch の削除を検知した時点で呼ぶ。誤操作でも次回起動前なら実害ゼロで、
+  同一 KEY+series へ sync_documents を呼べば予約は自動解除される (自己修復)。
+
+【出力の解釈】
+  - already_scheduled: 呼び出し時点で既に同一 series の削除予約が存在した場合 true
+    (冪等な再呼び出しの判別用。true でもエラーではない)
+
+存在しない series を指定してもエラーにならない (予約行が記録され、起動時スイープが
+0 件処理で無害に消化する)。`,
+	}, h.handleScheduleDeleteSeries)
 }
 
 // -----------------------------------------------------------------------
@@ -267,11 +359,20 @@ func (h *Handlers) handleUpsert(
 			"processed", out.Processed, "skipped", out.Skipped, "failed", out.Failed)
 	}()
 
-	for _, doc := range in.Documents {
-		if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
-			slog.Warn("upsert: document failed", "path", doc.Path, "error", uerr)
-			continue
+	// KEY 単位排他（SYN-08）: 複数ドキュメント分の upsertOne 呼び出しを含む
+	// ループ全体を 1 回の WithKeyLock で囲む（DES-001 §4.3。fn 内で再取得禁止）。
+	if lerr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		for _, doc := range in.Documents {
+			if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
+				slog.Warn("upsert: document failed", "path", doc.Path, "error", uerr)
+				continue
+			}
 		}
+		return nil
+	}); lerr != nil {
+		// ロック取得待ち中の ctx キャンセル等。silent failure 禁止のため caller に伝播する。
+		err = fmt.Errorf("key lock: %w", lerr)
+		return nil, out, err
 	}
 
 	return nil, out, nil
@@ -452,30 +553,39 @@ func (h *Handlers) handleDelete(
 			"key", in.Key, "series", in.Series, "deleted", out.Deleted)
 	}()
 
-	// 事前に存在チェックして warning を構築（DEL-02）
+	// KEY 単位排他（SYN-08）: 存在チェック（DEL-02 の warning 構築）から DeleteSeries までを
+	// 1 つの WithKeyLock で囲む（DES-001 §4.3）。チェックをロック外に置くと、sync_documents が
+	// ロック保持中に作成する path を「存在しない」と誤判定してブロックせず即完了し、削除要求を
+	// 取りこぼす（TOCTOU）。
 	var warnings []string
-	existing := make([]string, 0, len(in.Paths))
-	for _, p := range in.Paths {
-		found, herr := h.store.HasRecord(ctx, in.Key, p)
-		if herr != nil {
-			err = fmt.Errorf("check path %q: %w", p, herr)
-			return nil, DeleteResult{}, err
+	var deleted int
+	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		existing := make([]string, 0, len(in.Paths))
+		for _, p := range in.Paths {
+			found, herr := h.store.HasRecord(ctx, in.Key, p)
+			if herr != nil {
+				return fmt.Errorf("check path %q: %w", p, herr)
+			}
+			if !found {
+				warnings = append(warnings, fmt.Sprintf("path %q は存在しないためスキップ", p))
+				continue
+			}
+			existing = append(existing, p)
 		}
-		if !found {
-			warnings = append(warnings, fmt.Sprintf("path %q は存在しないためスキップ", p))
-			continue
+		if len(existing) == 0 {
+			return nil
 		}
-		existing = append(existing, p)
+		if serr := h.store.DeleteSeries(ctx, in.Key, in.Series, existing); serr != nil {
+			return serr
+		}
+		deleted = len(existing)
+		return nil
+	}); derr != nil {
+		err = fmt.Errorf("delete: %w", derr)
+		return nil, DeleteResult{}, err
 	}
 
-	if len(existing) > 0 {
-		if derr := h.store.DeleteSeries(ctx, in.Key, in.Series, existing); derr != nil {
-			err = fmt.Errorf("delete: %w", derr)
-			return nil, DeleteResult{}, err
-		}
-	}
-
-	return nil, DeleteResult{Deleted: len(existing), Warnings: warnings}, nil
+	return nil, DeleteResult{Deleted: deleted, Warnings: warnings}, nil
 }
 
 // -----------------------------------------------------------------------
@@ -508,8 +618,13 @@ func (h *Handlers) handleDeleteSeries(
 			"removed_records", out.RemovedRecords, "updated_records", out.UpdatedRecords)
 	}()
 
-	removed, updated, derr := h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
-	if derr != nil {
+	// KEY 単位排他（SYN-08）: DeleteSeriesAll 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
+	var removed, updated int
+	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		var werr error
+		removed, updated, werr = h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
+		return werr
+	}); derr != nil {
 		err = fmt.Errorf("delete_series: %w", derr)
 		return nil, DeleteSeriesResult{}, err
 	}
@@ -673,7 +788,10 @@ func (h *Handlers) handleDeleteIndex(
 		logHandlerDone("delete_index done", err, start, "key", in.Key, "deleted", out.Deleted)
 	}()
 
-	if derr := h.store.DeleteKey(ctx, in.Key); derr != nil {
+	// KEY 単位排他（SYN-08）: DeleteKey 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
+	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		return h.store.DeleteKey(ctx, in.Key)
+	}); derr != nil {
 		err = fmt.Errorf("delete key: %w", derr)
 		return nil, DeleteIndexResult{}, err
 	}

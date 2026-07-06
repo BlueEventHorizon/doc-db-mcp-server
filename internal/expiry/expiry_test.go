@@ -22,6 +22,11 @@ type mockStore struct {
 	totalChunksErr  error
 	listLRUErr      error
 	deleteErrForKey map[string]error
+	lockErrForKey   map[string]error // WithKeyLock 自体を失敗させる（fn は実行しない）
+
+	// calls は WithKeyLock / DeleteKey の呼び出し順序を記録する
+	// （DeleteKey が WithKeyLock 経由であることの検証用、DES-001 §11）。
+	calls []string
 }
 
 func (m *mockStore) ListExpiredKeysByTTL(_ context.Context, _ int) ([]string, error) {
@@ -34,11 +39,21 @@ func (m *mockStore) ListKeysByLRU(_ context.Context) ([]store.KeyLRUInfo, error)
 	return m.lruKeys, m.listLRUErr
 }
 func (m *mockStore) DeleteKey(_ context.Context, key string) error {
+	m.calls = append(m.calls, "DeleteKey:"+key)
 	if err, ok := m.deleteErrForKey[key]; ok {
 		return err
 	}
 	m.deletedKeys = append(m.deletedKeys, key)
 	return nil
+}
+func (m *mockStore) WithKeyLock(_ context.Context, key string, fn func() error) error {
+	m.calls = append(m.calls, "WithKeyLock:"+key)
+	if err, ok := m.lockErrForKey[key]; ok {
+		return err
+	}
+	err := fn()
+	m.calls = append(m.calls, "Unlock:"+key)
+	return err
 }
 
 // -----------------------------------------------------------------------
@@ -218,6 +233,103 @@ func TestRunLRU_TotalCountError_Propagates(t *testing.T) {
 	w := New(m, Config{MaxChunks: 100})
 	if err := w.runLRU(context.Background()); err == nil {
 		t.Fatal("want error when TotalChunkCount fails")
+	}
+}
+
+// -----------------------------------------------------------------------
+// WithKeyLock 経由の DeleteKey（DES-001 §4.3 SYN-08）
+// -----------------------------------------------------------------------
+
+func TestRunTTL_DeleteKeyIsCalledInsideWithKeyLock(t *testing.T) {
+	m := &mockStore{expiredKeys: []string{"K1", "K2"}}
+	w := New(m, Config{TTLDays: 30})
+
+	if err := w.runTTL(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// DeleteKey は必ず WithKeyLock 取得 → DeleteKey → 解放 の順で呼ばれること
+	want := []string{
+		"WithKeyLock:K1", "DeleteKey:K1", "Unlock:K1",
+		"WithKeyLock:K2", "DeleteKey:K2", "Unlock:K2",
+	}
+	if !equalSlice(m.calls, want) {
+		t.Errorf("calls = %v, want %v", m.calls, want)
+	}
+}
+
+func TestRunLRU_DeleteKeyIsCalledInsideWithKeyLock(t *testing.T) {
+	m := &mockStore{
+		totalChunks: 150,
+		lruKeys: []store.KeyLRUInfo{
+			{Key: "K1", ChunkCount: 30},
+			{Key: "K2", ChunkCount: 40},
+		},
+	}
+	w := New(m, Config{MaxChunks: 100})
+
+	if err := w.runLRU(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"WithKeyLock:K1", "DeleteKey:K1", "Unlock:K1",
+		"WithKeyLock:K2", "DeleteKey:K2", "Unlock:K2",
+	}
+	if !equalSlice(m.calls, want) {
+		t.Errorf("calls = %v, want %v", m.calls, want)
+	}
+}
+
+func TestRunTTL_WithKeyLockError_RecordedAndContinues(t *testing.T) {
+	// WithKeyLock 自体の失敗（ロック取得失敗）も DeleteKey 失敗と同様に
+	// ログ + Stats 記録 + continue で扱われること
+	m := &mockStore{
+		expiredKeys:   []string{"K1", "K2", "K3"},
+		lockErrForKey: map[string]error{"K2": errors.New("lock fail")},
+	}
+	w := New(m, Config{TTLDays: 30})
+
+	if err := w.runTTL(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := m.deletedKeys, []string{"K1", "K3"}; !equalSlice(got, want) {
+		t.Errorf("deleted = %v, want %v", got, want)
+	}
+	stats := w.Stats()
+	if len(stats.LastKeyErrors) != 1 {
+		t.Fatalf("LastKeyErrors len = %d, want 1", len(stats.LastKeyErrors))
+	}
+	got := stats.LastKeyErrors[0]
+	if got.Key != "K2" || got.Phase != "ttl" || got.Err == "" {
+		t.Errorf("LastKeyErrors[0] = %+v, want {Key=K2 Phase=ttl Err=...}", got)
+	}
+}
+
+func TestRunLRU_WithKeyLockError_RecordedAndContinues(t *testing.T) {
+	m := &mockStore{
+		totalChunks: 150,
+		lruKeys: []store.KeyLRUInfo{
+			{Key: "K1", ChunkCount: 100},
+			{Key: "K2", ChunkCount: 30},
+			{Key: "K3", ChunkCount: 30},
+		},
+		lockErrForKey: map[string]error{"K1": errors.New("lock fail")},
+	}
+	w := New(m, Config{MaxChunks: 100})
+
+	if err := w.runLRU(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// K1 のロック失敗で total=150 のまま → K2, K3 削除で 90 → 上限以下
+	if got, want := m.deletedKeys, []string{"K2", "K3"}; !equalSlice(got, want) {
+		t.Errorf("deleted = %v, want %v", got, want)
+	}
+	stats := w.Stats()
+	if len(stats.LastKeyErrors) != 1 {
+		t.Fatalf("LastKeyErrors len = %d, want 1", len(stats.LastKeyErrors))
+	}
+	got := stats.LastKeyErrors[0]
+	if got.Key != "K1" || got.Phase != "lru" || got.Err == "" {
+		t.Errorf("LastKeyErrors[0] = %+v, want {Key=K1 Phase=lru Err=...}", got)
 	}
 }
 
