@@ -393,8 +393,41 @@ Layer 2 の AI agent が **本文を読んで判定** する設計なので、�
 
 ---
 
+## 8. 独自クライアント / SKILL を作る
+
+doc-db は「クライアントが自分の文書一覧を管理し、サーバーへ同期・検索する」設計のため、
+運用にはクライアント実装が必要になる。本リポジトリの
+[`.claude/skills/`](../.claude/skills/README.md) に **Claude Code 用 SKILL 5 種の
+参考実装**（Python 3.9+ stdlib のみ・MCP 登録不要）を同梱している。
+独自クライアントを作る場合の基本形は次の 3 段:
+
+```
+1. 一覧解決   : 自分の管理対象ファイルの完全な一覧を作る
+                (参考実装: resolve_docs.py が .doc_structure.yaml から解決)
+2. 同期       : sync_documents に一覧全体を渡す (local_path 経路なら payload は小さい)。
+                job_id が即時返る
+3. 完了待ち   : get_sync_status(job_id) を done/failed までポーリング
+                (参考実装: docdb_client.py の sync_and_wait / run_sync.py)
+```
+
+実装上の要点:
+
+- **MCP handshake**: Streamable HTTP は `initialize` → `notifications/initialized` →
+  `tools/call` の順で、`Mcp-Session-Id` ヘッダをセッション維持に使う。stdlib (urllib)
+  だけで書ける最小実装が `docdb_client.py` にある（SSE / JSON 両レスポンス対応込み）
+- **一覧は必ず「完全な現在状態」を渡す**: sync_documents は一覧に無い既存 path を
+  series から切り離す。部分的な一覧を渡すと残りが削除扱いになる（部分投入をしたい
+  場合は upsert_documents を使う）。全件渡しても DIF-02 により課金は差分のみ
+- **空一覧のガード**: 一覧解決の設定ミスで空リストを渡すと全 path 切り離しになる。
+  参考実装 (`run_sync.py`) は 0 件時に同期しない安全弁を入れている
+- **タイムアウト設計**: sync のジョブはサーバー側で継続するため、ポーリングを打ち切っても
+  再実行すれば冪等に収束する。クライアント側は気軽に中断してよい
+- **branch 連動**: KEY を「プロジェクト名 + 種別」、series を「git branch 名」で自動決定
+  すると、branch 切替・削除と自然に連動する（参考実装の命名規則）
+
 ## 関連ドキュメント
 
+- [同梱 SKILL 参考実装](../.claude/skills/README.md) — 配布方法・`.doc_structure.yaml` の書式
 - [APP-001 要件定義書](specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md) — 要件詳細
 - [DES-001 設計書](specs/base/design/DES-001_doc_db_mcp_server_design.md) — 内部設計詳細
 - [README.md](../README.md) — install / build / 開発者向け情報

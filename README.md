@@ -312,11 +312,39 @@ record は物理削除予約として記録され、次回サーバー起動時�
 同一内容の再 sync で Embedding 再計算なしに復元できる = 自己修復）。branch 削除の検知時は
 `schedule_delete_series` で series 全体を予約できる（即時削除しない・再 sync で取り消し可能）。
 
+## AI エージェントからの利用（同梱 SKILL 参考実装）
+
+doc-db は「クライアント側が自分の文書一覧を管理し、サーバーへ同期・検索する」設計のため、
+実際の運用にはクライアント実装が必要になる。本リポジトリの
+[`.claude/skills/`](.claude/skills/README.md) に **Claude Code 用の SKILL 5 種を
+参考実装として同梱**している:
+
+| SKILL                      | 役割                                                                     |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `/update-db-specs`         | 仕様文書一式を desired-state 同期（追加・更新・**削除に追従**。v0.2.0+） |
+| `/update-db-rules`         | ルール文書一式を同上                                                     |
+| `/query-db-specs`          | 仕様文書を 3 signal 検索                                                 |
+| `/query-db-rules`          | ルール文書を 3 signal 検索                                               |
+| `/delete-db-series <name>` | 指定 series（Git branch 等）を一括除去（branch cleanup）                 |
+
+特徴:
+
+- **Python 3.9+ stdlib のみ**で MCP Streamable HTTP を直接叩く（Claude Code への
+  MCP 登録も外部パッケージも不要）
+- 対象文書は各プロジェクトのルートに置く **`.doc_structure.yaml`**（specs / rules の
+  ディレクトリ定義）から解決する。KEY・series は「プロジェクト名 + git branch」で自動決定
+- 5 ディレクトリを rsync すれば**他プロジェクトでもそのまま動く**
+
+セットアップ・`.doc_structure.yaml` の書式・独自クライアントの作り方は
+[`.claude/skills/README.md`](.claude/skills/README.md) と
+[`docs/AI_INTEGRATION_GUIDE.md`](docs/AI_INTEGRATION_GUIDE.md) を参照。
+
 ## ドキュメント
 
 | 文書                                                               | 内容                                                                                                           |
 | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
 | **[`docs/AI_INTEGRATION_GUIDE.md`](docs/AI_INTEGRATION_GUIDE.md)** | **AI skill / agent 向け統合ガイド（PHIL-01 二層アーキ・mode 使い分け・origin_signals 解釈・典型フロー・FAQ）** |
+| [`.claude/skills/README.md`](.claude/skills/README.md)             | 同梱 SKILL 参考実装のガイド（配布方法・`.doc_structure.yaml` の書式）                                          |
 | `docs/specs/base/requirements/APP-001`                             | 基本機能要件定義書                                                                                             |
 | `docs/specs/base/design/DES-001`                                   | 基本設計書（アーキテクチャ・データモデル・3 signal 検索・YAML 設定）                                           |
 | `docs/specs/install/requirements/APP-002`                          | インストール要件定義書（Homebrew 自家 tap）                                                                    |
