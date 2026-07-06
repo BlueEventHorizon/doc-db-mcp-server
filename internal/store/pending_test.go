@@ -567,6 +567,144 @@ func TestSweepPendingDeletions_SharedHashRecordSurvives(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
+// DeleteKey / DeleteSeriesAll — pending_deletions の同一 tx 解除（stale 予約の残留防止）
+// -----------------------------------------------------------------------
+
+// TestDeleteKey_ClearsPendingDeletions は、DeleteKey が同一 tx で当該 key の
+// pending_deletions（series 全体予約・path 単位予約の両方）を除去し、別 key の
+// 予約行には触れないことを検証する。除去しない実装への退行は、KEY 再作成後の
+// 起動時スイープが stale 予約で新データを破壊する事故につながる。
+func TestDeleteKey_ClearsPendingDeletions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 削除対象 key の実データ + series 全体予約 + path 単位予約
+	if _, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "a.md", ContentHash: "h_a", Series: "s1",
+		Chunks: makeChunks("a"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkSeriesForDeletion(ctx, "K", "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDocumentForDeletion(ctx, "K", "s1", "a.md"); err != nil {
+		t.Fatal(err)
+	}
+	// 別 key の予約（残るべきノイズ行）
+	if _, err := s.MarkSeriesForDeletion(ctx, "OTHER", "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDocumentForDeletion(ctx, "OTHER", "s1", "noise.md"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteKey(ctx, "K"); err != nil {
+		t.Fatalf("DeleteKey: %v", err)
+	}
+
+	// 当該 key の予約行は series 全体・path 単位とも 0 件
+	if n := countRows(t, s, `SELECT COUNT(*) FROM pending_deletions WHERE key='K'`); n != 0 {
+		t.Errorf("DeleteKey 後も key=K の予約行が %d 件残存（stale 予約の残留）", n)
+	}
+	// 別 key の予約行は無傷
+	if n := countRows(t, s, `SELECT COUNT(*) FROM pending_deletions WHERE key='OTHER'`); n != 2 {
+		t.Errorf("別 key の予約行数 = %d, want 2（DeleteKey が他 key の予約に触れた）", n)
+	}
+}
+
+// TestDeleteSeriesAll_ClearsPendingDeletions は、DeleteSeriesAll が同一 tx で当該
+// key+series の pending_deletions（series 全体予約・path 単位予約の両方）を除去し、
+// 同一 key の別 series の予約行には触れないことを検証する。
+func TestDeleteSeriesAll_ClearsPendingDeletions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// s1 / s2 それぞれに実データ + series 全体予約 + path 単位予約
+	for _, sr := range []string{"s1", "s2"} {
+		if _, err := s.UpsertRecord(ctx, Record{
+			Key: "K", Path: sr + ".md", ContentHash: "h_" + sr, Series: sr,
+			Chunks: makeChunks(sr),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.MarkSeriesForDeletion(ctx, "K", sr); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkDocumentForDeletion(ctx, "K", sr, sr+".md"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, _, err := s.DeleteSeriesAll(ctx, "K", "s1"); err != nil {
+		t.Fatalf("DeleteSeriesAll: %v", err)
+	}
+
+	// s1 の予約行は series 全体・path 単位とも 0 件
+	if n := countRows(t, s,
+		`SELECT COUNT(*) FROM pending_deletions WHERE key='K' AND series='s1'`); n != 0 {
+		t.Errorf("DeleteSeriesAll 後も series=s1 の予約行が %d 件残存（stale 予約の残留）", n)
+	}
+	// s2 の予約行は無傷
+	if n := countRows(t, s,
+		`SELECT COUNT(*) FROM pending_deletions WHERE key='K' AND series='s2'`); n != 2 {
+		t.Errorf("series=s2 の予約行数 = %d, want 2（DeleteSeriesAll が別 series の予約に触れた）", n)
+	}
+}
+
+// TestSweep_StaleSeriesWideReservation_DoesNotDestroyRecreatedData は最重要回帰テスト:
+// series 全体の削除予約 → DeleteKey（delete_index 相当）→ 同一 key・series への record
+// 再投入、の後に起動時スイープを実行しても再投入データが破壊されないことを検証する。
+// 修正前は DeleteKey が pending_deletions を除去しなかったため、stale な series 全体予約が
+// スイープ時に DeleteSeriesAll を発動し、再投入した新データを丸ごと消していた（データ消失）。
+func TestSweep_StaleSeriesWideReservation_DoesNotDestroyRecreatedData(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// (a) 旧データ投入 → series 全体予約 → DeleteKey（delete_index 相当）
+	if _, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "doc.md", ContentHash: "h_v1", Series: "s",
+		Chunks: makeChunks("v1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkSeriesForDeletion(ctx, "K", "s"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteKey(ctx, "K"); err != nil {
+		t.Fatalf("DeleteKey: %v", err)
+	}
+
+	// (b) 同一 key・series へ record を再投入（KEY の再作成）
+	newID, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "doc.md", ContentHash: "h_v2", Series: "s",
+		Chunks: makeChunks("v2 one", "v2 two"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// (c) 起動時スイープ（stale 予約が残っていればここで新データが消える）
+	processed, errs := s.SweepPendingDeletions(ctx)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want 空", errs)
+	}
+	if processed != 0 {
+		t.Errorf("processed = %d, want 0（DeleteKey で予約が除去済みのはず）", processed)
+	}
+
+	// 再投入した record・chunks・embeddings が無傷で残り、検索にも現れる
+	recordAlive(t, s, newID, 2)
+	if !searchPaths(t, s, "K", "s")["doc.md"] {
+		t.Error("スイープ後、再投入した doc.md が series=s の検索から消えた（stale 予約による新データ破壊）")
+	}
+	// pending_deletions は 0 件
+	if n := countRows(t, s, `SELECT COUNT(*) FROM pending_deletions`); n != 0 {
+		t.Errorf("pending_deletions に %d 行残存", n)
+	}
+}
+
 // TestSweepPendingDeletions_PartialFailureContinues は個別失敗時にログ記録の上で
 // 処理を継続することを検証する（silent failure 禁止方針、GC-04）。
 // SQLite トリガーで特定 path の record 削除だけを失敗させ、他の予約行の処理と

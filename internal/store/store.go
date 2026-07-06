@@ -880,6 +880,15 @@ func (s *Store) DeleteSeriesAll(ctx context.Context, key, series string) (remove
 		}
 	}
 
+	// 当該 key+series の削除予約（path 単位・series 全体センチネルの両方）を同一 tx で除去する。
+	// series 自体が消えるため予約は無意味になり、残すと同名 series 再作成後の起動時スイープが
+	// series-wide 予約（path=''）経由で新データを破壊し得る（stale 予約の発生源遮断）。
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM pending_deletions WHERE key=? AND series=?`, key, series,
+	); err != nil {
+		return 0, 0, fmt.Errorf("store.DeleteSeriesAll: clear pending deletions: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("store.DeleteSeriesAll: commit: %w", err)
 	}
@@ -933,6 +942,13 @@ func (s *Store) DeleteKey(ctx context.Context, key string) (retErr error) {
 	// keys レコードを削除
 	if _, err := tx.ExecContext(ctx, `DELETE FROM keys WHERE key=?`, key); err != nil {
 		return fmt.Errorf("store.DeleteKey: delete key: %w", err)
+	}
+
+	// 当該 KEY の削除予約をすべて同一 tx で除去する。KEY ごと消える以上、予約は無意味になり、
+	// 残すと同名 KEY 再作成後の起動時スイープが stale 予約（特に series-wide の path='' 行）
+	// 経由で新データを破壊し得る。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pending_deletions WHERE key=?`, key); err != nil {
+		return fmt.Errorf("store.DeleteKey: clear pending deletions: %w", err)
 	}
 
 	return tx.Commit()

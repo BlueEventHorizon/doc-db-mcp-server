@@ -897,3 +897,140 @@ func startGatedSync2(t *testing.T, h *testHarness, entered <-chan struct{}, reqC
 	}
 	return jobID
 }
+
+// -----------------------------------------------------------------------
+// 外部レビュー対応（P2）: 空 documents を正当な desired-state として受理する
+// -----------------------------------------------------------------------
+
+// TestSyncDocuments_EmptyDesiredState は、documents の空リストが「この series に現存
+// ファイルがない」という正当な desired-state として受理されることを検証する（SYN-01）。
+// 空リスト sync で既存 path が全て series から切り離されて orphan 予約が作られ、
+// その後同一内容で再 sync すると API 課金ゼロ（Embedder 呼び出し 0 回）で復活・
+// 予約解除される自己修復の一連を確認する。空リスト拒否の実装への退行を検出する。
+func TestSyncDocuments_EmptyDesiredState(t *testing.T) {
+	h := newHarness(t)
+
+	syncAndWaitDone(t, h, "K", "s", []UpsertDocument{
+		{Path: "a.md", Content: "# H\nalpha"},
+		{Path: "b.md", Content: "# H\nbeta"},
+	})
+
+	// 空 documents で再 sync → 拒否されず done になり、既存 2 path が全て切り離される
+	out := syncAndWaitDone(t, h, "K", "s", []UpsertDocument{})
+	if out.Processed != 0 || out.Skipped != 0 || out.Failed != 0 || out.DeletedPathsMarked != 2 {
+		t.Errorf("空 sync = %+v, want DeletedPathsMarked=2 その他 0", out)
+	}
+
+	// series 指定の検索に両 path とも現れない
+	paths := chunkPathSet(t, h, "K", "s")
+	if paths["a.md"] || paths["b.md"] {
+		t.Errorf("空 sync 後も series 指定検索に path が残っている: %v", paths)
+	}
+
+	// orphan 予約が両 path に作られている（series 全体予約ではない）
+	pPaths, seriesWide := pendingFor(t, h, "K", "s")
+	pSet := make(map[string]bool, len(pPaths))
+	for _, p := range pPaths {
+		pSet[p] = true
+	}
+	if len(pPaths) != 2 || !pSet["a.md"] || !pSet["b.md"] {
+		t.Errorf("pending paths = %v, want [a.md b.md]", pPaths)
+	}
+	if seriesWide {
+		t.Error("series 全体予約が誤って作られている")
+	}
+
+	// 同一内容で再 sync → Embedder 呼び出しゼロのまま両 path が復活し予約が解除される（SYN-04）
+	spy := &spyEmbedder{inner: h.embedder}
+	h.handlers.embedder = spy
+	out = syncAndWaitDone(t, h, "K", "s", []UpsertDocument{
+		{Path: "a.md", Content: "# H\nalpha"},
+		{Path: "b.md", Content: "# H\nbeta"},
+	})
+	if calls := atomic.LoadInt32(&spy.calls); calls != 0 {
+		t.Errorf("自己修復で Embedder が %d 回呼ばれた（API 課金ゼロであるべき）", calls)
+	}
+	if out.Skipped != 2 || out.Processed != 0 || out.Failed != 0 {
+		t.Errorf("復活 sync = %+v, want Skipped=2", out)
+	}
+	paths = chunkPathSet(t, h, "K", "s")
+	if !paths["a.md"] || !paths["b.md"] {
+		t.Errorf("自己修復後も series 指定検索に path が現れない: %v", paths)
+	}
+	if pPaths, _ := pendingFor(t, h, "K", "s"); len(pPaths) != 0 {
+		t.Errorf("自己修復後も削除予約が残っている: %v", pPaths)
+	}
+}
+
+// -----------------------------------------------------------------------
+// 外部レビュー対応（P1）: handleDelete の存在チェックを WithKeyLock 内に移動（TOCTOU）
+// -----------------------------------------------------------------------
+
+// TestDeleteDocuments_BlocksOnSyncCreatingPath は TOCTOU 回帰テスト:
+// sync_documents が新規 path "late.md" を処理中（WithKeyLock 保持中）に同一 KEY へ
+// handleDelete(late.md) を呼ぶと、sync 完了までブロックされた後に Deleted=1（warning
+// なし）で完了することを検証する。旧実装は HasRecord 存在チェックがロック外にあった
+// ため、sync が作成途中の path を「存在しない」と誤判定し、ブロックされずに warning +
+// Deleted=0 で即完了して削除要求を取りこぼしていた。
+func TestDeleteDocuments_BlocksOnSyncCreatingPath(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	seedUpsert(t, h, "K", "s", "keep.md", "# H\nkeep")
+	entered, release := installGate(t, h)
+
+	// A: sync ジョブが新規 path late.md の Embed でゲート停止する
+	//（= late.md の record 作成前・WithKeyLock 保持中の状態）
+	jobID := startGatedSync(t, h, entered, "K", "s", []UpsertDocument{
+		{Path: "keep.md", Content: "# H\nkeep"},
+		{Path: "late.md", Content: "# H\n" + keyLockGateMarker + " late body"},
+	})
+
+	// B: 同一 KEY への delete_documents(late.md) は sync 完了までブロックされる
+	type deleteOutcome struct {
+		out DeleteResult
+		err error
+	}
+	bDone := make(chan deleteOutcome, 1)
+	go func() {
+		_, out, err := h.handlers.handleDelete(ctx, nil, DeleteInput{
+			Key: "K", Series: "s", Paths: []string{"late.md"},
+		})
+		bDone <- deleteOutcome{out: out, err: err}
+	}()
+	// 「完了しないこと」の観測: 短い timer との select で行う。timer 側に落ちれば
+	// ブロック中と判断する（旧実装ならロック外チェックが即座に warning + Deleted=0 を
+	// 返すためここで fail する。false negative は release 後の Deleted=1 検証で補完）。
+	select {
+	case b := <-bDone:
+		t.Fatalf("sync 処理中に delete_documents が完了した（ロック外チェックの TOCTOU 再発）: out=%+v err=%v", b.out, b.err)
+	case <-time.After(100 * time.Millisecond):
+		// ブロックされている（期待どおり）
+	}
+
+	// ゲート解放 → sync 完了 → delete が Deleted=1（warning なし）で完了する
+	release()
+	if out := waitSyncTerminal(t, h, jobID); out.Status != "done" {
+		t.Fatalf("sync job status=%q, want done (errors=%v)", out.Status, out.Errors)
+	}
+	select {
+	case b := <-bDone:
+		if b.err != nil {
+			t.Errorf("delete_documents error: %v", b.err)
+		}
+		if b.out.Deleted != 1 || len(b.out.Warnings) != 0 {
+			t.Errorf("delete_documents out = %+v, want Deleted=1 Warnings なし（存在チェックが sync の書き込み後に実行されるべき）", b.out)
+		}
+	case <-time.After(keyLockITTimeout):
+		t.Fatal("sync 完了後も delete_documents が完了しない")
+	}
+
+	// 直列化の帰結: sync が作成した late.md は delete により series から消え、keep.md は残る
+	paths := chunkPathSet(t, h, "K", "s")
+	if paths["late.md"] {
+		t.Error("delete 完了後も late.md が series 指定検索に残っている（削除要求の取りこぼし）")
+	}
+	if !paths["keep.md"] {
+		t.Error("無関係な keep.md まで series 指定検索から消えた")
+	}
+}

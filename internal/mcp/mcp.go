@@ -553,33 +553,39 @@ func (h *Handlers) handleDelete(
 			"key", in.Key, "series", in.Series, "deleted", out.Deleted)
 	}()
 
-	// 事前に存在チェックして warning を構築（DEL-02）
+	// KEY 単位排他（SYN-08）: 存在チェック（DEL-02 の warning 構築）から DeleteSeries までを
+	// 1 つの WithKeyLock で囲む（DES-003 §3.5.2）。チェックをロック外に置くと、sync_documents が
+	// ロック保持中に作成する path を「存在しない」と誤判定してブロックせず即完了し、削除要求を
+	// 取りこぼす（TOCTOU）。
 	var warnings []string
-	existing := make([]string, 0, len(in.Paths))
-	for _, p := range in.Paths {
-		found, herr := h.store.HasRecord(ctx, in.Key, p)
-		if herr != nil {
-			err = fmt.Errorf("check path %q: %w", p, herr)
-			return nil, DeleteResult{}, err
+	var deleted int
+	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		existing := make([]string, 0, len(in.Paths))
+		for _, p := range in.Paths {
+			found, herr := h.store.HasRecord(ctx, in.Key, p)
+			if herr != nil {
+				return fmt.Errorf("check path %q: %w", p, herr)
+			}
+			if !found {
+				warnings = append(warnings, fmt.Sprintf("path %q は存在しないためスキップ", p))
+				continue
+			}
+			existing = append(existing, p)
 		}
-		if !found {
-			warnings = append(warnings, fmt.Sprintf("path %q は存在しないためスキップ", p))
-			continue
+		if len(existing) == 0 {
+			return nil
 		}
-		existing = append(existing, p)
+		if serr := h.store.DeleteSeries(ctx, in.Key, in.Series, existing); serr != nil {
+			return serr
+		}
+		deleted = len(existing)
+		return nil
+	}); derr != nil {
+		err = fmt.Errorf("delete: %w", derr)
+		return nil, DeleteResult{}, err
 	}
 
-	if len(existing) > 0 {
-		// KEY 単位排他（SYN-08）: DeleteSeries 呼び出しを WithKeyLock で囲む（DES-003 §3.5.2）。
-		if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
-			return h.store.DeleteSeries(ctx, in.Key, in.Series, existing)
-		}); derr != nil {
-			err = fmt.Errorf("delete: %w", derr)
-			return nil, DeleteResult{}, err
-		}
-	}
-
-	return nil, DeleteResult{Deleted: len(existing), Warnings: warnings}, nil
+	return nil, DeleteResult{Deleted: deleted, Warnings: warnings}, nil
 }
 
 // -----------------------------------------------------------------------

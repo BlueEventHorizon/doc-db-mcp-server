@@ -175,7 +175,7 @@ func (h *Handlers) handleGetSyncStatus(
 type SyncInput struct {
 	Key       string           `json:"key" jsonschema:"対象インデックスの KEY。"`
 	Series    string           `json:"series" jsonschema:"対象の時系列キー (Git branch 名等)。"`
-	Documents []UpsertDocument `json:"documents" jsonschema:"当該 key・series の完全な現在状態 (desired-state) を表すドキュメントのリスト。要素形式は upsert_documents と同一 (content / url / local_path 排他)。このリストに含まれない既存 path は series から即時切り離される。"`
+	Documents []UpsertDocument `json:"documents" jsonschema:"当該 key・series の完全な現在状態 (desired-state) を表すドキュメントのリスト。要素形式は upsert_documents と同一 (content / url / local_path 排他)。このリストに含まれない既存 path は series から即時切り離される。空リストは『この series に現存ファイルがない』という desired-state として受理され、既存 path が全て切り離される (削除予約は自己修復可能で、同一内容の再 sync で Embedding 再計算なしに復元できる)。"`
 }
 
 // SyncResult は sync_documents の出力（SYN-05: job_id の即時返却）。
@@ -189,9 +189,11 @@ func (h *Handlers) handleSyncDocuments(
 	if in.Key == "" || in.Series == "" {
 		return nil, SyncResult{}, errors.New("key と series は必須")
 	}
-	if len(in.Documents) == 0 {
-		return nil, SyncResult{}, errors.New("documents が空（desired-state が空の場合は delete_series を使用）")
-	}
+	// documents が空のリストであっても拒否しない: APP-003 SYN-01 は documents を「完全な現在状態」
+	// と定義しており、空は「この series に現存ファイルがない」という正当な desired-state。
+	// この場合、既存 path は全て切り離し + orphan 予約となり（SYN-03）、誤送信でも同一内容の
+	// 再 sync で Embedding 再計算なしに復元できる（SYN-04 の自己修復。即時物理削除する
+	// delete_series とはこの点が異なる）。
 
 	jobID, err := newSyncJobID()
 	if err != nil {
