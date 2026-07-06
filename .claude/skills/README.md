@@ -1,18 +1,21 @@
-# doc-db 用 doc-search SKILLs
+# doc-db 用 doc-search SKILLs（参考実装）
 
-このディレクトリの 5 SKILL は、forge/doc-advisor の `query-db-{rules,specs}` /
-`update-db-{rules,specs}` と **同じ働き** をするが、バックエンドが
-[doc-db MCP サーバー](https://github.com/BlueEventHorizon/doc-db-mcp-server) になっている
-ものです。**doc-db サーバの HTTP エンドポイント (`http://localhost:<port>/mcp`) を
-直接叩く**ため、Claude Code 側の MCP 登録は**不要**です。
+このディレクトリの 5 SKILL は、[doc-db MCP サーバー](https://github.com/BlueEventHorizon/doc-db-mcp-server)
+をプロジェクトの文書検索基盤として使うための **Claude Code 用クライアント参考実装**です。
+「プロジェクトの文書一覧を `.doc_structure.yaml` で定義 → doc-db へ同期 → 自然言語で検索」
+という運用を、**Python 3.9+ stdlib のみ**で実現します。
 
-| SKILL                      | 目的                                                                            |
-| -------------------------- | ------------------------------------------------------------------------------- |
-| `/update-db-specs`         | `.doc_structure.yaml` の specs 対象文書を doc-db に登録 (embedding 更新)        |
-| `/update-db-rules`         | 同 rules 対象文書を doc-db に登録                                               |
-| `/query-db-specs`          | specs 対象文書を doc-db で検索 (未起動時は grep フォールバック)                 |
-| `/query-db-rules`          | rules 対象文書を doc-db で検索 (同上)                                           |
-| `/delete-db-series <name>` | 指定 series (Git branch 等) を specs/rules 両 KEY から一括除去 (branch cleanup) |
+**doc-db サーバの HTTP エンドポイント (`http://localhost:<port>/mcp`) を直接叩く**ため、
+Claude Code 側の MCP 登録は**不要**です（doc-db を MCP 登録して使うこともできますが、
+これらの SKILL は登録なしで完結します）。
+
+| SKILL                      | 目的                                                                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------- |
+| `/update-db-specs`         | `.doc_structure.yaml` の specs 対象文書を desired-state 同期 (追加・更新・**削除に追従**。v0.2.0+) |
+| `/update-db-rules`         | 同 rules 対象文書を desired-state 同期                                                             |
+| `/query-db-specs`          | specs 対象文書を doc-db で検索 (未起動時は grep フォールバック)                                    |
+| `/query-db-rules`          | rules 対象文書を doc-db で検索 (同上)                                                              |
+| `/delete-db-series <name>` | 指定 series (Git branch 等) を specs/rules 両 KEY から一括除去 (branch cleanup)                    |
 
 ## 他プロジェクトへの配布
 
@@ -26,9 +29,43 @@ rsync -av <src>/.claude/skills/{update,query}-db-{rules,specs}/ \
 
 前提:
 
-1. コピー先プロジェクトに `.doc_structure.yaml` が存在すること (`/forge:setup-doc-structure` で生成)
+1. コピー先プロジェクトのルートに `.doc_structure.yaml` が存在すること (下記の書式)
 2. `python3` (3.9 以上) が利用可能なこと。**追加依存なし** (stdlib のみで動作)
-3. doc-db サーバがローカルに稼働していること (下記セットアップ)
+3. doc-db サーバ **v0.2.0+** がローカルに稼働していること (下記セットアップ)
+
+## `.doc_structure.yaml` の書式
+
+「どのディレクトリの Markdown を specs / rules として扱うか」をプロジェクトルートの
+`.doc_structure.yaml` で定義する。最小構成:
+
+```yaml
+# .doc_structure.yaml (プロジェクトルートに置く)
+# rules: このディレクトリ配下の **/*.md をルール文書として扱う
+rules:
+  root_dirs:
+    - docs/rules/
+  patterns:
+    exclude: []
+
+# specs: root_dirs は glob パターン可 (** で再帰マッチ)。
+# exclude はディレクトリ名 / パス断片の部分一致で除外する
+specs:
+  root_dirs:
+    - "docs/specs/**/design/"
+    - "docs/specs/**/requirements/"
+  patterns:
+    exclude: [plan]
+```
+
+- 同梱の `resolve_docs.py` が読むのは各セクションの **`root_dirs`**（ディレクトリ or
+  glob パターン。配下の `*.md` を再帰列挙）と **`patterns.exclude`**（ディレクトリ名 or
+  パス断片の部分一致で除外）の 2 キーのみ。他のキーが書かれていても無視される
+  （[forge](https://github.com/BlueEventHorizon/bw-cc-plugins) の `.doc_structure.yaml`
+  v3.0 と互換で、forge 利用時は `/forge:setup-doc-structure` で対話生成できる。
+  forge がなくても上記を手書きすれば足りる）
+- パーサーは stdlib のみの行ベース実装（PyYAML 不要）。**コメントは行頭 `#` のみ対応で、
+  値の後ろの行内コメント（`- docs/rules/ # メモ` 等）は書けない**（値の一部として
+  解釈され、対象が解決できなくなる）。挙動の正本は `*/scripts/resolve_docs.py`
 
 ## doc-db サーバのセットアップ
 
@@ -84,35 +121,48 @@ MCP handshake (initialize → notifications/initialized → tools/call) を発�
 ```
 /update-db-specs
   ↓
-doc-db に project-specs KEY で全 specs 文書を登録
+doc-db に project-specs KEY で全 specs 文書を desired-state 同期
 
 /query-db-specs "RRF スコア融合の設計理由"
   ↓
 doc-db から関連 chunk を取得 → 親 Claude が本文で最終判定
 ```
 
-以降 specs 文書を追加・改訂したら再度 `/update-db-specs` を実行する
-(同一ハッシュは skip されるので embedding コストは差分のみ)。
+以降 specs 文書を追加・改訂・**削除**したら再度 `/update-db-specs` を実行する。
+同期は desired-state 方式 (doc-db v0.2.0+ の `sync_documents`) なので:
+
+- 同一ハッシュの文書は skip され、embedding コストは差分のみ (DIF-02)
+- **削除・リネームされたファイルは自動で series から切り離される**
+  (個別の delete 呼び出しは不要。切り離された実体は次回サーバー起動時に物理削除)
 
 branch を削除した後は `/delete-db-series <branch 名>` で cleanup する。
 
 ## トラブルシューティング
 
-| 症状                                 | 原因                     | 対処                                   |
-| ------------------------------------ | ------------------------ | -------------------------------------- |
-| `doc-db サーバに接続できません`      | サーバ未起動             | `doc-db &` で起動                      |
-| `key "xxx" が存在しません`           | まだ upsert していない   | 先に `/update-db-{specs,rules}` を実行 |
-| `.doc_structure.yaml が存在しません` | プロジェクト初期化未完了 | `/forge:setup-doc-structure` を実行    |
+| 症状                                 | 原因                 | 対処                                                |
+| ------------------------------------ | -------------------- | --------------------------------------------------- |
+| `doc-db サーバに接続できません`      | サーバ未起動         | `doc-db &` で起動                                   |
+| `sync_documents は doc-db v0.2.0+`   | サーバが旧バージョン | `brew upgrade doc-db` してサーバ再起動              |
+| `key "xxx" が存在しません`           | まだ同期していない   | 先に `/update-db-{specs,rules}` を実行              |
+| `.doc_structure.yaml が存在しません` | 未作成               | 上記書式で手書きするか `/forge:setup-doc-structure` |
 
-## 内部設計
+## 内部設計（独自 SKILL / クライアントを作る際の参考）
+
+各スクリプトは「文書一覧の解決」と「MCP 通信」を分離してあり、独自クライアントの
+雛形として流用できる:
 
 - `resolve_docs.py` (各 SKILL 配下 `scripts/` に同一コピー) — `.doc_structure.yaml` から
-  対象 Markdown を列挙する共通スクリプト。**stdlib のみ** (forge の
-  `resolve_doc_structure.py::parse_config` 互換の行ベース YAML parser を内蔵) で
+  対象 Markdown を列挙する共通スクリプト。**stdlib のみ**の行ベース YAML parser を内蔵し、
   project-root 相対パス + 絶対パス + `project_name` + `git_branch` を JSON 出力
-- `docdb_client.py` (同じく各 SKILL 配下 `scripts/` に同一コピー) — MCP Streamable HTTP
-  を **stdlib のみ (urllib)** で扱う軽量クライアント。`~/.doc-db/doc-db.yaml` から port を
-  抽出し、`initialize → notifications/initialized → tools/call` を発行する
+- `docdb_client.py` (同じく同一コピー) — MCP Streamable HTTP を **stdlib のみ (urllib)**
+  で扱う軽量クライアント。`~/.doc-db/doc-db.yaml` から port を抽出し、
+  `initialize → notifications/initialized → tools/call` の handshake を発行する。
+  サブコマンド: `query` / `sync` (v0.2.0+ 推奨、削除追従 + 完了ポーリング) /
+  `upsert` `upsert-batch` (旧方式) / `delete-series`
+- `run_sync.py` (update-db-{specs,rules} 配下) — 「resolve → sync_documents 投入 →
+  get_sync_status ポーリング」を 1 コマンドに統合したラッパー。**独自 SKILL を作る場合は
+  この組み立て（一覧解決 → sync → ポーリング）が基本形**。詳細は
+  [AI 統合ガイドの「独自クライアント / SKILL を作る」](../../docs/AI_INTEGRATION_GUIDE.md)を参照
 - forge に持っていく際は forge の resolver / client に統合する想定 (現状は本プロジェクト
   内で自己完結)
 
