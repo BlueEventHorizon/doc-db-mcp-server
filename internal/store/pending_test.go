@@ -615,8 +615,14 @@ func TestDeleteKey_ClearsPendingDeletions(t *testing.T) {
 }
 
 // TestDeleteSeriesAll_ClearsPendingDeletions は、DeleteSeriesAll が同一 tx で当該
-// key+series の pending_deletions（series 全体予約・path 単位予約の両方）を除去し、
-// 同一 key の別 series の予約行には触れないことを検証する。
+// key+series の series-wide 予約（path=” センチネル）**のみ**を除去し、
+// (a) 同一 series の path 単位予約と (b) 同一 key の別 series の予約行には
+// 触れないことを検証する。
+//
+// path 単位予約を消してはならない理由: DeleteSeriesAll は series_keys を JOIN して
+// 対象を列挙するため orphan record（series_keys 0 件）に触れず、その orphan の唯一の
+// 回収手段が path 単位予約（起動時スイープの DeleteOrphanRecords）だから。ここで
+// 予約行だけ消すと orphan が永久残留する（レビュー指摘の回帰防止）。
 func TestDeleteSeriesAll_ClearsPendingDeletions(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -641,15 +647,76 @@ func TestDeleteSeriesAll_ClearsPendingDeletions(t *testing.T) {
 		t.Fatalf("DeleteSeriesAll: %v", err)
 	}
 
-	// s1 の予約行は series 全体・path 単位とも 0 件
+	// s1 の series-wide 予約（path=''）のみ消える
 	if n := countRows(t, s,
-		`SELECT COUNT(*) FROM pending_deletions WHERE key='K' AND series='s1'`); n != 0 {
-		t.Errorf("DeleteSeriesAll 後も series=s1 の予約行が %d 件残存（stale 予約の残留）", n)
+		`SELECT COUNT(*) FROM pending_deletions WHERE key='K' AND series='s1' AND path=''`); n != 0 {
+		t.Errorf("DeleteSeriesAll 後も series=s1 の series-wide 予約が %d 件残存（stale 予約の残留）", n)
+	}
+	// s1 の path 単位予約は残る（orphan 回収手段の保全）
+	if n := countRows(t, s,
+		`SELECT COUNT(*) FROM pending_deletions WHERE key='K' AND series='s1' AND path='s1.md'`); n != 1 {
+		t.Errorf("series=s1 の path 単位予約 = %d 件, want 1（消すと orphan が永久残留する）", n)
 	}
 	// s2 の予約行は無傷
 	if n := countRows(t, s,
 		`SELECT COUNT(*) FROM pending_deletions WHERE key='K' AND series='s2'`); n != 2 {
 		t.Errorf("series=s2 の予約行数 = %d, want 2（DeleteSeriesAll が別 series の予約に触れた）", n)
+	}
+}
+
+// TestDeleteSeriesAll_KeepsPathReservation_OrphanCollectedBySweep は orphan 永久残留の
+// 回帰テスト（レビュー指摘の再現順序そのまま）: sync による切り離しで orphan 化した path の
+// 削除予約が残っている状態で delete_series（DeleteSeriesAll 相当）を実行しても予約が保持され、
+// 次回起動スイープが orphan を回収できることを検証する。旧実装（key+series の予約全行削除）は
+// ここで予約だけ消え、DeleteSeriesAll は orphan（series_keys 0 件）に触れないため、
+// 回収手段のない orphan が永久残留していた。
+func TestDeleteSeriesAll_KeepsPathReservation_OrphanCollectedBySweep(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// c.md を投入 → sync の欠落検出相当の切り離しで orphan 化 + path 単位予約
+	orphanID, err := s.UpsertRecord(ctx, Record{
+		Key: "K", Path: "c.md", ContentHash: "h_c", Series: "s",
+		Chunks: makeChunks("c body"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphaned, err := s.DetachSeriesFromPath(ctx, "K", "s", "c.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !orphaned {
+		t.Fatal("前提が崩れた: c.md が orphan になっていない")
+	}
+	if err := s.MarkDocumentForDeletion(ctx, "K", "s", "c.md"); err != nil {
+		t.Fatal(err)
+	}
+
+	// delete_series(K, s) 相当。orphan は series_keys 0 件のため対象外（不触）
+	if _, _, err := s.DeleteSeriesAll(ctx, "K", "s"); err != nil {
+		t.Fatalf("DeleteSeriesAll: %v", err)
+	}
+
+	// path 単位予約が保持されていること（消えていたら orphan の回収手段が失われる）
+	if n := countRows(t, s,
+		`SELECT COUNT(*) FROM pending_deletions WHERE key='K' AND series='s' AND path='c.md'`); n != 1 {
+		t.Fatalf("DeleteSeriesAll 後の path 単位予約 = %d 件, want 1（orphan 永久残留の退行）", n)
+	}
+
+	// 起動時スイープが orphan を回収し、予約行も消える
+	processed, errs := s.SweepPendingDeletions(ctx)
+	if len(errs) > 0 {
+		t.Fatalf("SweepPendingDeletions errs: %v", errs)
+	}
+	if processed != 1 {
+		t.Errorf("processed = %d, want 1", processed)
+	}
+	if n := countRows(t, s, `SELECT COUNT(*) FROM records WHERE id=?`, orphanID); n != 0 {
+		t.Errorf("スイープ後も orphan record が残存（永久残留）")
+	}
+	if n := countRows(t, s, `SELECT COUNT(*) FROM pending_deletions WHERE key='K'`); n != 0 {
+		t.Errorf("スイープ後も予約行が %d 件残存", n)
 	}
 }
 

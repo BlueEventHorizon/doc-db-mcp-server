@@ -880,11 +880,17 @@ func (s *Store) DeleteSeriesAll(ctx context.Context, key, series string) (remove
 		}
 	}
 
-	// 当該 key+series の削除予約（path 単位・series 全体センチネルの両方）を同一 tx で除去する。
-	// series 自体が消えるため予約は無意味になり、残すと同名 series 再作成後の起動時スイープが
-	// series-wide 予約（path=''）経由で新データを破壊し得る（stale 予約の発生源遮断）。
+	// 当該 key+series の series-wide 予約（path='' センチネル）のみを同一 tx で除去する。
+	// 残すと同名 series 再作成後の起動時スイープが DeleteSeriesAll 経由で新データを破壊し得る
+	// （stale 予約の発生源遮断）。
+	//
+	// path 単位予約（path<>''）は消してはならない: 本メソッドは series_keys を JOIN して対象を
+	// 列挙するため、既に切り離し済みの orphan record（series_keys 0 件）には一切触れない。
+	// その orphan の唯一の回収手段が path 単位予約（起動時スイープの DeleteOrphanRecords）であり、
+	// ここで予約行だけ消すと orphan が永久残留する。予約を残しても DeleteOrphanRecords は
+	// orphan-only のため、同名 series 再作成後の live record を壊さない（無害）。
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM pending_deletions WHERE key=? AND series=?`, key, series,
+		`DELETE FROM pending_deletions WHERE key=? AND series=? AND path=''`, key, series,
 	); err != nil {
 		return 0, 0, fmt.Errorf("store.DeleteSeriesAll: clear pending deletions: %w", err)
 	}
