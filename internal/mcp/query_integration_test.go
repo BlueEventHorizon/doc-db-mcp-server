@@ -48,7 +48,7 @@ func newQueryHarness(t *testing.T, rr search.Reranker) *testHarness {
 	h := newHarness(t)
 	// search Pipeline を Reranker 付きで作り直す
 	pipe := search.New(h.store, &SearchEmbedderAdapter{Inner: h.embedder}, rr, search.Config{})
-	h.handlers = New(h.store, chunker.New(1500), h.embedder, h.fetcher, pipe)
+	h.handlers = New(context.Background(), h.store, chunker.New(1500), h.embedder, h.fetcher, pipe)
 	return h
 }
 

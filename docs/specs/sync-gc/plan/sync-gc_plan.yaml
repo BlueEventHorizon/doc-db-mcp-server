@@ -12,39 +12,39 @@ requirements_traceability:
   - requirement_id: SYN-01
     title: sync_documents の documents を desired-state とみなす
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: SYN-02
     title: documents の各要素に既存 DIF-01〜03 の差分管理を適用する（無改造再利用）
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: SYN-03
     title: documents に含まれない既存 path を series から即時切り離し、orphan record を物理削除予約する
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: SYN-04
     title: 削除予約の自己修復（path 再出現時の再紐付け（Embedding 再計算なし）・series 全体予約の解除）
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: SYN-05
     title: sync_documents は job_id を即座に返す
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: SYN-06
     title: get_sync_status がジョブ進捗・完了・エラーを返す
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: SYN-07
     title: ジョブ状態はメモリ保持のみ・永続化しない
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: SYN-08
     title: 同一 KEY の書き込み系操作を sync_documents と排他実行する（WithKeyLock）
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: GC-01
     title: schedule_delete_series が series を即座に削除せず予約する
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: GC-02
     title: series 単位・path 単位の削除予約を起動時に一括物理削除する
     design_id: DES-003
@@ -60,7 +60,7 @@ requirements_traceability:
   - requirement_id: GC-05
     title: sync_documents のジョブ用 context をリクエスト context から分離する
     design_id: DES-003
-    status: pending
+    status: completed
 
 design_traceability:
   - design_id: DES-003
@@ -265,7 +265,7 @@ tasks:
   - task_id: TASK-009
     title: cmd/docdb・internal/mcp — root context 配線（GC-05 準備）
     priority: 68
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-001
@@ -283,7 +283,7 @@ tasks:
   - task_id: TASK-010
     title: internal/mcp — sync_documents ハンドラ実装
     priority: 65
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-005
@@ -307,7 +307,7 @@ tasks:
   - task_id: TASK-011
     title: internal/mcp — get_sync_status ハンドラ実装
     priority: 63
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-010
@@ -325,7 +325,7 @@ tasks:
   - task_id: TASK-012
     title: internal/mcp — schedule_delete_series ハンドラ実装
     priority: 61
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-005
@@ -343,7 +343,7 @@ tasks:
   - task_id: TASK-013
     title: internal/mcp — sync_documents/get_sync_status/schedule_delete_series 統合テスト
     priority: 58
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-003

@@ -89,6 +89,36 @@ func (s *Store) DetachSeriesFromPath(ctx context.Context, key, series, path stri
 	return orphaned, nil
 }
 
+// ListPaths は指定 key+series に現在紐付いている path の一覧を返す（読み取り専用）。
+// sync_documents の desired-state 判定（documents に含まれない既存 path の検出、SYN-03）に使う。
+// series_keys を JOIN するため、DetachSeriesFromPath で切り離し済みの orphan record は含まれない。
+// 読み取りのみのため s.mu は取得しない（KEY 単位の一貫性は呼び出し元の WithKeyLock が担保する）。
+func (s *Store) ListPaths(ctx context.Context, key, series string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT r.path FROM records r
+         JOIN series_keys sk ON sk.record_id = r.id
+         WHERE r.key=? AND sk.series=?`,
+		key, series,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListPaths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("store.ListPaths: scan: %w", err)
+		}
+		paths = append(paths, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.ListPaths: iterate: %w", err)
+	}
+	return paths, nil
+}
+
 // MarkSeriesForDeletion は series 全体の削除予約を記録する（GC-01、schedule_delete_series 用）。
 // path=” センチネル行を upsert する（ON CONFLICT DO UPDATE で冪等）。
 // 既に同一 series の削除予約が存在した場合は alreadyScheduled=true を返す
