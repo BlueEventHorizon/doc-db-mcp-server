@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,6 +190,54 @@ func TestUpsert_DIF03_ContentChangeReplaces(t *testing.T) {
 		if c.Text == "" {
 			t.Errorf("empty chunk text")
 		}
+	}
+}
+
+// TestUpsert_DIF03_DiagnosticLogDistinguishesReason は、DIF-03 経路の診断ログが
+// 「純新規 path」と「同一 path の内容変更 (hash 不一致)」を区別して出力することを
+// 検証する（Issue #4: re-embedding の原因切り分け用）。
+func TestUpsert_DIF03_DiagnosticLogDistinguishesReason(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// 1 回目: 純新規 path → "embedding new path"
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "main",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nv1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); !strings.Contains(got, "embedding new path") {
+		t.Errorf("新規 path のログに 'embedding new path' が含まれない:\n%s", got)
+	}
+
+	// 2 回目: 同一 path で内容変更 → "re-embedding (content changed"
+	buf.Reset()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "main",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nv2"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); !strings.Contains(got, "re-embedding (content changed") {
+		t.Errorf("内容変更のログに 're-embedding (content changed' が含まれない:\n%s", got)
+	}
+
+	// 3 回目: 同一内容の別 series（DIF-02 skip）→ DIF-03 診断ログは出ない
+	buf.Reset()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "s2",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nv2"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); strings.Contains(got, "embedding new path") || strings.Contains(got, "re-embedding") {
+		t.Errorf("DIF-02 skip なのに DIF-03 診断ログが出力された:\n%s", got)
 	}
 }
 

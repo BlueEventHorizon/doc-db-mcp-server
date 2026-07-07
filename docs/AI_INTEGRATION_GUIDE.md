@@ -75,7 +75,14 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 **series の動作**:
 
 - 同一 content (= 同一 SHA-256 ハッシュ) のドキュメントは複数 series で
-  embedding を共有 (再 embedding スキップ)
+  embedding を共有 (再 embedding スキップ)。この dedup は **series 非依存**:
+  同一 KEY の別 series に同一内容が登録済みなら、新 series の初回
+  upsert / sync でも skipped になり embedding API は呼ばれない (DIF-02)
+- ただし成立条件は `key + path + content` の**完全一致**。`path` の表記が
+  変わった場合 (プレフィックス変更等) や content に差分がある場合は
+  re-embedding (processed) になる。期待に反して processed が多い場合は、
+  サーバーログ (level=debug) の re-embedding 理由
+  (`embedding new path` / `re-embedding (content changed ...)`) で切り分けられる
 - 同 path 同 series で content が変わると新 record 作成 + 旧 record から
   当該 series を除去
 - `delete_documents` で series 単位の削除可能

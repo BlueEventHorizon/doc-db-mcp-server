@@ -93,6 +93,12 @@ Step 4 で報告する（失敗 path の削除予約は保持され、次回 syn
 
 **注**: doc-db は SHA-256 ハッシュで変更を検出し、同一内容の再 embedding をスキップする
 (DIF-02)。毎回全ファイルを送っても課金は「変更されたファイル分の embedding」のみ。
+スキップは **series をまたいで**効く (同一 KEY の別 series に同一内容が登録済みなら
+skipped になる) が、成立条件は `key + path + 内容` の**完全一致**である点に注意:
+`path` の表記 (プレフィックス等、`.doc_structure.yaml` の構成変更で変わり得る) や
+ファイル内容が 1 バイトでも違えば re-embedding (processed) になる。期待に反して
+processed が多い場合は doc-db のログ (level=debug) に出力される re-embedding 理由
+(new path / content changed) で切り分けられる。
 
 ### Step 4: 完了レポート
 
