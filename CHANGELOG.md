@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-07
+
+### Fixed
+
+- **cross-series DIF-02 dedup の回帰テスト追加**: 「同一 KEY の別 series に同一ファイルが
+  存在しても skipped にならず全件 re-embedding される」という報告 (Issue #4) を調査し、
+  series をまたいだ hash 参照（key 単位の embedding 共有）は仕様通り実装済みであることを
+  確認。`sync_documents` 経由での cross-series DIF-02 挙動を content / local_path 両経路で
+  回帰テスト化し、今後の regression を検出可能にした
+
+### Added
+
+- **re-embedding 理由の診断ログ**: `upsertOne` の DIF-03 経路（新規 Embedding）で、
+  「純新規 path」か「同一 path の内容変更（hash 不一致）」かを区別する debug ログを追加。
+  期待に反して re-embedding が発生した場合の原因切り分けに使う
+
+### Changed
+
+- **update-db-\* skill を sync_documents ベースの desired-state 同期に対応** (v0.2.0+ サーバー向け):
+  `docdb_client.py` に `sync` サブコマンドを追加し、`run_sync.py` を新設。削除ファイルへの
+  追従（一覧に無い path の即時切り離し）に対応し、upsert 方式のバッチ分割・offset ループが
+  不要になった
+- **ドキュメント整備**: dedup 成立条件（`key + path + 内容` の完全一致・series 非依存）を
+  `AI_INTEGRATION_GUIDE.md` / SKILL.md 群に明記。README に AI エージェント向け SKILL 参考実装の
+  導線を追加
+
 ## [0.2.0] - 2026-07-06
 
 ### Added (sync-gc: desired-state 同期 + 削除予約の起動時ガベージコレクション)
