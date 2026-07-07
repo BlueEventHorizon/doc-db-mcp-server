@@ -1,11 +1,13 @@
 # ToC checksums for key: specs
 # Auto-generated - do not edit
-generated_at: 2026-07-07T14:45:41Z
-file_count: 6
+generated_at: 2026-07-07T15:45:44Z
+file_count: 8
 checksums:
   docs/specs/base/design/ADR-001_feature_split_criteria_for_additive_changes.md: 900d0624bb55a9d205cb6d0bd0be758f8aaa8ed9a5fc1af9704a703533fb6949
   docs/specs/base/design/DES-001_doc_db_mcp_server_design.md: b390ce59230bdfc85cbc0ebdbc2a1c530e01a9716980fcfa25c01a01d0146049
   docs/specs/base/requirements/APP-001_doc_db_mcp_server_requirements.md: 7e490c1ae2785a025d8bf11fbe9e36a3a1e8724471a9befdf2cb8ea39f1b6e88
+  docs/specs/expiry-visibility/design/ADR-003_ttl_lru_replaced_by_user_driven_trash.md: 154421747d9b835e9e8a799a1385bfa4d24d00de240370ef3950e45bc246c57c
+  docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md: 3214f4ef1914b7fe1bee8d3fe15710ec351ac4b6df4c6d09fb00d15d96e210aa
   docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md: 17d981a15e4e58e2f1decae4313d0b24c9bec2ed882855c2bf3d8d98ef8f4e5b
   docs/specs/install/design/DES-002_install_design.md: 524bb00e770875fefda1d8dd3d202d9205442af479f4f7b4239ce04b9b8a4419
   docs/specs/install/requirements/APP-002_install_requirements.md: 21e471db6dbc4dfa00f29f697a6938716ee5ae065686f7679244a943b6038fe3
