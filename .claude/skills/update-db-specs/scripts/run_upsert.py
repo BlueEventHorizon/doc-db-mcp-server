@@ -99,7 +99,8 @@ def main() -> int:
                 return 1
             aggregated["failed"] += len(chunk)
             aggregated["errors"].append({"batch_start": i, "batch_size": len(chunk), "error": msg})
-            print(f"[{done:>4}/{total}] BATCH FAILED: {msg}", file=sys.stderr)
+            bar = docdb_client._progress_bar(done, total)
+            print(f"  {bar} BATCH FAILED: {msg}", file=sys.stderr)
             continue
 
         for k in ("processed", "skipped", "failed"):
@@ -109,7 +110,8 @@ def main() -> int:
             if isinstance(v, list):
                 aggregated[k].extend(v)
 
-        print(f"[{done:>4}/{total}] processed={aggregated['processed']:>4} "
+        bar = docdb_client._progress_bar(done, total)
+        print(f"  {bar} processed={aggregated['processed']:>4} "
               f"skipped={aggregated['skipped']:>4} failed={aggregated['failed']:>3}", file=sys.stderr)
 
     json.dump(aggregated, sys.stdout, ensure_ascii=False, indent=2)

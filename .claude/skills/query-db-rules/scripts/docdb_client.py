@@ -216,7 +216,8 @@ def cmd_upsert(args: argparse.Namespace) -> int:
                 aggregated["errors"].append({"batch_start": i, "batch_size": len(chunk),
                                              "error": str(e)})
                 elapsed = time.monotonic() - t0
-                print(f"[{done_before:>4}/{total}] BATCH FAILED ({elapsed:5.1f}s): {e}",
+                bar = _progress_bar(done_before, total)
+                print(f"  {bar} BATCH FAILED ({elapsed:5.1f}s): {e}",
                       file=sys.stderr)
                 continue
 
@@ -231,7 +232,8 @@ def cmd_upsert(args: argparse.Namespace) -> int:
             cum_elapsed = time.monotonic() - started
             rate = done_before / cum_elapsed if cum_elapsed > 0 else 0
             eta = (total - done_before) / rate if rate > 0 else 0
-            print(f"[{done_before:>4}/{total}] "
+            bar = _progress_bar(done_before, total)
+            print(f"  {bar} "
                   f"processed={aggregated['processed']:>4} "
                   f"skipped={aggregated['skipped']:>4} "
                   f"failed={aggregated['failed']:>3} "
@@ -284,6 +286,20 @@ def cmd_upsert_batch(args: argparse.Namespace) -> int:
     return 0 if result["failed"] == 0 else 2
 
 
+def _progress_bar(done: int, total: int, width: int = 30) -> str:
+    """done/total の割合を █/░ のブロックで表した横長バーを返す。
+
+    Claude Code 経由の実行では \\r 上書きが効かず、更新のたびに新しい行として
+    積み上がる (その場で伸びる 1 本のバーにはならない) 制約がある。
+    """
+    if total <= 0:
+        return "[" + "░" * width + "]   0%"
+    ratio = min(done / total, 1.0)
+    filled = int(width * ratio)
+    bar = "█" * filled + "░" * (width - filled)
+    return f"[{bar}] {int(ratio * 100):3d}%"
+
+
 def sync_and_wait(client: Client, key: str, series: str, documents: list[dict],
                   wait_seconds: int, poll_interval: float = 2.0) -> dict:
     """sync_documents を 1 回投入し、get_sync_status を done/failed までポーリングする。
@@ -318,7 +334,9 @@ def sync_and_wait(client: Client, key: str, series: str, documents: list[dict],
     while True:
         st = client.call("get_sync_status", {"job_id": job_id})
         status = st.get("status", "")
-        line = (f"  [{status:>7}] processed={st.get('processed', 0):>4} "
+        done = st.get("processed", 0) + st.get("skipped", 0) + st.get("failed", 0)
+        bar = _progress_bar(done, len(documents))
+        line = (f"  {bar} [{status:>7}] processed={st.get('processed', 0):>4} "
                 f"skipped={st.get('skipped', 0):>4} failed={st.get('failed', 0):>3} "
                 f"detached={st.get('deleted_paths_marked', 0):>3}")
         if line != last_line:
