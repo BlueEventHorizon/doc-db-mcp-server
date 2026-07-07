@@ -451,6 +451,23 @@ func (h *Handlers) upsertOne(
 	}
 
 	// 4. 新規 or 内容変更 → Chunker + Embedder（DIF-03 経路）
+	// 診断ログ (Issue #4): skip を期待したのに re-embedding される場合の原因切り分け用に、
+	// 「純新規 path」か「同一 path の内容変更 (hash 不一致)」かを区別して出力する。
+	// DIF-02 の dedup は key+path+content_hash の完全一致が条件のため、path の表記が
+	// 変わっても内容が変わっても全件 re-embedding になり、出力からは区別できない。
+	hasPath, err := h.store.HasRecord(ctx, key, doc.Path)
+	if err != nil {
+		result.Failed++
+		result.Errors = append(result.Errors, UpsertError{Path: doc.Path, Error: "find: " + err.Error()})
+		return err
+	}
+	if hasPath {
+		slog.Debug("upsert: re-embedding (content changed: 同一 key+path の既存 record と hash 不一致)",
+			"key", key, "path", doc.Path, "series", series, "new_hash", hash)
+	} else {
+		slog.Debug("upsert: embedding new path (同一 key+path の record なし)",
+			"key", key, "path", doc.Path, "series", series, "new_hash", hash)
+	}
 	chunks, err := h.chunker.Split(doc.Path, normalized)
 	if err != nil {
 		result.Failed++

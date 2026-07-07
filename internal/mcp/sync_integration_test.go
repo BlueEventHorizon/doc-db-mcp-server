@@ -26,6 +26,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -398,6 +399,69 @@ func TestSyncDocuments_SYN04_SelfHealZeroEmbedderCalls(t *testing.T) {
 	if paths := chunkPathSet(t, h, "K", "s"); !paths["c.md"] {
 		t.Error("自己修復後も c.md が series 指定検索に現れない")
 	}
+}
+
+// -----------------------------------------------------------------------
+// DIF-02 不変条件: 新 series の初回 sync での cross-series embedding 再利用
+// -----------------------------------------------------------------------
+
+// TestSyncDocuments_DIF02_NewSeriesSameContentSkips は、同一 KEY の別 series に
+// 同一内容（同一 key+path+content_hash）が登録済みの状態で新 series を初回 sync すると、
+// 全件 skipped になり Embedder が 1 回も呼ばれないことを検証する（Issue #4）。
+// DIF-02 の dedup は series 非依存（APP-001: 同一 key・path のハッシュ一致で series_keys 追記）
+// であり、upsert 経路の TestUpsertIntegration_DIF02_DoesNotCallEmbedder と対になる
+// sync 経路の回帰テスト。content / local_path の両経路で検証する。
+func TestSyncDocuments_DIF02_NewSeriesSameContentSkips(t *testing.T) {
+	t.Run("content", func(t *testing.T) {
+		h := newHarness(t)
+		docs := []UpsertDocument{
+			{Path: "a.md", Content: "# H\nalpha"},
+			{Path: "b.md", Content: "# H\nbeta"},
+		}
+		out1 := syncAndWaitDone(t, h, "K", "main", docs)
+		if out1.Processed != 2 || out1.Skipped != 0 {
+			t.Fatalf("初回 sync = %+v, want Processed=2 Skipped=0", out1)
+		}
+
+		spy := &spyEmbedder{inner: h.embedder}
+		h.handlers.embedder = spy
+		out2 := syncAndWaitDone(t, h, "K", "feature-x", docs)
+		if out2.Processed != 0 || out2.Skipped != 2 || out2.Failed != 0 {
+			t.Errorf("新 series の sync = %+v, want Skipped=2 Processed=0", out2)
+		}
+		if calls := atomic.LoadInt32(&spy.calls); calls != 0 {
+			t.Errorf("新 series の sync で Embedder が %d 回呼ばれた（DIF-02 の cross-series 再利用が壊れている）", calls)
+		}
+		// record は 1 path につき 1 つで、両 series に紐づく
+		for _, series := range []string{"main", "feature-x"} {
+			if paths := chunkPathSet(t, h, "K", series); !paths["a.md"] || !paths["b.md"] {
+				t.Errorf("series %q の検索に両 path が現れない: %v", series, paths)
+			}
+		}
+	})
+
+	t.Run("local_path", func(t *testing.T) {
+		h := newHarness(t)
+		dir := t.TempDir()
+		file := filepath.Join(dir, "a.md")
+		if err := os.WriteFile(file, []byte("# H\nalpha"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		docs := []UpsertDocument{{Path: "a.md", LocalPath: file}}
+		if out := syncAndWaitDone(t, h, "K", "main", docs); out.Processed != 1 {
+			t.Fatalf("初回 sync = %+v, want Processed=1", out)
+		}
+
+		spy := &spyEmbedder{inner: h.embedder}
+		h.handlers.embedder = spy
+		out := syncAndWaitDone(t, h, "K", "feature-x", docs)
+		if out.Processed != 0 || out.Skipped != 1 || out.Failed != 0 {
+			t.Errorf("新 series の sync = %+v, want Skipped=1 Processed=0", out)
+		}
+		if calls := atomic.LoadInt32(&spy.calls); calls != 0 {
+			t.Errorf("local_path 経路で Embedder が %d 回呼ばれた", calls)
+		}
+	})
 }
 
 // -----------------------------------------------------------------------
