@@ -1,0 +1,339 @@
+# ---
+# type: temporary-feature-plan
+# notes:
+#   - 正本は対応する追加 feature 要件定義書（FNC-007〜FNC-013、docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md）。旧仕様と矛盾する場合は要件定義書を優先する。
+#   - 本 feature 実装完了後、この計画書は破棄される予定。
+# ---
+
+# expiry-visibility 実装計画書
+
+requirements_traceability:
+  - requirement_id: FNC-007
+    title: TTL/LRU 自動削除の廃止
+    design_id: DES-003
+    status: pending
+  - requirement_id: FNC-008
+    title: KEY メタデータ提供の拡充
+    design_id: DES-003
+    status: pending
+  - requirement_id: FNC-009
+    title: ゴミ箱投入
+    design_id: DES-003
+    status: pending
+  - requirement_id: FNC-010
+    title: ゴミ箱一覧の提示
+    design_id: DES-003
+    status: pending
+  - requirement_id: FNC-011
+    title: 復活
+    design_id: DES-003
+    status: pending
+  - requirement_id: FNC-012
+    title: 自動最終処分
+    design_id: DES-003
+    status: pending
+  - requirement_id: FNC-013
+    title: orphan record のゴミ箱統合
+    design_id: DES-003
+    status: pending
+
+design_traceability:
+  - design_id: DES-003
+    title: KEY 削除の可視化・ユーザー主導化 設計書
+    requirement_ids:
+      - FNC-007
+      - FNC-008
+      - FNC-009
+      - FNC-010
+      - FNC-011
+      - FNC-012
+      - FNC-013
+    task_ids:
+      - TASK-001
+      - TASK-002
+      - TASK-003
+      - TASK-004
+      - TASK-005
+      - TASK-006
+      - TASK-007
+      - TASK-008
+      - TASK-009
+      - TASK-010
+      - TASK-011
+      - TASK-012
+  - design_id: ADR-003
+    title: TTL/LRU 自動削除を廃止しユーザー主導のゴミ箱方式へ転換する
+    requirement_ids:
+      - FNC-007
+    task_ids: []
+
+tasks:
+  - task_id: TASK-001
+    title: keys.trashed_at カラム追加と TrashKey/RestoreKey/ListTrashedKeys 実装
+    priority: 95
+    status: pending
+    design_id: DES-003
+    depends_on: []
+    group_id: null
+    build_check: per_task
+    description:
+      - keys テーブルに trashed_at カラム（NULL 許容）を追加する
+      - 起動時に PRAGMA table_info(keys) で trashed_at 列の有無を確認し、無ければ ALTER TABLE keys ADD COLUMN trashed_at TEXT を実行するマイグレーション処理を実装する
+      - TrashKey(ctx, key) を実装する。対象 KEY が存在しない、または既にゴミ箱に入っている場合はエラーを返す
+      - RestoreKey(ctx, key) を実装する。ゴミ箱に入っていない KEY を指定した場合はエラーを返す
+      - ListTrashedKeys(ctx) を実装し、TrashedKeyInfo（Key, TrashedAt）を返す。残り時間の計算に必要な保持期間の設定値は Store 層が持たないため、TrashedKeyInfo に含めない（呼び出し元が算出する）
+      - IsTrashed(ctx, key) を実装する
+      - 正常系・多重投入エラー・存在しない KEY エラーの単体テストを追加する
+      - trashed_at 列が存在しない DB に対してマイグレーションが実行されることの単体テストを追加する
+    acceptance_criteria: TrashKey/RestoreKey/ListTrashedKeys/IsTrashed の正常系・異常系（多重投入・存在しない KEY）のテストと、マイグレーションのテストがすべて green で通過する
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md
+      - internal/store/store.go
+
+  - task_id: TASK-002
+    title: KeyInfo に ChunkCount を追加
+    priority: 90
+    status: pending
+    design_id: DES-003
+    depends_on: []
+    group_id: null
+    build_check: per_task
+    description:
+      - KeyInfo 型に ChunkCount フィールドを追加する
+      - ListKeys の実装に、ListKeysByLRU が使う chunk 数集計 SQL をマージする
+      - ListKeys が返す各 KeyInfo の ChunkCount が正しい値であることの単体テストを追加する
+    acceptance_criteria: ListKeys が返す KeyInfo.ChunkCount が、対象 KEY の実際の chunk 数と一致することをテストで確認できる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - internal/store/store.go
+
+  - task_id: TASK-003
+    title: SweepPendingDeletions を ListPendingDeletionsOlderThan/SweepOnePendingDeletion に分割
+    priority: 95
+    status: pending
+    design_id: DES-003
+    depends_on: []
+    group_id: null
+    build_check: per_task
+    description:
+      - 既存の SweepPendingDeletions を廃止し、ListPendingDeletionsOlderThan(ctx, cutoff) と SweepOnePendingDeletion(ctx, entry) の 2 メソッドに分割する
+      - ListPendingDeletionsOlderThan は marked_at が cutoff より前の予約一覧（PendingDeletionEntry）を返す読み取り専用メソッドとして実装する
+      - SweepOnePendingDeletion は 1 件分の予約を物理削除し予約を解除する（ロックは呼び出し元の責務とする）
+      - cmd/docdb/main.go の startupSweep を、一覧取得後にエントリ 1 件ごとに WithKeyLock で囲んで SweepOnePendingDeletion を呼ぶ形に変更する
+      - 猶予期間内の予約が一覧に含まれないこと、猶予期間超過分のみが含まれることの境界値テストを追加する
+      - 既存の DIF-02 不変条件テスト 3 件（store_test.go の TestAppendAndCleanSeries_DIF02 等）が green のままであることを確認する
+    acceptance_criteria: cutoff 境界値テスト（猶予期間内は一覧に含まれない、超過分のみ含まれる）と既存 DIF-02 テスト 3 件がすべて green で通過する
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md
+      - internal/store/pending.go
+      - cmd/docdb/main.go
+
+  - task_id: TASK-004
+    title: internal/trash.Worker の新設
+    priority: 85
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+      - TASK-003
+    group_id: null
+    build_check: per_task
+    description:
+      - internal/trash パッケージを新設し、internal/expiry/expiry.go の Worker 定期実行パターン（Start, runOnce, Stats, KeyDeleteError）を土台に構造を実装する
+      - runOnce 内で ListTrashedKeys の結果から保持期間超過の KEY を検出し、WithKeyLock で囲んで DeleteKey する
+      - runOnce 内で ListPendingDeletionsOlderThan(ctx, cutoff) を呼び、返された予約 1 件ごとに WithKeyLock で囲んで SweepOnePendingDeletion を呼ぶ
+      - 個別 KEY・record の削除失敗はログに記録し処理を継続する（silent failure 禁止）
+      - 保持期間超過分のみ処理し未超過分に触れないことの単体テストを追加する
+      - 個別エラー時に処理が継続することの単体テストを追加する
+    acceptance_criteria: runOnce が保持期間超過分のみを処理し未超過分に触れないこと、個別エラー時も処理が継続することをテストで確認できる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - internal/expiry/expiry.go
+      - internal/store/pending.go
+
+  - task_id: TASK-005
+    title: internal/expiry の廃止と internal/trash.Worker への置換
+    priority: 85
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-004
+    group_id: null
+    build_check: per_task
+    description:
+      - cmd/docdb/main.go の internal/expiry.Worker 起動箇所を internal/trash.Worker に置換する
+      - internal/expiry パッケージ（expiry.go, expiry_test.go, integration_test.go）を削除する
+      - internal/config の ExpiryConfig を TrashConfig（RetentionDays, IntervalSeconds）に置き換える
+      - doc-db.yaml.example の expiry セクションを trash セクション（retention_days, interval_seconds）に置き換える
+      - go build ./... が成功することを確認する
+      - internal/expiry への参照が残っていないことを grep で確認する
+    acceptance_criteria: go build ./... が成功し、grep -r "internal/expiry" の結果がゼロ件になる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - cmd/docdb/main.go
+      - internal/config/config.go
+
+  - task_id: TASK-006
+    title: list_indexes に chunk_count を追加
+    priority: 80
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-002
+    group_id: null
+    build_check: per_task
+    description:
+      - handleListIndexes のレスポンスに ChunkCount を含める
+      - ListIndexesResult のフィールド定義・ツール説明文を更新する
+      - handleListIndexes の結果からゴミ箱状態（trashed_at が非 NULL）の KEY を除外する
+      - list_indexes の応答に chunk_count が正しく含まれること、ゴミ箱状態の KEY が含まれないことの単体テストを追加する
+    acceptance_criteria: list_indexes の応答 JSON に各 KEY の chunk_count が正しい値で含まれ、ゴミ箱状態の KEY が含まれないことをテストで確認できる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - internal/mcp/mcp.go
+
+  - task_id: TASK-007
+    title: trash_index / list_trashed_indexes / restore_index ハンドラの新設と delete_index の廃止
+    priority: 80
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+      - TASK-004
+      - TASK-005
+    group_id: null
+    build_check: per_task
+    description:
+      - trash_index MCP ツールを新設する（TrashKey を呼ぶ）
+      - list_trashed_indexes MCP ツールを新設する（ListTrashedKeys を呼ぶ）。ListTrashedKeys が返す trashed_at と設定値 trash.retention_days から remaining_seconds を算出し応答に含める
+      - restore_index MCP ツールを新設する（RestoreKey を呼ぶ）
+      - 各ツールの入出力スキーマとエラーハンドリング（存在しない KEY・多重投入・未投入の復活等）を実装する
+      - delete_index ツール定義・ハンドラ（handleDeleteIndex）・DeleteIndexInput/Result 型を削除する（trash_index に置換）
+      - delete_index に関連する既存テストを削除する
+      - 4 ツールそれぞれの正常系・異常系の単体テストを追加する（trash_index/list_trashed_indexes/restore_index）。list_trashed_indexes は remaining_seconds の算出が正しいことも検証する
+    acceptance_criteria: trash_index/list_trashed_indexes/restore_index の正常系・異常系テストがすべて green で通過し、grep -r "handleDeleteIndex\|DeleteIndexInput" の結果がゼロ件になる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md
+      - internal/mcp/mcp.go
+      - internal/mcp/schedule.go
+
+  - task_id: TASK-008
+    title: manage_index ツールの廃止
+    priority: 75
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-004
+    group_id: null
+    build_check: per_task
+    description:
+      - manage_index ツール定義・ハンドラ（handleManageIndex）を削除する
+      - ManageIndexInput / ManageIndexResult 型を削除する
+      - SetExpiryPolicy / ExpiryPolicy 型など TTL/LRU 専用の Store メソッドを削除する
+      - manage_index に関連する既存テストを削除する
+      - go build ./... が成功し、ManageIndexInput 系の参照が残っていないことを grep で確認する
+    acceptance_criteria: go build ./... が成功し、grep -r "ManageIndex\|SetExpiryPolicy" の結果がゼロ件になる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - internal/mcp/mcp.go
+      - internal/store/store.go
+
+  - task_id: TASK-009
+    title: query のゴミ箱 KEY 指定時の明示エラー化
+    priority: 75
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+      - TASK-007
+    group_id: null
+    build_check: per_task
+    description:
+      - handleQuery で処理開始前に IsTrashed(key) を確認し、true の場合は検索を実行せず、対象 KEY がゴミ箱に入っている旨のエラーを返す
+      - trash_index 実行後に query が当該 KEY に対して明示エラーを返すこと（空結果ではないこと）の単体テストを追加する
+    acceptance_criteria: trash_index 実行後、当該 KEY を対象にした query が明示エラーを返す（空の正常応答ではない）ことをテストで確認できる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - internal/mcp/mcp.go
+      - internal/search
+
+  - task_id: TASK-012
+    title: ゴミ箱 KEY への書き込み系 4 ツールの操作拒否
+    priority: 78
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-001
+    group_id: null
+    build_check: per_task
+    description:
+      - handleUpsert（upsert_documents）で処理開始前に IsTrashed(key) を確認し、true の場合は処理を実行せずエラーを返す
+      - handleSyncDocuments（sync_documents）でも同様に IsTrashed(key) を確認し、true の場合は処理を実行せずエラーを返す
+      - handleDeleteDocuments（delete_documents）でも同様に IsTrashed(key) を確認し、true の場合は処理を実行せずエラーを返す
+      - handleScheduleDeleteSeries（schedule_delete_series）でも同様に IsTrashed(key) を確認し、true の場合は処理を実行せずエラーを返す
+      - エラーメッセージに「対象 KEY はゴミ箱に入っている旨」と「restore_index で復活してから操作する旨」を含める
+      - trashed_at はこの拒否処理によって変更されないことを確認する
+      - ゴミ箱状態の KEY への 4 ツールいずれの呼び出しも拒否されること、trashed_at が変化しないことの単体テストを追加する
+    acceptance_criteria: ゴミ箱状態の KEY への upsert_documents/sync_documents/delete_documents/schedule_delete_series がすべて拒否され、trashed_at が変化しないことをテストで確認できる
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md
+      - internal/mcp/mcp.go
+      - internal/mcp/sync.go
+      - internal/mcp/schedule.go
+
+  - task_id: TASK-010
+    title: manage-db-indexes SKILL の新設
+    priority: 70
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-006
+      - TASK-007
+      - TASK-009
+    group_id: null
+    build_check: per_task
+    description:
+      - .claude/skills/delete-db-series/ の雛形（frontmatter, docdb_client.py, resolve_docs.py, Step 構成）を再利用して .claude/skills/manage-db-indexes/ を新設する
+      - list_indexes を呼び KEY メタデータ一覧（chunk 数含む）を提示する対話フローを実装する
+      - 削除選択時、series の有無に応じて確認要否を分岐する対話フローを実装する（series あり→確認必須、series なし→簡易操作）
+      - list_trashed_indexes を呼びゴミ箱一覧（残り時間含む）を提示する対話フローを実装する
+      - restore_index を呼ぶ復活操作の対話フローを実装する
+      - PyYAML 等の外部 Python 依存を追加していないことを確認する
+    acceptance_criteria: SKILL 実行で KEY メタデータ一覧・ゴミ箱一覧が提示され、削除・復活の各操作が対応する MCP ツールを正しく呼び出す
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md
+      - .claude/skills/delete-db-series/SKILL.md
+      - .claude/skills/delete-db-series/scripts/docdb_client.py
+
+  - task_id: TASK-011
+    title: 統合テストと関連ドキュメントの更新
+    priority: 65
+    status: pending
+    design_id: DES-003
+    depends_on:
+      - TASK-005
+      - TASK-008
+      - TASK-010
+      - TASK-012
+    group_id: null
+    build_check: per_task
+    description:
+      - ゴミ箱投入 → 一覧確認 → 復活 → 再投入 → 保持期間経過後の自動処分、という一連のフローの統合テストを追加する（保持期間は短縮設定でテスト）
+      - ゴミ箱投入後の upsert_documents/sync_documents/delete_documents/schedule_delete_series 拒否、および query の明示エラーを含めた統合テストを追加する
+      - make verify を実行し全体が通過することを確認する
+      - 既存 DIF-02 不変条件テスト 3 件が green のままであることを最終確認する
+      - README.md / docs/AI_INTEGRATION_GUIDE.md の MCP ツール一覧・SKILL 一覧の記述を更新する（delete_index 廃止・trash_index 等の新設を反映）
+    acceptance_criteria: 統合テストが green で通過し、make verify が成功し、README/AI_INTEGRATION_GUIDE.md の記述が新しいツール構成と一致する
+    required_reading:
+      - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
+      - README.md
+      - docs/AI_INTEGRATION_GUIDE.md
+
+revision_history:
+  - date: "2026-07-08"
+    content: 初版作成

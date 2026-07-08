@@ -5,7 +5,7 @@
 metadata:
   name: Document Search Index (specs)
   key: specs
-  generated_at: 2026-07-07T15:45:44Z
+  generated_at: 2026-07-08T02:27:59Z
   file_count: 8
 
 docs:
@@ -107,92 +107,100 @@ docs:
       - garbage collection
       - origin_signals
   docs/specs/expiry-visibility/design/ADR-003_ttl_lru_replaced_by_user_driven_trash.md:
-    title: ADR-003 Discontinue Automatic TTL/LRU Deletion and Transition to User-Driven Trash Model
-    purpose: Architecture decision documenting the transition from automatic TTL/LRU-based deletion to user-driven trash mechanism with recovery grace period to prevent accidental data loss
+    title: "ADR-003: Replace Automatic TTL/LRU Deletion with User-Driven Trash Model"
+    purpose: Architecture decision record replacing automatic TTL/LRU deletion with user-driven trash mechanism featuring explicit deletion with grace period recovery
     content_details:
-      - Automatic deletion bug causing unintended deletion of newly uploaded KEY without prior access
-      - "Root cause: last_accessed_at not updated on upsert, making new records appear oldest accessed"
-      - TTL/LRU worker behavior (EXP-02) ignores candidate count and deletes until capacity limit is resolved
-      - "Decision: Database removes all automatic deletion logic; users/agents make deletion judgment calls"
-      - "Trash mechanism: User-explicit trash operations only; configurable grace period (default 3 days) for recovery"
-      - Physical deletion only occurs after grace period expires; users can restore data within grace period
-      - "Rejected alternatives: Adding single-candidate safety check (insufficient), updating last_accessed_at only (logic itself is flawed)"
-      - "Impact: Disk usage increases during grace period; operators must actively monitor key metadata"
+      - TTL/LRU automatic deletion worker issues and failure scenarios
+      - "Problem: last_accessed_at not updated on upsert/sync operations"
+      - "Problem: LRU deletion executes mechanically regardless of candidate count"
+      - "Design shift: DB layer no longer judges deletion necessity, responsibility transferred to users/agents"
+      - Trash mechanism requires explicit user operation with configurable grace period before physical deletion
+      - delete_index tool deprecated; trash_index becomes sole deletion path
+      - "Alternative options evaluated: safety valve approaches, targeted bug fixes, unconditional deletion"
+      - "Impact analysis: structural safety gain, loss of automatic capacity management, additional disk space requirement"
+      - "Affected components: TTL/LRU worker, KEY metadata MCP tool, disposal policy override functionality"
     applicable_tasks:
-      - TTL/LRU automatic deletion worker removal
-      - Trash mechanism implementation
-      - Key metadata monitoring design
-      - User-driven deletion workflow implementation
-      - Database deletion policy review
+      - Data deletion safety review
+      - Capacity management policy decisions
+      - Key metadata monitoring setup
+      - Trash mechanism grace period configuration
+      - delete_index tool deprecation migration
     keywords:
-      - TTL
-      - LRU
-      - automatic deletion
-      - trash model
-      - grace period
-      - recovery
-      - metadata
-      - key management
-      - last_accessed_at
-      - EXP-02
-  docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md:
-    title: DES-003 Key Deletion Visibility and User-Driven Management Design
-    purpose: Design specification for replacing automatic TTL/LRU deletion with user-driven key management, including trash mechanism with grace period recovery, enhanced key metadata visibility, and background worker for deferred physical deletion
-    content_details:
-      - Replaces TTL/LRU automatic deletion worker (internal/expiry) with user-driven operations and new internal/trash periodic worker
-      - Keys table extended with trashed_at column (NULL-tolerant) to mark deleted keys in trash state; separate from orphan record management
-      - "Enhanced key metadata: list_indexes expanded with ChunkCount; ListKeys returns KeyInfo including chunk count, doc count, series, last updated/accessed timestamps"
-      - "New MCP tools: trash_index (mark key for deletion), list_trashed_indexes (show trashed keys with remaining grace period), restore_index (recover from trash)"
-      - Query tool automatically excludes trashed keys from search results; delete_index operation preserved without modification
-      - "Trash worker runs periodically: sweeps trashed_at-expired keys via DeleteKey and marked_at-expired orphan records via SweepPendingDeletions with cutoff filtering"
-      - "Store API design: TrashKey/RestoreKey/ListTrashedKeys operations with KeyInfo and TrashedKeyInfo types; WithKeyLock ensures exclusive deletion"
-      - "Alternatives considered: Single trashed_at column (adopted) vs. unified pending_deletions vs. separate trash table; single-column minimizes existing structure impact"
-    applicable_tasks:
-      - TTL/LRU automatic deletion worker removal and replacement with periodic trash worker
-      - Database schema design (keys.trashed_at column addition)
-      - MCP handler implementation for trash/restore/list_trashed operations
-      - Store layer methods for trash key management
-      - Key metadata visibility and monitoring tool (manage-db-indexes SKILL) design
-      - Grace period and pending_deletions cutoff filtering implementation
-      - Trash worker periodic execution and audit logging
-      - Use case flow implementation (trash, restore, automatic final disposal)
-    keywords:
+      - TTL/LRU deletion
       - trash mechanism
-      - trashed_at
+      - delete_index deprecation
+      - last_accessed_at
       - grace period
-      - key metadata
-      - chunk_count
-      - KeyInfo
-      - orphan records
-      - pending_deletions
-      - user-driven deletion
-      - WithKeyLock
-  docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md:
-    title: KEY Deletion Visibility and User-Driven Management Requirements Specification
-    purpose: Specifies requirements for replacing automatic TTL/LRU deletion with user-driven management, including key metadata visibility, trash bin operations, and automatic final deletion.
+      - KEY metadata
+      - UpsertRecord
+      - capacity management
+  docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md:
+    title: "DES-003: Design for Key Deletion Visibility and User-Driven Trash Mechanism"
+    purpose: Comprehensive design specification for replacing automatic TTL/LRU deletion with user-driven trash mechanism including visibility tools, explicit operations with grace period recovery, and background sweep infrastructure
     content_details:
-      - TTL/LRU automatic deletion abolished
-      - Key metadata expansion with chunk count and access timestamps
-      - User-driven deletion via manage-db-indexes SKILL with confirmation workflow
-      - Trash bin lifecycle states (Active, InTrash, automatic final deletion)
-      - Orphan record automatic final deletion with 3-day default retention
-      - Orphan record restoration via automatic re-sync (system-driven)
-      - Audit trail with timestamps for deletion operations
-      - Trash bin visibility showing insertion date and time remaining
+      - "Architecture overview: internal/expiry replacement with internal/trash Worker and manage-db-indexes SKILL"
+      - "MCP tools: list_indexes expansion, trash_index (replaces delete_index), list_trashed_indexes, restore_index, query explicit error on trashed keys"
+      - "Store layer: keys.trashed_at column (NULL-optional), TrashKey/RestoreKey/ListTrashedKeys/IsTrashed methods, pending_deletions split into ListPendingDeletionsOlderThan and SweepOnePendingDeletion"
+      - "internal/trash Worker: periodic execution with interval_seconds configuration for sweeping trashed_at expiry and pending_deletions cutoff enforcement"
+      - "Use case design: KEY metadata confirmation, trash operations with series confirmation flow, trash list viewing with remaining time, restore operations, automatic final disposal"
+      - Sequence diagrams for trash operation flow (UC-2), automatic disposal (UC-5/UC-6), write operation rejection (UC-7), query explicit error (UC-8)
+      - "Configuration schema: trash.retention_days (default 3) and trash.interval_seconds replacing expiry section in doc-db.yaml"
+      - "Database migration: ALTER TABLE keys ADD COLUMN trashed_at at startup, KnownFields(true) strict validation for schema enforcement"
+      - "Undo behavior: WithKeyLock patterns for trash/restore operations, pending_deletions cutoff filtering for retention window enforcement"
     applicable_tasks:
-      - Database lifecycle management policy implementation
-      - Index deletion workflow design
-      - Metadata exposure and user control enhancement
-      - Orphan record handling mechanism
+      - Trash mechanism implementation
+      - MCP handler modifications for trash operations
+      - Store layer schema migration and new method implementation
+      - internal/trash Worker periodic execution setup
+      - manage-db-indexes SKILL development and UI design
+      - Configuration file schema update and backward incompatibility handling
+      - Unit test coverage for Store trash methods
+      - Integration test coverage for trash operation workflows
+      - Query error handling for trashed keys
+      - delete_index tool deprecation and removal
+    keywords:
+      - trash_index
+      - trashed_at
+      - ListTrashedKeys
+      - retention_days
+      - RestoreIndex
+      - pending_deletions split
+      - WithKeyLock
+      - IsTrashed
+      - grace period recovery
+      - delete_index deprecation
+  docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md:
+    title: FNC-007 to FNC-013 KEY Deletion Visibility and User-Driven Management Requirements Specification
+    purpose: Specifies requirements for implementing trash-based deletion with user-controlled workflows, replacing automatic TTL/LRU deletion with explicit user-managed KEY lifecycle control and audit trails
+    content_details:
+      - TTL and LRU automatic deletion feature removal
+      - Enhanced KEY metadata provision (chunk count, series list, access times)
+      - Trash bin implementation for soft-deleted KEYs with grace period
+      - Trash bin list display with remaining time until automatic disposition
+      - KEY recovery/restoration from trash before automatic final deletion
+      - Automatic final disposition of KEYs after configurable retention period
+      - Orphan record handling in trash with independent lifecycle
+      - Deletion audit trail tracking (what KEY was deleted and when)
+      - Write operation blocking on trashed KEYs (upsert/sync/delete/schedule_delete_series rejection)
+      - KEY lifecycle state machine (Active ↔ InTrash → [Deleted or Active])
+    applicable_tasks:
+      - Implement trash bin feature for doc-db backend
+      - Design user-driven deletion confirmation workflow
+      - Implement automatic final disposition scheduler
+      - Design and build manage-db-indexes interactive SKILL
+      - Enhance list_indexes to include chunk metadata
+      - Create deletion audit logging system
     keywords:
       - KEY deletion
-      - TTL/LRU
       - trash bin
+      - TTL/LRU automatic deletion
       - orphan record
-      - automatic final deletion
-      - key metadata
-      - user-driven management
-      - manage-db-indexes SKILL
+      - retention_days
+      - final disposition
+      - state machine
+      - manage-db-indexes
+      - lifecycle management
+      - deletion audit trail
   docs/specs/install/design/DES-002_install_design.md:
     title: DES-002 doc-db MCP Server Installation Design
     purpose: Defines Homebrew installation architecture for doc-db MCP server, including Formula design, version consistency management, and post-installation user experience
