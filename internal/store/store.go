@@ -242,7 +242,8 @@ CREATE TABLE IF NOT EXISTS keys (
     doc_count        INTEGER NOT NULL DEFAULT 0,
     last_accessed_at TEXT NOT NULL,
     last_updated_at  TEXT NOT NULL,
-    expiry_policy    TEXT
+    expiry_policy    TEXT,
+    trashed_at       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS records (
@@ -295,8 +296,57 @@ CREATE TABLE IF NOT EXISTS pending_deletions (
 DROP TABLE IF EXISTS bm25_stats;
 DROP TABLE IF EXISTS bm25_df;
 `
-	_, err := s.db.ExecContext(ctx, ddl)
-	return err
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+
+	// 既存 DB（trashed_at カラム新設前に作成された keys テーブル）に対するマイグレーション。
+	// CREATE TABLE IF NOT EXISTS は既存テーブルへのカラム追加を行わないため、
+	// PRAGMA table_info で列の有無を確認してから ALTER TABLE する（DES-003 §6）。
+	return s.migrateAddTrashedAtColumn(ctx)
+}
+
+// migrateAddTrashedAtColumn は keys テーブルに trashed_at 列が存在しない場合に追加する
+// マイグレーション処理（FNC-012、DES-003 §6）。
+// 呼び出し元（initSchema）が s.mu を保持していること前提。
+func (s *Store) migrateAddTrashedAtColumn(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(keys)`)
+	if err != nil {
+		return fmt.Errorf("store.migrateAddTrashedAtColumn: table_info: %w", err)
+	}
+
+	found := false
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("store.migrateAddTrashedAtColumn: scan: %w", err)
+		}
+		if name == "trashed_at" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("store.migrateAddTrashedAtColumn: iterate: %w", err)
+	}
+	rows.Close()
+
+	if found {
+		return nil
+	}
+
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE keys ADD COLUMN trashed_at TEXT`); err != nil {
+		return fmt.Errorf("store.migrateAddTrashedAtColumn: alter table: %w", err)
+	}
+	return nil
 }
 
 // checkDim は起動時に embeddings テーブルの dim が expectedDim と一致することを確認する。
