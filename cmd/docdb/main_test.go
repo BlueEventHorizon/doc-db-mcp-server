@@ -66,8 +66,10 @@ func TestStartupSweep_StatsReflectSweptState(t *testing.T) {
 		t.Fatalf("スイープ前 TotalChunkCount = %d (err=%v), want 2", n, err)
 	}
 
-	// 起動時スイープ（run() が統計算出より前に呼ぶものと同一の関数）
-	processed, errCount := startupSweep(ctx, st)
+	// 起動時スイープ（run() が統計算出より前に呼ぶものと同一の関数）。
+	// retentionDays=3 は手動投入した marked_at（2026-01-01T00:00:00Z、十分過去）を
+	// 超過判定させるためのテスト用の値（本番では cfg.Trash.RetentionDays を使う）。
+	processed, errCount := startupSweep(ctx, st, 3)
 	if errCount != 0 {
 		t.Fatalf("startupSweep errCount = %d, want 0", errCount)
 	}
@@ -92,7 +94,7 @@ func TestStartupSweep_StatsReflectSweptState(t *testing.T) {
 	}
 
 	// 手動投入した予約行が消えていること: 2 回目のスイープは 0 件処理になる
-	if processed, errCount := startupSweep(ctx, st); processed != 0 || errCount != 0 {
+	if processed, errCount := startupSweep(ctx, st, 3); processed != 0 || errCount != 0 {
 		t.Errorf("2回目 startupSweep = (processed=%d, errCount=%d), want (0, 0)（予約行残存の疑い）",
 			processed, errCount)
 	}

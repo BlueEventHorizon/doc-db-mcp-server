@@ -760,7 +760,7 @@ type ListIndexesInput struct{}
 
 // ListIndexesResult は list_indexes の出力。
 type ListIndexesResult struct {
-	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/last_updated_at/last_accessed_at/expiry_policy を含む。"`
+	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/chunk_count/last_updated_at/last_accessed_at/expiry_policy を含む。ゴミ箱状態 (trash_index 済み) の KEY はこの一覧から除外される。"`
 }
 
 func (h *Handlers) handleListIndexes(

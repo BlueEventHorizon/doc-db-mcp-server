@@ -735,6 +735,57 @@ func TestListIndexes(t *testing.T) {
 	}
 }
 
+// TestListIndexes_ChunkCount は list_indexes の応答に chunk_count が正しく
+// 含まれることを検証する（TASK-006）。
+func TestListIndexes_ChunkCount(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K1", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, out, err := h.handlers.handleListIndexes(ctx, nil, ListIndexesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Indexes) != 1 {
+		t.Fatalf("len = %d, want 1", len(out.Indexes))
+	}
+	if out.Indexes[0].ChunkCount != 1 {
+		t.Errorf("chunk_count = %d, want 1", out.Indexes[0].ChunkCount)
+	}
+}
+
+// TestListIndexes_ExcludesTrashedKeys は list_indexes の応答からゴミ箱状態
+// (trashed_at が非 NULL) の KEY が除外されることを検証する（TASK-006, DES-003）。
+func TestListIndexes_ExcludesTrashedKeys(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	for _, k := range []string{"K1", "K2"} {
+		if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+			Key: k, Series: "s",
+			Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.store.TrashKey(ctx, "K2"); err != nil {
+		t.Fatal(err)
+	}
+	_, out, err := h.handlers.handleListIndexes(ctx, nil, ListIndexesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Indexes) != 1 {
+		t.Fatalf("len = %d, want 1 (K2 はゴミ箱状態のため除外されるべき)", len(out.Indexes))
+	}
+	if out.Indexes[0].Key != "K1" {
+		t.Errorf("Indexes[0].Key = %q, want K1", out.Indexes[0].Key)
+	}
+}
+
 func TestDeleteIndex(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

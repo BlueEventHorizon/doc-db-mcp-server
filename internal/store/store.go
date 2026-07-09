@@ -509,6 +509,9 @@ func (s *Store) fetchSeriesKeys(ctx context.Context, recordID int64) ([]string, 
 // ListKeys は全 KEY の情報一覧を返す（MNG-01 対応、FNC-008: chunk_count 含む）。
 // ListKeysByLRU の chunk 数集計 SQL とは異なり、chunk が 0 件の KEY も
 // ChunkCount=0 で結果に含める（LEFT JOIN、全 KEY を返す責務のため INNER JOIN は使わない）。
+// ゴミ箱状態（trashed_at が非 NULL）の KEY は結果から除外する（DES-003 §3.1・FNC-007 系）。
+// これは「削除すべきか」の判定ではなく「ゴミ箱に入っているかどうかの事実」に基づくフィルタであり、
+// Store 層が判定を持たないという ADR-003 の方針と矛盾しない。
 func (s *Store) ListKeys(ctx context.Context) ([]KeyInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT k.key, k.doc_count, k.last_updated_at, k.last_accessed_at, k.expiry_policy,
@@ -516,6 +519,7 @@ SELECT k.key, k.doc_count, k.last_updated_at, k.last_accessed_at, k.expiry_polic
 FROM keys k
 LEFT JOIN records r ON r.key = k.key
 LEFT JOIN chunks c ON c.record_id = r.id
+WHERE k.trashed_at IS NULL
 GROUP BY k.key
 ORDER BY k.key
 `)

@@ -25,7 +25,7 @@ type Config struct {
 	Chunker   ChunkerConfig   `yaml:"chunker"`
 	BM25      BM25Config      `yaml:"bm25"`
 	Fetcher   FetcherConfig   `yaml:"fetcher"`
-	Expiry    ExpiryConfig    `yaml:"expiry"`
+	Trash     TrashConfig     `yaml:"trash"`
 	// Log は省略可能セクション（CFG-03 の例外。DES-001 §9.3 参照）。
 	// 省略時は defaultLogPath() / "info" が適用される。既存の doc-db.yaml に
 	// log: セクションが無くても起動が壊れないようにするための後方互換措置。
@@ -69,10 +69,11 @@ type FetcherConfig struct {
 	AllowPrivate   bool `yaml:"allow_private"`
 }
 
-// ExpiryConfig は expiry セクション。
-type ExpiryConfig struct {
-	TTLDays         int `yaml:"ttl_days"`
-	MaxChunks       int `yaml:"max_chunks"`
+// TrashConfig は trash セクション（DES-003 §6。旧 expiry セクションを置き換える）。
+type TrashConfig struct {
+	// RetentionDays はゴミ箱投入から自動最終処分までの保持日数（デフォルト 3、DES-003 §6）。
+	RetentionDays int `yaml:"retention_days"`
+	// IntervalSeconds は internal/trash.Worker のチェック間隔（デフォルト 3600）。
 	IntervalSeconds int `yaml:"interval_seconds"`
 }
 
@@ -202,7 +203,7 @@ func (c *Config) Validate() error {
 	if err := c.Fetcher.validate(); err != nil {
 		return err
 	}
-	if err := c.Expiry.validate(); err != nil {
+	if err := c.Trash.validate(); err != nil {
 		return err
 	}
 	if err := c.Log.validate(); err != nil {
@@ -271,15 +272,12 @@ func (f *FetcherConfig) validate() error {
 	return nil
 }
 
-func (e *ExpiryConfig) validate() error {
-	if e.TTLDays <= 0 {
-		return fmt.Errorf("expiry.ttl_days は正の整数を指定してください（現在値: %d）", e.TTLDays)
+func (tc *TrashConfig) validate() error {
+	if tc.RetentionDays <= 0 {
+		return fmt.Errorf("trash.retention_days は正の整数を指定してください（現在値: %d）", tc.RetentionDays)
 	}
-	if e.MaxChunks <= 0 {
-		return fmt.Errorf("expiry.max_chunks は正の整数を指定してください（現在値: %d）", e.MaxChunks)
-	}
-	if e.IntervalSeconds <= 0 {
-		return fmt.Errorf("expiry.interval_seconds は正の整数を指定してください（現在値: %d）", e.IntervalSeconds)
+	if tc.IntervalSeconds <= 0 {
+		return fmt.Errorf("trash.interval_seconds は正の整数を指定してください（現在値: %d）", tc.IntervalSeconds)
 	}
 	return nil
 }

@@ -20,12 +20,12 @@ import (
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/chunker"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/config"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/embedder"
-	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/expiry"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/fetcher"
 	docdbmcp "github.com/BlueEventHorizon/doc-db-mcp-server/internal/mcp"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/reranker"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/search"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/store"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/trash"
 )
 
 // version はビルド時に -ldflags "-X main.version=..." で上書きされる（DES-002 §4.2）。
@@ -35,7 +35,7 @@ import (
 var version = "dev"
 
 func main() {
-	// --version は設定ファイル読み込み・API キー検証・Store/Expiry 初期化より前に処理する（APP-002 VER-03）。
+	// --version は設定ファイル読み込み・API キー検証・Store/Trash 初期化より前に処理する（APP-002 VER-03）。
 	// Homebrew test（brew test doc-db）はこの分岐を踏んで即時終了するため、
 	// 設定ファイルや API キーがなくてもパスする。
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
@@ -125,16 +125,13 @@ func setupLogging(cfg *config.Config) (io.Closer, error) {
 	return closer, nil
 }
 
-// defaultTrashRetentionDays は trash.retention_days の暫定デフォルト値（DES-003 §6 記載の
-// doc-db.yaml.example 既定値と同じ 3 日）。internal/config への TrashConfig 導入（TASK-005）までの
-// 暫定値であり、TASK-005 完了後は設定ファイルの実値に置き換える。
-const defaultTrashRetentionDays = 3
-
 // startupSweepCutoff は起動時スイープで使う cutoff。DES-003 §4.2「起動時であっても猶予期間中の
-// 予約は処理しない」という設計要求に従い、marked_at が猶予期間（defaultTrashRetentionDays）を
+// 予約は処理しない」という設計要求に従い、marked_at が猶予期間（retentionDays、cfg.Trash.RetentionDays
+// と同一のソース。internal/trash.Worker の定期実行と別の値を使うと、設定した猶予期間より短い期間で
+// 起動時に物理削除されてしまい ADR-003 §2 の保証が崩れるため、必ず同じ値を呼び出し元から受け取る）を
 // 超過した予約のみを対象にする。
-func startupSweepCutoff() time.Time {
-	return time.Now().Add(-defaultTrashRetentionDays * 24 * time.Hour)
+func startupSweepCutoff(retentionDays int) time.Time {
+	return time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 }
 
 // startupSweep は削除予約（pending_deletions）の起動時スイープを同期実行し、
@@ -145,10 +142,10 @@ func startupSweepCutoff() time.Time {
 //
 // ListPendingDeletionsOlderThan + SweepOnePendingDeletion（DES-003 §4.3）を使う形に分割済み。
 // 予約 1 件ごとに WithKeyLock(entry.Key, ...) で囲んで処理する（KEY 単位排他は呼び出し元の責務、
-// DES-001 §4.3）。cutoff には startupSweepCutoff の猶予期間超過時刻を使い、猶予期間中の予約は
-// 処理しない（DES-003 §4.2）。
-func startupSweep(ctx context.Context, st *store.Store) (processed, errCount int) {
-	entries, err := st.ListPendingDeletionsOlderThan(ctx, startupSweepCutoff())
+// DES-001 §4.3）。retentionDays は呼び出し元（run()）が cfg.Trash.RetentionDays から渡す
+// （internal/trash.Worker の定期実行と同一のソースを使うことで、猶予期間の不整合を防ぐ）。
+func startupSweep(ctx context.Context, st *store.Store, retentionDays int) (processed, errCount int) {
+	entries, err := st.ListPendingDeletionsOlderThan(ctx, startupSweepCutoff(retentionDays))
 	if err != nil {
 		slog.Warn("起動時スイープ: 削除予約一覧の取得に失敗（次回起動時に再試行）", "error", err)
 		return 0, 1
@@ -159,10 +156,14 @@ func startupSweep(ctx context.Context, st *store.Store) (processed, errCount int
 			return st.SweepOnePendingDeletion(ctx, entry)
 		})
 		if lockErr != nil {
-			slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）", "error", lockErr)
+			slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）",
+				"key", entry.Key, "series", entry.Series, "path", entry.Path, "error", lockErr)
 			errCount++
 			continue
 		}
+		// 対象・実行日時を個別エントリ単位で記録する（FNC-012/013、internal/trash.Worker と同じ粒度）
+		slog.Info("起動時スイープ: 削除予約を処理", "key", entry.Key, "series", entry.Series,
+			"path", entry.Path, "marked_at", entry.MarkedAt, "deleted_at", time.Now().UTC().Format(time.RFC3339))
 		processed++
 	}
 	slog.Info("起動時スイープ完了", "processed", processed, "error_count", errCount)
@@ -210,7 +211,9 @@ func run(ctx context.Context) error {
 	defer st.Close()
 
 	// 削除予約の起動時スイープ（GC-02）。統計表示より前に同期実行する（GC-03）。
-	startupSweep(ctx, st)
+	// retentionDays は internal/trash.Worker の定期実行と同一の cfg.Trash.RetentionDays を使う
+	// （猶予期間のソースを分離すると設定した期間より短く物理削除される安全性の問題が生じるため）。
+	startupSweep(ctx, st, cfg.Trash.RetentionDays)
 
 	// 起動時 DB 統計（KEY数・総チャンク数）。取得に失敗しても起動は継続する
 	// (統計表示はオペレータ向けの付加情報であり、サーバー機能に必須ではないため)。
@@ -256,13 +259,12 @@ func run(ctx context.Context) error {
 		},
 	)
 
-	// Expiry ワーカー起動（DES-001 §8）
-	expWorker := expiry.New(st, expiry.Config{
-		IntervalSecs: cfg.Expiry.IntervalSeconds,
-		TTLDays:      cfg.Expiry.TTLDays,
-		MaxChunks:    cfg.Expiry.MaxChunks,
+	// ゴミ箱最終処分ワーカー起動（DES-003 §3.1/§4.3。旧 internal/expiry の TTL/LRU ワーカーを置換）
+	trashWorker := trash.New(st, trash.Config{
+		IntervalSeconds: cfg.Trash.IntervalSeconds,
+		RetentionDays:   cfg.Trash.RetentionDays,
 	})
-	go expWorker.Start(ctx)
+	go trashWorker.Start(ctx)
 
 	// MCP サーバー初期化 + ツール登録
 	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{
