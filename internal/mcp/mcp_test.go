@@ -1014,6 +1014,100 @@ func TestRestoreIndex_NotTrashedIsError(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
+// ゴミ箱 KEY への書き込み系操作拒否 (TASK-012, DES-003 UC-7, FNC-009)
+// -----------------------------------------------------------------------
+
+// TestWriteOps_RejectedWhenKeyTrashed は、ゴミ箱状態の KEY に対する
+// upsert_documents / sync_documents / delete_documents / schedule_delete_series の
+// 呼び出しがいずれも拒否され、trashed_at が変化しないことを検証する。
+func TestWriteOps_RejectedWhenKeyTrashed(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"}); err != nil {
+		t.Fatal(err)
+	}
+
+	trashedBefore, terr := h.store.ListTrashedKeys(ctx)
+	if terr != nil {
+		t.Fatal(terr)
+	}
+	if len(trashedBefore) != 1 {
+		t.Fatalf("setup: len(trashedBefore) = %d, want 1", len(trashedBefore))
+	}
+	trashedAtBefore := trashedBefore[0].TrashedAt
+
+	t.Run("upsert_documents", func(t *testing.T) {
+		_, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+			Key: "K", Series: "s",
+			Documents: []UpsertDocument{{Path: "p2", Content: "# H\ny"}},
+		})
+		if err == nil {
+			t.Fatal("want error for upsert_documents against a trashed key")
+		}
+		if !strings.Contains(err.Error(), "ゴミ箱") || !strings.Contains(err.Error(), "restore_index") {
+			t.Errorf("error message = %q, want it to mention ゴミ箱 and restore_index", err.Error())
+		}
+	})
+
+	t.Run("sync_documents", func(t *testing.T) {
+		_, _, err := h.handlers.handleSyncDocuments(ctx, nil, SyncInput{
+			Key: "K", Series: "s",
+			Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+		})
+		if err == nil {
+			t.Fatal("want error for sync_documents against a trashed key")
+		}
+		if !strings.Contains(err.Error(), "ゴミ箱") || !strings.Contains(err.Error(), "restore_index") {
+			t.Errorf("error message = %q, want it to mention ゴミ箱 and restore_index", err.Error())
+		}
+	})
+
+	t.Run("delete_documents", func(t *testing.T) {
+		_, _, err := h.handlers.handleDelete(ctx, nil, DeleteInput{
+			Key: "K", Series: "s", Paths: []string{"p"},
+		})
+		if err == nil {
+			t.Fatal("want error for delete_documents against a trashed key")
+		}
+		if !strings.Contains(err.Error(), "ゴミ箱") || !strings.Contains(err.Error(), "restore_index") {
+			t.Errorf("error message = %q, want it to mention ゴミ箱 and restore_index", err.Error())
+		}
+	})
+
+	t.Run("schedule_delete_series", func(t *testing.T) {
+		_, _, err := h.handlers.handleScheduleDeleteSeries(ctx, nil, ScheduleDeleteSeriesInput{
+			Key: "K", Series: "s",
+		})
+		if err == nil {
+			t.Fatal("want error for schedule_delete_series against a trashed key")
+		}
+		if !strings.Contains(err.Error(), "ゴミ箱") || !strings.Contains(err.Error(), "restore_index") {
+			t.Errorf("error message = %q, want it to mention ゴミ箱 and restore_index", err.Error())
+		}
+	})
+
+	// trashed_at がこの拒否処理によって変更されていないことを確認する。
+	trashedAfter, terr := h.store.ListTrashedKeys(ctx)
+	if terr != nil {
+		t.Fatal(terr)
+	}
+	if len(trashedAfter) != 1 {
+		t.Fatalf("len(trashedAfter) = %d, want 1", len(trashedAfter))
+	}
+	if trashedAfter[0].TrashedAt != trashedAtBefore {
+		t.Errorf("TrashedAt changed by rejected ops: before=%q, after=%q",
+			trashedAtBefore, trashedAfter[0].TrashedAt)
+	}
+}
+
 func TestManageIndex_SetAndReset(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

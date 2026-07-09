@@ -130,6 +130,29 @@ func (h *Handlers) handleListTrashedIndexes(
 }
 
 // -----------------------------------------------------------------------
+// ゴミ箱 KEY への書き込み系操作拒否 (FNC-009, DES-003 UC-7)
+// -----------------------------------------------------------------------
+
+// rejectIfTrashed は key がゴミ箱状態（trashed_at が非 NULL）の場合、書き込み系操作を
+// 拒否するエラーを返す。upsert_documents / sync_documents / delete_documents /
+// schedule_delete_series の 4 ツールがそれぞれの入力必須項目チェックの直後・実処理
+// （WithKeyLock 取得や DB 書き込み）の前に呼ぶ（DES-003 §4.4 UC-7）。
+// trashed_at は変更しない（黙って復活させない。復活は restore_index の明示操作のみ、FNC-011）。
+// 存在しない KEY は h.store.IsTrashed が false を返すため拒否対象にならない
+// （「存在しない KEY」と「ゴミ箱状態」を区別する。存在しない KEY は各ツールの後続処理が
+// 別途エラーにする、または新規作成として扱う）。
+func (h *Handlers) rejectIfTrashed(ctx context.Context, key string) error {
+	trashed, err := h.store.IsTrashed(ctx, key)
+	if err != nil {
+		return fmt.Errorf("check trashed: %w", err)
+	}
+	if trashed {
+		return fmt.Errorf("key %q はゴミ箱に入っています。restore_index で復活してから操作してください", key)
+	}
+	return nil
+}
+
+// -----------------------------------------------------------------------
 // restore_index (FNC-011)
 // -----------------------------------------------------------------------
 

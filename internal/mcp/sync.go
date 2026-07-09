@@ -184,10 +184,13 @@ type SyncResult struct {
 }
 
 func (h *Handlers) handleSyncDocuments(
-	_ context.Context, _ *mcpsdk.CallToolRequest, in SyncInput,
+	ctx context.Context, _ *mcpsdk.CallToolRequest, in SyncInput,
 ) (res *mcpsdk.CallToolResult, out SyncResult, err error) {
 	if in.Key == "" || in.Series == "" {
 		return nil, SyncResult{}, errors.New("key と series は必須")
+	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, SyncResult{}, terr
 	}
 	// documents が空のリストであっても拒否しない: APP-001 FNC-006 SYN-01 は documents を「完全な現在状態」
 	// と定義しており、空は「この series に現存ファイルがない」という正当な desired-state。

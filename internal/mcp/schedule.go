@@ -45,6 +45,9 @@ func (h *Handlers) handleScheduleDeleteSeries(
 	if in.Key == "" || in.Series == "" {
 		return nil, ScheduleDeleteSeriesResult{}, errors.New("key / series は必須")
 	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, ScheduleDeleteSeriesResult{}, terr
+	}
 	start := time.Now()
 	slog.Info("schedule_delete_series start", "key", in.Key, "series", in.Series)
 	defer func() {

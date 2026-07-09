@@ -220,9 +220,10 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
   - ゴミ箱に入った KEY は list_indexes から除外される (list_trashed_indexes でのみ確認可)
   - 保持期間内であれば restore_index で復活できる (実データはそのまま残っている)
 
-【未実装 (計画中)】
-  ゴミ箱状態の KEY への query / upsert_documents / sync_documents / delete_documents /
-  schedule_delete_series の拒否は本バージョンでは未実装。誤って書き込み・参照できる。
+【書き込み保護】
+  ゴミ箱状態の KEY への upsert_documents / sync_documents / delete_documents /
+  schedule_delete_series は拒否される (restore_index で復活してから操作すること)。
+  query のみ未実装 (計画中) で、誤って検索・参照できる。
 
 【エラー】
   存在しない KEY、既にゴミ箱状態の KEY (多重投入) はエラーになる。`,
@@ -397,6 +398,9 @@ func (h *Handlers) handleUpsert(
 	}
 	if len(in.Documents) == 0 {
 		return nil, UpsertResult{}, errors.New("documents が空")
+	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, UpsertResult{}, terr
 	}
 
 	start := time.Now()
@@ -609,6 +613,9 @@ func (h *Handlers) handleDelete(
 ) (res *mcpsdk.CallToolResult, out DeleteResult, err error) {
 	if in.Key == "" || in.Series == "" || len(in.Paths) == 0 {
 		return nil, DeleteResult{}, errors.New("key / series / paths は必須")
+	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, DeleteResult{}, terr
 	}
 
 	start := time.Now()
