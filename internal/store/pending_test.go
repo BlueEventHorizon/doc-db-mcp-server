@@ -15,7 +15,7 @@ import (
 // sweepAllPendingDeletions は旧 SweepPendingDeletions（全件無条件処理）と同じ振る舞いを
 // 新 API（ListPendingDeletionsOlderThan + SweepOnePendingDeletion）の組み合わせで再現する
 // テストヘルパー。cutoff に十分未来の時刻を渡すことで全予約行を対象にし、
-// エントリごとに WithKeyLock で囲んで呼び出す（DES-003 §4.3 の呼び出し元契約）。
+// エントリごとに WithKeyLock で囲んで呼び出す（DES-001 §8.5 の呼び出し元契約）。
 func sweepAllPendingDeletions(t *testing.T, s *Store, ctx context.Context) (processed int, errs []error) {
 	t.Helper()
 
@@ -428,7 +428,7 @@ func TestDeleteOrphanRecords_RemovesOrphanOnlyAndUpdatesDocCount(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// ListPendingDeletionsOlderThan — cutoff 境界値（DES-003 §4.3、猶予期間絞り込み）
+// ListPendingDeletionsOlderThan — cutoff 境界値（DES-001 §8.5、猶予期間絞り込み）
 // -----------------------------------------------------------------------
 
 // insertPendingDeletionRow は pending_deletions に任意の marked_at を持つ行を直接 INSERT
@@ -481,7 +481,7 @@ func TestListPendingDeletionsOlderThan_CutoffBoundary(t *testing.T) {
 // -----------------------------------------------------------------------
 // ListPendingDeletionsOlderThan + SweepOnePendingDeletion — 起動時スイープ（GC-02〜04）
 // 旧 SweepPendingDeletions（全件無条件処理）の回帰テストを、分割後の新 API を
-// sweepAllPendingDeletions ヘルパー経由で呼ぶ形に置き換えたもの（DES-003 §4.3）。
+// sweepAllPendingDeletions ヘルパー経由で呼ぶ形に置き換えたもの（DES-001 §8.5）。
 // -----------------------------------------------------------------------
 
 // TestSweepPendingDeletions_SeriesAndPathUnits は series 単位（DeleteSeriesAll）・

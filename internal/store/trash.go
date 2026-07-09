@@ -1,5 +1,5 @@
 // trash.go は KEY 単位のゴミ箱状態（keys.trashed_at）まわりの Store メソッドを実装する。
-// DES-003（KEY 削除の可視化・ユーザー主導化）・ADR-003・FNC-007〜FNC-013 に対応。
+// DES-001（§4.6/§8）・ADR-003・FNC-007〜FNC-013 に対応。
 package store
 
 import (
@@ -12,7 +12,7 @@ import (
 // TrashedKeyInfo は ListTrashedKeys の戻り値要素。
 // 自動最終処分までの残り時間の計算には保持期間の設定値（trash.retention_days）が
 // 必要だが、internal/store は設定値を持たないため RemainingSeconds は含めない
-// （DES-003 §3.2 設計判断。呼び出し元が TrashedAt と設定値から算出する）。
+// （DES-001 §3.2 設計判断。呼び出し元が TrashedAt と設定値から算出する）。
 type TrashedKeyInfo struct {
 	Key       string
 	TrashedAt string
@@ -124,7 +124,7 @@ func (s *Store) ListTrashedKeys(ctx context.Context) ([]TrashedKeyInfo, error) {
 
 // IsTrashed は key がゴミ箱状態かどうかを返す。
 // query / upsert_documents / sync_documents / delete_documents / delete_series /
-// schedule_delete_series のゴミ箱状態判定に使う（DES-003 UC-7/UC-8）。
+// schedule_delete_series のゴミ箱状態判定に使う（DES-001 §5.7 UC-7/UC-8）。
 // key が存在しない場合は false を返す（存在確認は呼び出し元の KeyExists 等に委ねる）。
 // 読み取り操作のため Mutex を取得しない。
 func (s *Store) IsTrashed(ctx context.Context, key string) (bool, error) {

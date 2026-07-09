@@ -716,7 +716,7 @@ func TestQuery_ValidationErrors(t *testing.T) {
 }
 
 // TestQuery_RejectedWhenKeyTrashed は、trash_index 実行後の KEY に対する query が
-// 空結果ではなく明示エラーを返すことを検証する（TASK-009, DES-003 UC-7）。
+// 空結果ではなく明示エラーを返すことを検証する（TASK-009, DES-001 §5.7 UC-7）。
 func TestQuery_RejectedWhenKeyTrashed(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -793,7 +793,7 @@ func TestListIndexes_ChunkCount(t *testing.T) {
 }
 
 // TestListIndexes_ExcludesTrashedKeys は list_indexes の応答からゴミ箱状態
-// (trashed_at が非 NULL) の KEY が除外されることを検証する（TASK-006, DES-003）。
+// (trashed_at が非 NULL) の KEY が除外されることを検証する（TASK-006, DES-001 §8.1）。
 func TestListIndexes_ExcludesTrashedKeys(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -821,7 +821,7 @@ func TestListIndexes_ExcludesTrashedKeys(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// trash_index / list_trashed_indexes / restore_index (TASK-007, DES-003)
+// trash_index / list_trashed_indexes / restore_index (TASK-007, DES-001 §5.5/§8.1)
 // -----------------------------------------------------------------------
 
 func TestTrashIndex(t *testing.T) {
@@ -1045,7 +1045,7 @@ func TestRestoreIndex_NotTrashedIsError(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// ゴミ箱 KEY への書き込み系操作拒否 (TASK-012, DES-003 UC-7, FNC-009)
+// ゴミ箱 KEY への書き込み系操作拒否 (TASK-012, DES-001 §5.7 UC-7, FNC-009)
 // -----------------------------------------------------------------------
 
 // TestWriteOps_RejectedWhenKeyTrashed は、ゴミ箱状態の KEY に対する

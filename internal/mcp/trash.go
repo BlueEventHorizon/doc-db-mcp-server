@@ -1,5 +1,5 @@
 // trash.go は KEY 単位ゴミ箱操作の MCP ツールハンドラ（trash_index / list_trashed_indexes /
-// restore_index）を実装する。DES-003（KEY 削除の可視化・ユーザー主導化）・FNC-007〜FNC-011 に対応。
+// restore_index）を実装する。DES-001（§4.6/§5.5/§8.1）・FNC-007〜FNC-011 に対応。
 //
 // 旧 delete_index（即時物理削除）はこれらのツールに置換され廃止された（FNC-007）。
 // KEY の削除経路は必ず trash_index（ゴミ箱投入）を経由し、猶予期間なしに即座に物理削除される
@@ -84,7 +84,7 @@ type ListTrashedIndexesResult struct {
 
 // handleListTrashedIndexes はゴミ箱状態の KEY 一覧を返す（FNC-010）。
 //
-// remaining_seconds の算出（DES-003 §3.2 設計判断・ADR-003）:
+// remaining_seconds の算出（DES-001 §3.2 設計判断・ADR-003）:
 // internal/store は「trashed_at という事実」のみを返し、保持期間 (trash.retention_days)
 // を用いた残り時間の計算ロジックは持たない（Store 層は判定を持たない）。
 // この計算は設定値にアクセスできる呼び出し元、つまり本ハンドラの責務とする
@@ -133,13 +133,13 @@ func (h *Handlers) handleListTrashedIndexes(
 }
 
 // -----------------------------------------------------------------------
-// ゴミ箱 KEY への書き込み系操作拒否 (FNC-009, DES-003 UC-7)
+// ゴミ箱 KEY への書き込み系操作拒否 (FNC-009, DES-001 §5.7 UC-7)
 // -----------------------------------------------------------------------
 
 // rejectIfTrashed は key がゴミ箱状態（trashed_at が非 NULL）の場合、操作を
 // 拒否するエラーを返す。upsert_documents / sync_documents / delete_documents /
 // delete_series / schedule_delete_series の書き込み系 5 ツールがそれぞれの入力必須項目
-// チェックの直後・実処理（WithKeyLock 取得や DB 書き込み）の前に呼ぶ（DES-003 §4.4 UC-7）。
+// チェックの直後・実処理（WithKeyLock 取得や DB 書き込み）の前に呼ぶ（DES-001 §4.6/§5.7 UC-7）。
 // さらに各ツールは WithKeyLock 内（mutation 直前）でも再度呼ぶ（TOCTOU 対策。ロック取得前の
 // 判定とロック取得の間に trash_index が完了する余地があるため）。
 // query も KeyExists 確認の直後・検索実行前に呼ぶ（TASK-009）。

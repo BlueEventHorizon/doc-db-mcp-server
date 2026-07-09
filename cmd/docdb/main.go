@@ -125,7 +125,7 @@ func setupLogging(cfg *config.Config) (io.Closer, error) {
 	return closer, nil
 }
 
-// startupSweepCutoff は起動時スイープで使う cutoff。DES-003 §4.2「起動時であっても猶予期間中の
+// startupSweepCutoff は起動時スイープで使う cutoff。DES-001 §8.5「起動時であっても猶予期間中の
 // 予約は処理しない」という設計要求に従い、marked_at が猶予期間（retentionDays、cfg.Trash.RetentionDays
 // と同一のソース。internal/trash.Worker の定期実行と別の値を使うと、設定した猶予期間より短い期間で
 // 起動時に物理削除されてしまい ADR-003 §2 の保証が崩れるため、必ず同じ値を呼び出し元から受け取る）を
@@ -140,7 +140,7 @@ func startupSweepCutoff(retentionDays int) time.Time {
 // 起動時 DB 統計の算出より前に呼ぶこと（GC-03: 統計値がスイープ後の状態を反映するため）。
 // 戻り値は統合テスト（main_test.go）がスイープ結果を検証するために返す。
 //
-// ListPendingDeletionsOlderThan + SweepOnePendingDeletion（DES-003 §4.3）を使う形に分割済み。
+// ListPendingDeletionsOlderThan + SweepOnePendingDeletion（DES-001 §8.5）を使う形に分割済み。
 // 予約 1 件ごとに WithKeyLock(entry.Key, ...) で囲んで処理する（KEY 単位排他は呼び出し元の責務、
 // DES-001 §4.3）。retentionDays は呼び出し元（run()）が cfg.Trash.RetentionDays から渡す
 // （internal/trash.Worker の定期実行と同一のソースを使うことで、猶予期間の不整合を防ぐ）。
@@ -259,7 +259,7 @@ func run(ctx context.Context) error {
 		},
 	)
 
-	// ゴミ箱最終処分ワーカー起動（DES-003 §3.1/§4.3。旧 internal/expiry の TTL/LRU ワーカーを置換）
+	// ゴミ箱最終処分ワーカー起動（DES-001 §3.1/§8。旧 internal/expiry の TTL/LRU ワーカーを置換）
 	trashWorker := trash.New(st, trash.Config{
 		IntervalSeconds: cfg.Trash.IntervalSeconds,
 		RetentionDays:   cfg.Trash.RetentionDays,

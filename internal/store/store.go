@@ -295,12 +295,12 @@ DROP TABLE IF EXISTS bm25_df;
 
 	// 既存 DB（trashed_at カラム新設前に作成された keys テーブル）に対するマイグレーション。
 	// CREATE TABLE IF NOT EXISTS は既存テーブルへのカラム追加を行わないため、
-	// PRAGMA table_info で列の有無を確認してから ALTER TABLE する（DES-003 §6）。
+	// PRAGMA table_info で列の有無を確認してから ALTER TABLE する（DES-001 §13）。
 	return s.migrateAddTrashedAtColumn(ctx)
 }
 
 // migrateAddTrashedAtColumn は keys テーブルに trashed_at 列が存在しない場合に追加する
-// マイグレーション処理（FNC-012、DES-003 §6）。
+// マイグレーション処理（FNC-012、DES-001 §13）。
 // 呼び出し元（initSchema）が s.mu を保持していること前提。
 func (s *Store) migrateAddTrashedAtColumn(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(keys)`)
@@ -501,7 +501,7 @@ func (s *Store) fetchSeriesKeys(ctx context.Context, recordID int64) ([]string, 
 // ListKeys は全 KEY の情報一覧を返す（MNG-01 対応、FNC-008: chunk_count 含む）。
 // chunk が 0 件の KEY も ChunkCount=0 で結果に含める
 // （LEFT JOIN、全 KEY を返す責務のため INNER JOIN は使わない）。
-// ゴミ箱状態（trashed_at が非 NULL）の KEY は結果から除外する（DES-003 §3.1・FNC-007 系）。
+// ゴミ箱状態（trashed_at が非 NULL）の KEY は結果から除外する（DES-001 §8.1・FNC-007 系）。
 // これは「削除すべきか」の判定ではなく「ゴミ箱に入っているかどうかの事実」に基づくフィルタであり、
 // Store 層が判定を持たないという ADR-003 の方針と矛盾しない。
 func (s *Store) ListKeys(ctx context.Context) ([]KeyInfo, error) {

@@ -1,7 +1,7 @@
 package trash
 
 // TASK-011 — ゴミ箱投入 → 一覧確認 → 復活 → 再投入 → 保持期間経過後の自動処分、という
-// 一連のフローの統合テスト（DES-003 §7 統合テスト対象 / FNC-009〜FNC-013）。
+// 一連のフローの統合テスト（DES-001 §11 統合テスト対象 / FNC-009〜FNC-013）。
 //
 // trash_test.go の mockStore を使った単体テストとは異なり、本ファイルは実 *store.Store
 // （SQLite ベース、internal/store の t.TempDir() 上のファイル）を使い、Worker.runOnce が
@@ -92,7 +92,7 @@ func containsTrashedKey(keys []store.TrashedKeyInfo, key string) bool {
 }
 
 // TestTrashIntegration_KeyLifecycle_TrashListRestoreRetrashSweep は KEY 単位ゴミ箱の
-// 全ライフサイクル（DES-003 UC-2〜UC-5）を実 store で検証する:
+// 全ライフサイクル（DES-001 §5.5〜§5.6 UC-2〜UC-5）を実 store で検証する:
 //
 //	ゴミ箱投入 → 一覧確認 → 保持期間内は runOnce で削除されない → 復活 → ListKeys に戻る →
 //	再投入 → 保持期間超過 (backdate) → runOnce で実際に DeleteKey される
@@ -188,7 +188,7 @@ func TestTrashIntegration_KeyLifecycle_TrashListRestoreRetrashSweep(t *testing.T
 }
 
 // TestTrashIntegration_OrphanRecordLifecycle は orphan record
-// （pending_deletions、DES-003 UC-6 / FNC-013）についても KEY 単位ゴミ箱と同じ保持期間の
+// （pending_deletions、DES-001 §5.6 UC-6 / FNC-013）についても KEY 単位ゴミ箱と同じ保持期間の
 // 定義に従うことを実 store で検証する:
 //
 //	series からの切り離しで orphan 化 → 保持期間内は runOnce で削除されない →

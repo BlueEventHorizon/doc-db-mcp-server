@@ -69,9 +69,9 @@ type FetcherConfig struct {
 	AllowPrivate   bool `yaml:"allow_private"`
 }
 
-// TrashConfig は trash セクション（DES-003 §6。旧 expiry セクションを置き換える）。
+// TrashConfig は trash セクション（DES-001 §9.2。旧 expiry セクションを置き換える）。
 type TrashConfig struct {
-	// RetentionDays はゴミ箱投入から自動最終処分までの保持日数（デフォルト 3、DES-003 §6）。
+	// RetentionDays はゴミ箱投入から自動最終処分までの保持日数（デフォルト 3、DES-001 §9.2）。
 	RetentionDays int `yaml:"retention_days"`
 	// IntervalSeconds は internal/trash.Worker のチェック間隔（デフォルト 3600）。
 	IntervalSeconds int `yaml:"interval_seconds"`

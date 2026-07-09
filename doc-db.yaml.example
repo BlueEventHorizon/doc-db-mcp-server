@@ -36,7 +36,7 @@ fetcher:
   allow_private: false             # プライベート IP へのフェッチを許可（SSRF 対策無効化）
 
 trash:
-  retention_days: 3                # ゴミ箱投入から自動最終処分までの保持日数（DES-003 §6）
+  retention_days: 3                # ゴミ箱投入から自動最終処分までの保持日数（DES-001 §9.2）
   interval_seconds: 3600           # internal/trash.Worker のチェック間隔
 
 log:

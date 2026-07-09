@@ -1,6 +1,6 @@
 // package trash は KEY 単位ゴミ箱（keys.trashed_at）および orphan record 削除予約
 // （pending_deletions）の自動最終処分ワーカーを担う（internal/store に依存）。
-// DES-003 §3.1/§4.3（UC-5/UC-6）: internal/expiry の TTL/LRU 自動削除ワーカーを置き換える。
+// DES-001 §3.1/§8（§5.6 UC-5/UC-6 相当）: internal/expiry の TTL/LRU 自動削除ワーカーを置き換える。
 //
 // internal/store は「削除すべきかどうか」の判定ロジックを持たない（ADR-003）。
 // 保持期間（retention）を用いた超過判定は本パッケージ（呼び出し元）の責務であり、
@@ -26,7 +26,7 @@ type Config struct {
 	IntervalSeconds int
 
 	// RetentionDays はゴミ箱投入（trashed_at）・削除予約（marked_at）からの保持日数。
-	// doc-db.yaml の trash.retention_days に対応（デフォルト: 3、DES-003 §6）。
+	// doc-db.yaml の trash.retention_days に対応（デフォルト: 3、DES-001 §9.2）。
 	RetentionDays int
 }
 
@@ -79,7 +79,7 @@ type Stats struct {
 	LastRunAtRF string
 }
 
-// Worker は KEY ゴミ箱・orphan record 削除予約の自動最終処分ワーカー（DES-003）。
+// Worker は KEY ゴミ箱・orphan record 削除予約の自動最終処分ワーカー（DES-001 §8）。
 type Worker struct {
 	st  storeForTrash
 	cfg Config
@@ -141,7 +141,7 @@ func (w *Worker) markRun(err error) {
 }
 
 // Start はバックグラウンドゴルーチンとして最終処分チェックを定期実行する。
-// ctx がキャンセルされると終了する（DES-003 §4.3 UC-5/UC-6 は定期実行前提）。
+// ctx がキャンセルされると終了する（DES-001 §5.6 UC-5/UC-6 は定期実行前提）。
 // エラーはログ出力して継続する（サーバー停止はしない: DES-001 §10 と同方針）。
 //
 // cmd/docdb/main.go への起動配線（go trashWorker.Start(ctx) 等）は TASK-005 のスコープ。
@@ -174,7 +174,7 @@ func (w *Worker) retentionCutoff() time.Time {
 }
 
 // runOnce は KEY ゴミ箱の最終処分チェックと orphan record 削除予約の最終処分チェックを
-// 1 回実行する（DES-003 §4.3 UC-5/UC-6）。
+// 1 回実行する（DES-001 §5.6 UC-5/UC-6）。
 // 個別 KEY・record 失敗は Stats.LastKeyErrors に記録され、本関数の戻り値には含まれない
 // （両チェックの継続性のため）。caller は Worker.Stats() で詳細を観測できる。
 func (w *Worker) runOnce(ctx context.Context) error {
@@ -189,7 +189,7 @@ func (w *Worker) runOnce(ctx context.Context) error {
 }
 
 // sweepTrashedKeys は trashed_at が保持期間を超過した KEY を検出し、KEY 単位排他ロック内で
-// DeleteKey により最終処分する（DES-003 UC-5）。
+// DeleteKey により最終処分する（DES-001 §5.6 UC-5）。
 // 保持期間超過の判定（trashed_at と RetentionDays からの計算）は本メソッドの責務であり、
 // internal/store 側は判定ロジックを持たない（ADR-003）。
 func (w *Worker) sweepTrashedKeys(ctx context.Context) error {
@@ -250,7 +250,7 @@ func (w *Worker) sweepTrashedKeys(ctx context.Context) error {
 
 // sweepPendingDeletions は marked_at が保持期間を超過した削除予約（series 全体予約 /
 // orphan record 予約）を検出し、予約 1 件ごとに KEY 単位排他ロック内で SweepOnePendingDeletion
-// により最終処分する（DES-003 UC-6、cmd/docdb/main.go の startupSweep とほぼ同じパターン）。
+// により最終処分する（DES-001 §5.6 UC-6、cmd/docdb/main.go の startupSweep とほぼ同じパターン）。
 func (w *Worker) sweepPendingDeletions(ctx context.Context) error {
 	entries, err := w.st.ListPendingDeletionsOlderThan(ctx, w.retentionCutoff())
 	if err != nil {

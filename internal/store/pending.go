@@ -303,7 +303,7 @@ type PendingDeletionEntry struct {
 	Key      string
 	Series   string
 	Path     string
-	MarkedAt string // ゴミ箱投入・削除予約日時（RFC3339）。ログ記録用（DES-003 §4.3）
+	MarkedAt string // ゴミ箱投入・削除予約日時（RFC3339）。ログ記録用（DES-001 §8.5）
 }
 
 // ListPendingDeletionsOlderThan は marked_at が cutoff より前（marked_at < cutoff の
@@ -312,7 +312,7 @@ type PendingDeletionEntry struct {
 //
 // 呼び出し元（internal/trash.Worker、cmd/docdb/main.go の起動時スイープ）は、
 // 返された各エントリを WithKeyLock(entry.Key, ...) で囲んだ上で SweepOnePendingDeletion に
-// 渡す（DES-003 §4.3 の分割方針）。
+// 渡す（DES-001 §8.5 の分割方針）。
 func (s *Store) ListPendingDeletionsOlderThan(ctx context.Context, cutoff time.Time) ([]PendingDeletionEntry, error) {
 	cutoffStr := cutoff.UTC().Format(time.RFC3339)
 
@@ -355,7 +355,7 @@ func (s *Store) ListPendingDeletionsOlderThan(ctx context.Context, cutoff time.T
 //
 // [ロックは呼び出し元の責務] 本メソッドは WithKeyLock を内部で取得しない（DES-001 §4.3）。
 // KEY 単位排他が必要な呼び出し元が、本メソッド呼び出し全体を 1 回の WithKeyLock(entry.Key, ...)
-// で囲むこと（DES-003 §4.3）。
+// で囲むこと（DES-001 §8.5）。
 func (s *Store) SweepOnePendingDeletion(ctx context.Context, entry PendingDeletionEntry) error {
 	var sweepErr error
 	if entry.Path == "" {

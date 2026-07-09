@@ -53,7 +53,7 @@ type Handlers struct {
 
 	// trashRetentionDays はゴミ箱投入から自動最終処分までの保持日数
 	// （doc-db.yaml の trash.retention_days、internal/trash.Worker と同一のソース）。
-	// list_trashed_indexes の remaining_seconds 算出に使う（DES-003 §3.2 設計判断:
+	// list_trashed_indexes の remaining_seconds 算出に使う（DES-001 §3.2 設計判断:
 	// 「Store 層は判定を持たず事実のみを返す」ため、この計算は呼び出し元 = ハンドラ層の責務）。
 	trashRetentionDays int
 }
@@ -775,7 +775,7 @@ func (h *Handlers) handleQuery(
 		return nil, QueryResult{}, err
 	}
 
-	// ゴミ箱状態の KEY は検索を実行せず明示エラーを返す (TASK-009, DES-003 UC-7)。
+	// ゴミ箱状態の KEY は検索を実行せず明示エラーを返す (TASK-009, DES-001 §5.7 UC-8)。
 	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
 		err = terr
 		return nil, QueryResult{}, err
