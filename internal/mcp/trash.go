@@ -47,8 +47,11 @@ func (h *Handlers) handleTrashIndex(
 		logHandlerDone("trash_index done", err, start, "key", in.Key, "trashed", out.Trashed)
 	}()
 
+	var trashedAt string
 	if lerr := h.store.WithKeyLock(ctx, in.Key, func() error {
-		return h.store.TrashKey(ctx, in.Key)
+		var terr error
+		trashedAt, terr = h.store.TrashKey(ctx, in.Key)
+		return terr
 	}); lerr != nil {
 		// 存在しない KEY・既にゴミ箱状態 (多重投入) はいずれも store.TrashKey が返すエラーを
 		// そのまま caller に伝播する (silent failure 禁止)。
@@ -56,7 +59,7 @@ func (h *Handlers) handleTrashIndex(
 		return nil, TrashIndexResult{}, err
 	}
 
-	out = TrashIndexResult{Key: in.Key, Trashed: true, TrashedAt: time.Now().UTC().Format(time.RFC3339)}
+	out = TrashIndexResult{Key: in.Key, Trashed: true, TrashedAt: trashedAt}
 	return nil, out, nil
 }
 

@@ -234,7 +234,7 @@ claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 | `restore_index`          | ゴミ箱内の KEY を自動最終処分前に利用可能な状態へ戻す                                                                                                |
 | `sync_documents`         | desired-state 同期（v0.2.0+）。documents を完全な現在状態とみなし、一覧に無い既存 path を series から即時切り離す。job_id を即時返却する非同期ジョブ |
 | `get_sync_status`        | sync ジョブの進捗・完了・エラーを job_id でポーリング（v0.2.0+）                                                                                     |
-| `schedule_delete_series` | series 全体の削除予約（v0.2.0+）。即時削除せず次回起動時に物理削除。再 sync で取り消し可能                                                           |
+| `schedule_delete_series` | series 全体の削除予約（v0.2.0+）。即時削除せず起動時スイープ/trash.Worker定期実行で物理削除。再 sync で取り消し可能                                  |
 
 ### `query` の mode
 

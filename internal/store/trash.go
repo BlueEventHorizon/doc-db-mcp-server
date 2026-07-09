@@ -24,35 +24,41 @@ type TrashedKeyInfo struct {
 // WithKeyLock は内部で取得しない。KEY 単位排他が必要な呼び出し元が、対象 KEY への
 // Store 呼び出し一式を 1 回の WithKeyLock で囲む（DES-001 §4.3）。
 // Mutex を取得して直列化する。
-func (s *Store) TrashKey(ctx context.Context, key string) (retErr error) {
+// 戻り値 trashedAt は実際に DB へ保存した値（RFC3339）。呼び出し元が別途 time.Now() を
+// 使うと DB の保存値と数秒単位でずれ得るため、保存した実値をそのまま返す。
+func (s *Store) TrashKey(ctx context.Context, key string) (trashedAt string, retErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("store.TrashKey: begin tx: %w", err)
+		return "", fmt.Errorf("store.TrashKey: begin tx: %w", err)
 	}
 	defer rollbackErrInto(tx, &retErr)
 
-	var trashedAt sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT trashed_at FROM keys WHERE key=?`, key).Scan(&trashedAt)
+	var existingTrashedAt sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT trashed_at FROM keys WHERE key=?`, key).Scan(&existingTrashedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("store.TrashKey: key %q not found", key)
+		return "", fmt.Errorf("store.TrashKey: key %q not found", key)
 	}
 	if err != nil {
-		return fmt.Errorf("store.TrashKey: select: %w", err)
+		return "", fmt.Errorf("store.TrashKey: select: %w", err)
 	}
-	if trashedAt.Valid {
-		return fmt.Errorf("store.TrashKey: key %q is already trashed", key)
+	if existingTrashedAt.Valid {
+		return "", fmt.Errorf("store.TrashKey: key %q is already trashed", key)
 	}
 
+	trashedAt = nowRFC3339()
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE keys SET trashed_at=? WHERE key=?`, nowRFC3339(), key,
+		`UPDATE keys SET trashed_at=? WHERE key=?`, trashedAt, key,
 	); err != nil {
-		return fmt.Errorf("store.TrashKey: update: %w", err)
+		return "", fmt.Errorf("store.TrashKey: update: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return trashedAt, nil
 }
 
 // RestoreKey はゴミ箱状態の KEY を利用可能な状態へ戻す（FNC-011）。

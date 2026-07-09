@@ -277,6 +277,7 @@ tasks:
       - エラーメッセージに「対象 KEY はゴミ箱に入っている旨」と「restore_index で復活してから操作する旨」を含める
       - trashed_at はこの拒否処理によって変更されないことを確認する
       - ゴミ箱状態の KEY への 4 ツールいずれの呼び出しも拒否されること、trashed_at が変化しないことの単体テストを追加する
+      - "事後注記: 本タスクは4ツール（delete_series を含まない）としてスコープされ完了した。delete_series の拒否ガード漏れは後続の TASK-009 レビューで検出され、TASK-009 のスコープ内で追加対応済み（revision_history 参照）"
     acceptance_criteria: ゴミ箱状態の KEY への upsert_documents/sync_documents/delete_documents/schedule_delete_series がすべて拒否され、trashed_at が変化しないことをテストで確認できる
     required_reading:
       - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md

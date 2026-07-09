@@ -266,7 +266,8 @@ list_indexes はゴミ箱状態の KEY を含まないため、ゴミ箱内 KEY 
   1. 一意な job_id を即座に返す (処理完了を待たない)
   2. サーバー内部で処理を継続: documents を差分処理 → 一覧に無い既存 path を
      series から切り離し → どの series からも参照されなくなった record は
-     物理削除予約として記録 (物理削除はサーバー次回起動時)
+     物理削除予約として記録 (物理削除は起動時スイープまたは internal/trash.Worker の
+     定期実行)
   3. 進捗は get_sync_status(job_id) でポーリングする
 
 【自己修復】
@@ -312,17 +313,18 @@ list_indexes はゴミ箱状態の KEY を含まないため、ゴミ箱内 KEY 
 【delete_series (即時削除) との違い】
   - delete_series: 呼んだ時点で record / チャンク / ベクトルを物理削除する
   - schedule_delete_series: 予約を記録するだけで実データには一切触れない。
-    物理削除はサーバー次回起動時に行われる (それまで完全に無害)
+    物理削除はサーバー起動時のスイープ、または internal/trash.Worker の定期実行
+    (デフォルト 1 時間毎) が行う (それまで完全に無害)
 
 【典型ユースケース】
-  Git branch の削除を検知した時点で呼ぶ。誤操作でも次回起動前なら実害ゼロで、
+  Git branch の削除を検知した時点で呼ぶ。誤操作でも物理削除前なら実害ゼロで、
   同一 KEY+series へ sync_documents を呼べば予約は自動解除される (自己修復)。
 
 【出力の解釈】
   - already_scheduled: 呼び出し時点で既に同一 series の削除予約が存在した場合 true
     (冪等な再呼び出しの判別用。true でもエラーではない)
 
-存在しない series を指定してもエラーにならない (予約行が記録され、起動時スイープが
+存在しない series を指定してもエラーにならない (予約行が記録され、次回のスイープが
 0 件処理で無害に消化する)。`,
 	}, h.handleScheduleDeleteSeries)
 }
@@ -397,7 +399,13 @@ func (h *Handlers) handleUpsert(
 
 	// KEY 単位排他（SYN-08）: 複数ドキュメント分の upsertOne 呼び出しを含む
 	// ループ全体を 1 回の WithKeyLock で囲む（DES-001 §4.3。fn 内で再取得禁止）。
+	// ロック取得前の rejectIfTrashed 判定とロック取得の間に trash_index が割り込むと
+	// 判定が古くなる（TOCTOU）ため、ロック内で再判定する（trash_index も同一 KEY の
+	// WithKeyLock を取るため、ロック内での再判定は直前の trash_index 完了を必ず観測できる）。
 	if lerr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+			return terr
+		}
 		for _, doc := range in.Documents {
 			if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
 				slog.Warn("upsert: document failed", "path", doc.Path, "error", uerr)
@@ -616,6 +624,11 @@ func (h *Handlers) handleDelete(
 	var warnings []string
 	var deleted int
 	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		// ロック取得前の rejectIfTrashed 判定は TOCTOU の余地があるため、ロック内で再判定する
+		// （trash_index も同一 KEY の WithKeyLock を取るため直前の trash_index を必ず観測できる）。
+		if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+			return terr
+		}
 		existing := make([]string, 0, len(in.Paths))
 		for _, p := range in.Paths {
 			found, herr := h.store.HasRecord(ctx, in.Key, p)
@@ -678,8 +691,12 @@ func (h *Handlers) handleDeleteSeries(
 	}()
 
 	// KEY 単位排他（SYN-08）: DeleteSeriesAll 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
+	// ロック取得前の rejectIfTrashed 判定は TOCTOU の余地があるため、ロック内で再判定する。
 	var removed, updated int
 	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+			return terr
+		}
 		var werr error
 		removed, updated, werr = h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
 		return werr

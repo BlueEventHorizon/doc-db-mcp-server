@@ -255,6 +255,13 @@ func (h *Handlers) runSyncJob(jobID, key, series string, documents []UpsertDocum
 // この中では WithKeyLock を再度呼ばない（DES-001 §4.3 の禁止規約）。
 // 戻り値が非 nil の場合、呼び出し元（runSyncJob）がジョブを "failed" にする。
 func (h *Handlers) syncLocked(ctx context.Context, jobID, key, series string, documents []UpsertDocument) error {
+	// handleSyncDocuments はジョブ受理前（ロック取得前）に rejectIfTrashed を判定するが、
+	// job_id 返却からこの fn 実行までの間に trash_index が割り込む TOCTOU の余地があるため、
+	// ロック内（WithKeyLock の fn 冒頭）で再判定する（trash_index も同一 KEY の WithKeyLock を
+	// 取るため、直前の trash_index 完了を必ず観測できる）。trashed の場合はジョブを failed にする。
+	if terr := h.rejectIfTrashed(ctx, key); terr != nil {
+		return terr
+	}
 	// fn 冒頭: 当該 key+series の削除予約（path 一覧 + series 全体予約の有無）を 1 回で取得する
 	// （DES-001 §4.5 [MANDATORY]。補償 + 予約解除の対象 path と SYN-04 の series 全体予約解除の
 	// 要否を判定する）。

@@ -22,7 +22,7 @@ func TestTrashKey_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.TrashKey(ctx, "K"); err != nil {
+	if _, err := s.TrashKey(ctx, "K"); err != nil {
 		t.Fatalf("TrashKey: %v", err)
 	}
 
@@ -56,11 +56,11 @@ func TestTrashKey_AlreadyTrashed_Errors(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TrashKey(ctx, "K"); err != nil {
+	if _, err := s.TrashKey(ctx, "K"); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.TrashKey(ctx, "K"); err == nil {
+	if _, err := s.TrashKey(ctx, "K"); err == nil {
 		t.Fatal("want error for already-trashed key (多重投入防止)")
 	}
 }
@@ -68,7 +68,7 @@ func TestTrashKey_AlreadyTrashed_Errors(t *testing.T) {
 func TestTrashKey_UnknownKey_Errors(t *testing.T) {
 	s := newTestStore(t)
 
-	if err := s.TrashKey(context.Background(), "NOTEXIST"); err == nil {
+	if _, err := s.TrashKey(context.Background(), "NOTEXIST"); err == nil {
 		t.Fatal("want error for unknown key")
 	}
 }
@@ -83,7 +83,7 @@ func TestRestoreKey_Basic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TrashKey(ctx, "K"); err != nil {
+	if _, err := s.TrashKey(ctx, "K"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -108,7 +108,7 @@ func TestRestoreKey_Basic(t *testing.T) {
 	}
 
 	// 復活後も再度ゴミ箱投入できる（ライフサイクル一巡）
-	if err := s.TrashKey(ctx, "K"); err != nil {
+	if _, err := s.TrashKey(ctx, "K"); err != nil {
 		t.Fatalf("re-TrashKey after restore: %v", err)
 	}
 }
@@ -186,7 +186,7 @@ func TestListTrashedKeys_MultipleKeys_OrderedByTrashedAt(t *testing.T) {
 	// 同一トランザクション内での time.Now() 解像度差を避けるため、
 	// 呼び出し順に依存する ORDER BY trashed_at ASC の検証に主眼を置く。
 	for _, key := range []string{"K2", "K1", "K3"} {
-		if err := s.TrashKey(ctx, key); err != nil {
+		if _, err := s.TrashKey(ctx, key); err != nil {
 			t.Fatalf("TrashKey(%s): %v", key, err)
 		}
 	}
@@ -272,7 +272,7 @@ CREATE TABLE keys (
 	}
 
 	// マイグレーション後、新規メソッドが問題なく動くことも確認する
-	if err := s.TrashKey(context.Background(), "NOTEXIST"); err == nil {
+	if _, err := s.TrashKey(context.Background(), "NOTEXIST"); err == nil {
 		t.Fatal("want error for unknown key even on migrated DB")
 	}
 }

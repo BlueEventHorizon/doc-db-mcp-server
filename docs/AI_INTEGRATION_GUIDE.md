@@ -109,19 +109,19 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 
 doc-db は 11 個の MCP ツールを提供します。詳細スキーマは `tools/list` で取得できます。
 
-| Tool                         | 目的                                                                                         |
-| ---------------------------- | -------------------------------------------------------------------------------------------- |
-| **`upsert_documents`**       | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)                                   |
-| **`sync_documents`**         | desired-state 同期 (v0.2.0+)。完全な現在ファイル一覧を渡し、削除にも追従する非同期ジョブ     |
-| **`get_sync_status`**        | sync ジョブの進捗・完了・エラーを job_id でポーリング (v0.2.0+)                              |
-| **`delete_documents`**       | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須)                                |
-| **`delete_series`**          | KEY 内の全 record から指定 series を除去 (branch cleanup 用途、`paths` 不要)                 |
-| **`schedule_delete_series`** | series 全体の削除予約 (v0.2.0+)。即時削除せず次回起動時に物理削除・取り消し可能              |
-| **`query`**                  | 候補プールを検索 (3 signal 並列)                                                             |
-| **`list_indexes`**           | 登録済み KEY の一覧 + メタ情報 (chunk 数を含む。ゴミ箱状態の KEY は除外)                     |
-| **`trash_index`**            | KEY をゴミ箱投入 (即時物理削除はしない。保持期間経過後に自動最終処分。`delete_index` を置換) |
-| **`list_trashed_indexes`**   | ゴミ箱内の KEY 一覧 + 自動最終処分までの残り時間を取得                                       |
-| **`restore_index`**          | ゴミ箱内の KEY を自動最終処分前に利用可能な状態へ戻す                                        |
+| Tool                         | 目的                                                                                                     |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **`upsert_documents`**       | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)                                               |
+| **`sync_documents`**         | desired-state 同期 (v0.2.0+)。完全な現在ファイル一覧を渡し、削除にも追従する非同期ジョブ                 |
+| **`get_sync_status`**        | sync ジョブの進捗・完了・エラーを job_id でポーリング (v0.2.0+)                                          |
+| **`delete_documents`**       | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須)                                            |
+| **`delete_series`**          | KEY 内の全 record から指定 series を除去 (branch cleanup 用途、`paths` 不要)                             |
+| **`schedule_delete_series`** | series 全体の削除予約 (v0.2.0+)。即時削除せず起動時スイープ/trash.Worker定期実行で物理削除・取り消し可能 |
+| **`query`**                  | 候補プールを検索 (3 signal 並列)                                                                         |
+| **`list_indexes`**           | 登録済み KEY の一覧 + メタ情報 (chunk 数を含む。ゴミ箱状態の KEY は除外)                                 |
+| **`trash_index`**            | KEY をゴミ箱投入 (即時物理削除はしない。保持期間経過後に自動最終処分。`delete_index` を置換)             |
+| **`list_trashed_indexes`**   | ゴミ箱内の KEY 一覧 + 自動最終処分までの残り時間を取得                                                   |
+| **`restore_index`**          | ゴミ箱内の KEY を自動最終処分前に利用可能な状態へ戻す                                                    |
 
 **`upsert_documents` と `sync_documents` の使い分け**:
 

@@ -3,9 +3,10 @@
 //
 // schedule_delete_series は指定 key・series を即座に削除せず、pending_deletions に
 // 削除予約（path=” センチネル行）として記録するだけの軽量な操作である（GC-01）。
-// 物理削除はサーバー次回起動時のスイープ（SweepPendingDeletions）が既存 DeleteSeriesAll で
-// 行う。予約は起動まで完全に無害で、同一 key・series への sync_documents 呼び出しで
-// 解除される（SYN-04 の自己修復）。
+// 物理削除はサーバー起動時のスイープ、または internal/trash.Worker の定期実行が
+// ListPendingDeletionsOlderThan + SweepOnePendingDeletion（内部で既存 DeleteSeriesAll を
+// 使用）で行う。予約は物理削除まで完全に無害で、同一 key・series への sync_documents
+// 呼び出しで解除される（SYN-04 の自己修復）。
 package mcp
 
 import (
@@ -21,7 +22,7 @@ import (
 // ScheduleDeleteSeriesInput は schedule_delete_series の入力。
 type ScheduleDeleteSeriesInput struct {
 	Key    string `json:"key" jsonschema:"対象インデックスの KEY。"`
-	Series string `json:"series" jsonschema:"削除予約する series 名 (Git branch 名等)。即時削除はされず、サーバー次回起動時に物理削除される。"`
+	Series string `json:"series" jsonschema:"削除予約する series 名 (Git branch 名等)。即時削除はされず、起動時スイープまたは internal/trash.Worker の定期実行で物理削除される。"`
 }
 
 // ScheduleDeleteSeriesResult は schedule_delete_series の出力（APP-001 FNC-006 出力仕様）。
@@ -57,6 +58,10 @@ func (h *Handlers) handleScheduleDeleteSeries(
 
 	var alreadyScheduled bool
 	if lerr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		// ロック取得前の rejectIfTrashed 判定は TOCTOU の余地があるため、ロック内で再判定する。
+		if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+			return terr
+		}
 		var merr error
 		alreadyScheduled, merr = h.store.MarkSeriesForDeletion(ctx, in.Key, in.Series)
 		return merr

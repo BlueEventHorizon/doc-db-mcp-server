@@ -805,7 +805,7 @@ func TestListIndexes_ExcludesTrashedKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := h.store.TrashKey(ctx, "K2"); err != nil {
+	if _, err := h.store.TrashKey(ctx, "K2"); err != nil {
 		t.Fatal(err)
 	}
 	_, out, err := h.handlers.handleListIndexes(ctx, nil, ListIndexesInput{})
@@ -941,7 +941,7 @@ func TestListTrashedIndexes_RemainingSecondsClampedToZero(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.store.TrashKey(ctx, "K"); err != nil {
+	if _, err := h.store.TrashKey(ctx, "K"); err != nil {
 		t.Fatal(err)
 	}
 	// trashRetentionDays=0 の Handlers を別途構築し、保持期間超過状態を模擬する。

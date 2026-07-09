@@ -1,5 +1,12 @@
 # expiry-visibility 実装戦略
 
+> **事後注記（全タスク完了後）**: 本書はフェーズ3計画時点（TASK-012 着手前）の記述であり、
+> 「書き込み系 4 ツール（upsert_documents/sync_documents/delete_documents/schedule_delete_series）」
+> という記述が複数箇所に残っている。実際には TASK-009 実行時のレビューで `delete_series` も
+> 拒否対象から漏れていることが判明し、FNC-007/DES-003 を修正の上で 5 ツールに拡大している
+> （`expiry-visibility_plan.yaml` の revision_history 参照）。本書のフェーズ 3 記述を参照する際は
+> 「4 ツール」を「5 ツール（delete_series 含む）」と読み替えること。
+
 ## アプローチ
 
 **選択**: ボトムアップ + リスク駆動（併用）

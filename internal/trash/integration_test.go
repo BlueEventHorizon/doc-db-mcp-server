@@ -104,7 +104,7 @@ func TestTrashIntegration_KeyLifecycle_TrashListRestoreRetrashSweep(t *testing.T
 	seedRecord(t, s, key, "s1", "p.md")
 
 	// --- ゴミ箱投入 → 一覧確認 -------------------------------------------------
-	if err := s.TrashKey(ctx, key); err != nil {
+	if _, err := s.TrashKey(ctx, key); err != nil {
 		t.Fatalf("TrashKey: %v", err)
 	}
 	trashed, err := s.ListTrashedKeys(ctx)
@@ -163,7 +163,7 @@ func TestTrashIntegration_KeyLifecycle_TrashListRestoreRetrashSweep(t *testing.T
 	}
 
 	// --- 再投入 → 保持期間超過（backdate）→ runOnce で実際に物理削除される -----
-	if err := s.TrashKey(ctx, key); err != nil {
+	if _, err := s.TrashKey(ctx, key); err != nil {
 		t.Fatalf("TrashKey (re-trash): %v", err)
 	}
 	backdateTrashedAt(t, s, key, 10*24*time.Hour) // 10日前 > RetentionDays=3
