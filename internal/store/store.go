@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -21,21 +20,14 @@ import (
 // 型定義
 // -----------------------------------------------------------------------
 
-// ExpiryPolicy は KEY ごとの廃棄ポリシー設定を表す（JSON 表現で keys.expiry_policy に保存）。
-type ExpiryPolicy struct {
-	TTLDays   *int `json:"ttl_days,omitempty"`
-	MaxChunks *int `json:"max_chunks,omitempty"`
-}
-
 // KeyInfo は ListKeys の戻り値要素。
 type KeyInfo struct {
-	Key            string        `json:"key"`
-	Series         []string      `json:"series"`
-	DocCount       int           `json:"doc_count"`
-	ChunkCount     int           `json:"chunk_count"`
-	LastUpdatedAt  string        `json:"last_updated_at"`
-	LastAccessedAt string        `json:"last_accessed_at"`
-	ExpiryPolicy   *ExpiryPolicy `json:"expiry_policy,omitempty"`
+	Key            string   `json:"key"`
+	Series         []string `json:"series"`
+	DocCount       int      `json:"doc_count"`
+	ChunkCount     int      `json:"chunk_count"`
+	LastUpdatedAt  string   `json:"last_updated_at"`
+	LastAccessedAt string   `json:"last_accessed_at"`
 }
 
 // Record は UpsertRecord に渡す入力データ。
@@ -507,14 +499,14 @@ func (s *Store) fetchSeriesKeys(ctx context.Context, recordID int64) ([]string, 
 }
 
 // ListKeys は全 KEY の情報一覧を返す（MNG-01 対応、FNC-008: chunk_count 含む）。
-// ListKeysByLRU の chunk 数集計 SQL とは異なり、chunk が 0 件の KEY も
-// ChunkCount=0 で結果に含める（LEFT JOIN、全 KEY を返す責務のため INNER JOIN は使わない）。
+// chunk が 0 件の KEY も ChunkCount=0 で結果に含める
+// （LEFT JOIN、全 KEY を返す責務のため INNER JOIN は使わない）。
 // ゴミ箱状態（trashed_at が非 NULL）の KEY は結果から除外する（DES-003 §3.1・FNC-007 系）。
 // これは「削除すべきか」の判定ではなく「ゴミ箱に入っているかどうかの事実」に基づくフィルタであり、
 // Store 層が判定を持たないという ADR-003 の方針と矛盾しない。
 func (s *Store) ListKeys(ctx context.Context) ([]KeyInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT k.key, k.doc_count, k.last_updated_at, k.last_accessed_at, k.expiry_policy,
+SELECT k.key, k.doc_count, k.last_updated_at, k.last_accessed_at,
        COUNT(c.id) AS chunk_count
 FROM keys k
 LEFT JOIN records r ON r.key = k.key
@@ -531,15 +523,8 @@ ORDER BY k.key
 	var result []KeyInfo
 	for rows.Next() {
 		var ki KeyInfo
-		var policyJSON sql.NullString
-		if err := rows.Scan(&ki.Key, &ki.DocCount, &ki.LastUpdatedAt, &ki.LastAccessedAt, &policyJSON, &ki.ChunkCount); err != nil {
+		if err := rows.Scan(&ki.Key, &ki.DocCount, &ki.LastUpdatedAt, &ki.LastAccessedAt, &ki.ChunkCount); err != nil {
 			return nil, fmt.Errorf("store.ListKeys scan: %w", err)
-		}
-		if policyJSON.Valid && policyJSON.String != "" {
-			ki.ExpiryPolicy = &ExpiryPolicy{}
-			if err := json.Unmarshal([]byte(policyJSON.String), ki.ExpiryPolicy); err != nil {
-				return nil, fmt.Errorf("store.ListKeys: parse expiry_policy: %w", err)
-			}
 		}
 		result = append(result, ki)
 	}
@@ -1023,39 +1008,6 @@ func (s *Store) DeleteKey(ctx context.Context, key string) (retErr error) {
 	return tx.Commit()
 }
 
-// KeyLRUInfo は LRU 廃棄で使う KEY のチャンク数情報（DES-001 §8.2）。
-type KeyLRUInfo struct {
-	Key        string
-	ChunkCount int
-}
-
-// ListExpiredKeysByTTL は最終アクセスが effective TTL を超えた KEY 名を返す（DES-001 §8.1 EXP-01）。
-// effective TTL = COALESCE(keys.expiry_policy.ttl_days, defaultTTLDays)。
-// 読み取り操作のため Mutex を取得しない。
-func (s *Store) ListExpiredKeysByTTL(ctx context.Context, defaultTTLDays int) ([]string, error) {
-	// JSON1 拡張で keys.expiry_policy.ttl_days を抽出し、未設定ならサーバーデフォルトを使う。
-	// last_accessed_at は RFC3339 文字列で保存されているため SQLite の datetime() と比較可能。
-	rows, err := s.db.QueryContext(ctx, `
-SELECT key
-FROM keys
-WHERE last_accessed_at < datetime('now', '-' || COALESCE(json_extract(expiry_policy, '$.ttl_days'), ?) || ' days')
-`, defaultTTLDays)
-	if err != nil {
-		return nil, fmt.Errorf("store.ListExpiredKeysByTTL: %w", err)
-	}
-	defer rows.Close()
-
-	var keys []string
-	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
-			return nil, fmt.Errorf("store.ListExpiredKeysByTTL scan: %w", err)
-		}
-		keys = append(keys, k)
-	}
-	return keys, rows.Err()
-}
-
 // TotalChunkCount はシステム全体のチャンク総数を返す（DES-001 §8.2）。
 // 読み取り操作のため Mutex を取得しない。
 func (s *Store) TotalChunkCount(ctx context.Context) (int, error) {
@@ -1064,65 +1016,6 @@ func (s *Store) TotalChunkCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("store.TotalChunkCount: %w", err)
 	}
 	return total, nil
-}
-
-// ListKeysByLRU は KEY のチャンク数を last_accessed_at ASC（古い順）で返す（DES-001 §8.2）。
-// チャンクが 0 件の KEY は含めない。読み取り操作のため Mutex を取得しない。
-func (s *Store) ListKeysByLRU(ctx context.Context) ([]KeyLRUInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT r.key, COUNT(c.id) AS chunk_count
-FROM chunks c
-JOIN records r ON c.record_id = r.id
-GROUP BY r.key
-ORDER BY (SELECT last_accessed_at FROM keys WHERE key = r.key) ASC
-`)
-	if err != nil {
-		return nil, fmt.Errorf("store.ListKeysByLRU: %w", err)
-	}
-	defer rows.Close()
-
-	var result []KeyLRUInfo
-	for rows.Next() {
-		var info KeyLRUInfo
-		if err := rows.Scan(&info.Key, &info.ChunkCount); err != nil {
-			return nil, fmt.Errorf("store.ListKeysByLRU scan: %w", err)
-		}
-		result = append(result, info)
-	}
-	return result, rows.Err()
-}
-
-// SetExpiryPolicy は KEY の廃棄ポリシーを更新する（DES-001 §8.4 EXP-04 / MNG-03）。
-// policy が nil の場合は expiry_policy を NULL（サーバーデフォルト適用）にする。
-// Mutex を取得して直列化する。
-func (s *Store) SetExpiryPolicy(ctx context.Context, key string, policy *ExpiryPolicy) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var policyJSON any
-	if policy != nil {
-		b, err := json.Marshal(policy)
-		if err != nil {
-			return fmt.Errorf("store.SetExpiryPolicy: marshal policy: %w", err)
-		}
-		policyJSON = string(b)
-	}
-
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE keys SET expiry_policy = ? WHERE key = ?`,
-		policyJSON, key,
-	)
-	if err != nil {
-		return fmt.Errorf("store.SetExpiryPolicy: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store.SetExpiryPolicy: rows affected: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf("store.SetExpiryPolicy: key %q not found", key)
-	}
-	return nil
 }
 
 // TouchKey は key の last_accessed_at を現在時刻に更新する（query 時に呼ぶ）。

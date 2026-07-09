@@ -223,7 +223,7 @@ tasks:
   - task_id: TASK-008
     title: manage_index ツールの廃止
     priority: 75
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-004

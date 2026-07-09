@@ -197,9 +197,8 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
 		Description: `登録済み KEY (インデックス) の一覧を返す。
 
 返り値の各エントリ:
-  - key, series リスト, doc_count
+  - key, series リスト, doc_count, chunk_count
   - last_updated_at / last_accessed_at (RFC3339)
-  - expiry_policy (KEY ごとの TTL/max_chunks オーバーライド、未設定なら null)
 
 使い道:
   - どの KEY が存在するかを確認 (query の前段)
@@ -252,21 +251,6 @@ list_indexes はゴミ箱状態の KEY を含まないため、ゴミ箱内 KEY 
 【エラー】
   存在しない KEY、ゴミ箱に入っていない KEY (未投入) を指定した場合はエラーになる。`,
 	}, h.handleRestoreIndex)
-
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name: "manage_index",
-		Description: `指定 KEY の廃棄ポリシー (TTL/max_chunks) を設定・更新する。
-
-【廃棄ポリシー】
-  - ttl_days: 最終アクセスからの経過日数 (この日数を超えたら自動削除)
-  - max_chunks: KEY あたりのチャンク上限 (上限超過時に LRU で削除)
-
-【動作】
-  - expiry_policy を null にするとサーバーデフォルト (30 days / 10000 chunks) に戻る
-  - 一部フィールドだけ指定可 (ttl_days のみ等)
-
-長期保持したい重要 KEY や、逆に短期間で自動廃棄したいテンポラリ KEY の制御に使う。`,
-	}, h.handleManageIndex)
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "sync_documents",
@@ -815,7 +799,7 @@ type ListIndexesInput struct{}
 
 // ListIndexesResult は list_indexes の出力。
 type ListIndexesResult struct {
-	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/chunk_count/last_updated_at/last_accessed_at/expiry_policy を含む。ゴミ箱状態 (trash_index 済み) の KEY はこの一覧から除外される。"`
+	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/chunk_count/last_updated_at/last_accessed_at を含む。ゴミ箱状態 (trash_index 済み) の KEY はこの一覧から除外される。"`
 }
 
 func (h *Handlers) handleListIndexes(
@@ -832,41 +816,6 @@ func (h *Handlers) handleListIndexes(
 		return nil, ListIndexesResult{}, err
 	}
 	return nil, ListIndexesResult{Indexes: keys}, nil
-}
-
-// -----------------------------------------------------------------------
-// manage_index (EXP-04 / MNG-03)
-// -----------------------------------------------------------------------
-
-// ManageIndexInput は manage_index の入力。
-// ExpiryPolicy が nil の場合は keys.expiry_policy を NULL にリセットする。
-type ManageIndexInput struct {
-	Key          string              `json:"key" jsonschema:"対象 KEY。"`
-	ExpiryPolicy *store.ExpiryPolicy `json:"expiry_policy,omitempty" jsonschema:"廃棄ポリシー設定。ttl_days (最終アクセスからの自動削除日数) と max_chunks (KEY あたりのチャンク上限) を指定。null/省略でサーバーデフォルト (30days/10000chunks) にリセット。"`
-}
-
-// ManageIndexResult は manage_index の出力。
-type ManageIndexResult struct {
-	Updated bool `json:"updated" jsonschema:"設定が更新されたか。"`
-}
-
-func (h *Handlers) handleManageIndex(
-	ctx context.Context, _ *mcpsdk.CallToolRequest, in ManageIndexInput,
-) (res *mcpsdk.CallToolResult, out ManageIndexResult, err error) {
-	if in.Key == "" {
-		return nil, ManageIndexResult{}, errors.New("key は必須")
-	}
-	start := time.Now()
-	slog.Info("manage_index start", "key", in.Key)
-	defer func() {
-		logHandlerDone("manage_index done", err, start, "key", in.Key, "updated", out.Updated)
-	}()
-
-	if serr := h.store.SetExpiryPolicy(ctx, in.Key, in.ExpiryPolicy); serr != nil {
-		err = fmt.Errorf("set expiry policy: %w", serr)
-		return nil, ManageIndexResult{}, err
-	}
-	return nil, ManageIndexResult{Updated: true}, nil
 }
 
 // -----------------------------------------------------------------------

@@ -674,7 +674,7 @@ func TestQuery_HappyPath(t *testing.T) {
 	}
 }
 
-func TestQuery_DefaultMode_Rerank(t *testing.T) {
+func TestQuery_DefaultMode_All(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
@@ -683,7 +683,7 @@ func TestQuery_DefaultMode_Rerank(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Mode 未指定 → rerank（reranker nil なので RRF フォールバック相当に動く）
+	// Mode 未指定 → all（PHIL-01: emb+lex+grep 3 signal 並列 over-recall）
 	if _, _, err := h.handlers.handleQuery(ctx, nil, QueryInput{
 		Query: "text", Key: "K",
 	}); err != nil {
@@ -1105,54 +1105,6 @@ func TestWriteOps_RejectedWhenKeyTrashed(t *testing.T) {
 	if trashedAfter[0].TrashedAt != trashedAtBefore {
 		t.Errorf("TrashedAt changed by rejected ops: before=%q, after=%q",
 			trashedAtBefore, trashedAfter[0].TrashedAt)
-	}
-}
-
-func TestManageIndex_SetAndReset(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-
-	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
-		Key: "K", Series: "s",
-		Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ttl := 7
-	maxChunks := 1000
-	_, out, err := h.handlers.handleManageIndex(ctx, nil, ManageIndexInput{
-		Key: "K",
-		ExpiryPolicy: &store.ExpiryPolicy{
-			TTLDays:   &ttl,
-			MaxChunks: &maxChunks,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !out.Updated {
-		t.Error("Updated = false")
-	}
-
-	// reset
-	_, out, err = h.handlers.handleManageIndex(ctx, nil, ManageIndexInput{Key: "K"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !out.Updated {
-		t.Error("Updated = false on reset")
-	}
-}
-
-func TestManageIndex_UnknownKey_Errors(t *testing.T) {
-	h := newHarness(t)
-	ttl := 7
-	_, _, err := h.handlers.handleManageIndex(context.Background(), nil, ManageIndexInput{
-		Key: "NOPE", ExpiryPolicy: &store.ExpiryPolicy{TTLDays: &ttl},
-	})
-	if err == nil {
-		t.Fatal("want error for unknown key")
 	}
 }
 
