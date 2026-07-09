@@ -29,7 +29,7 @@ flowchart TB
         TI["trash_index (新規、delete_index を置換)"]
         LT["list_trashed_indexes (新規)"]
         RI["restore_index (新規)"]
-        UP["upsert_documents / sync_documents /\ndelete_documents / schedule_delete_series\n(ゴミ箱 KEY への操作を拒否)"]
+        UP["upsert_documents / sync_documents /\ndelete_documents / delete_series / schedule_delete_series\n(ゴミ箱 KEY への操作を拒否)"]
         Q["query\n(ゴミ箱 KEY 指定時は明示エラー)"]
     end
 
@@ -76,13 +76,13 @@ flowchart TB
 
 ### 3.1 モジュール一覧
 
-| モジュール名                               | 責務                                                                                                                                                                                                                                                                                             | 依存                       |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| `internal/store`（既存拡張）               | `keys.trashed_at` の読み書き、chunk 数を含む KEY メタデータ取得                                                                                                                                                                                                                                  | なし（最下層）             |
-| `internal/trash`（新設）                   | ゴミ箱投入から保持期間を超えた KEY・record を定期的に物理削除。監査ログ出力                                                                                                                                                                                                                      | `internal/store`           |
-| `internal/mcp`（既存拡張）                 | `list_indexes` 拡充・ゴミ箱 KEY 除外、`trash_index`（`delete_index` を置換）/ `list_trashed_indexes` / `restore_index` 新設、`manage_index` 廃止、`query` はゴミ箱 KEY 指定時に明示エラー、`upsert_documents`/`sync_documents`/`delete_documents`/`schedule_delete_series` のゴミ箱 KEY 操作拒否 | `internal/store`           |
-| `.claude/skills/manage-db-indexes`（新設） | KEY メタデータ・ゴミ箱一覧の提示、削除・復活操作の対話フロー                                                                                                                                                                                                                                     | `internal/mcp`（MCP 経由） |
-| `cmd/docdb`（既存修正）                    | `internal/expiry.Worker` の起動を `internal/trash.Worker` に置換                                                                                                                                                                                                                                 | `internal/trash`           |
+| モジュール名                               | 責務                                                                                                                                                                                                                                                                                                             | 依存                       |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `internal/store`（既存拡張）               | `keys.trashed_at` の読み書き、chunk 数を含む KEY メタデータ取得                                                                                                                                                                                                                                                  | なし（最下層）             |
+| `internal/trash`（新設）                   | ゴミ箱投入から保持期間を超えた KEY・record を定期的に物理削除。監査ログ出力                                                                                                                                                                                                                                      | `internal/store`           |
+| `internal/mcp`（既存拡張）                 | `list_indexes` 拡充・ゴミ箱 KEY 除外、`trash_index`（`delete_index` を置換）/ `list_trashed_indexes` / `restore_index` 新設、`manage_index` 廃止、`query` はゴミ箱 KEY 指定時に明示エラー、`upsert_documents`/`sync_documents`/`delete_documents`/`delete_series`/`schedule_delete_series` のゴミ箱 KEY 操作拒否 | `internal/store`           |
+| `.claude/skills/manage-db-indexes`（新設） | KEY メタデータ・ゴミ箱一覧の提示、削除・復活操作の対話フロー                                                                                                                                                                                                                                                     | `internal/mcp`（MCP 経由） |
+| `cmd/docdb`（既存修正）                    | `internal/expiry.Worker` の起動を `internal/trash.Worker` に置換                                                                                                                                                                                                                                                 | `internal/trash`           |
 
 ### 3.2 クラス図
 
@@ -141,7 +141,7 @@ classDiagram
     Handlers --> Store
 ```
 
-**設計判断（レビュー反映）**: 既存 `SweepPendingDeletions`（1回の呼び出しで複数 KEY にまたがる全予約行をロック無しで一括処理）は、DES-001 §4.3 の「呼び出し元がメソッド呼び出し全体を 1 回の `WithKeyLock` で囲む」という規約と両立しない（1つのロックで複数 KEY を跨げないため）。`ListPendingDeletionsOlderThan`（読み取り専用、cutoff 絞り込み）と `SweepOnePendingDeletion`（1 件＝1 KEY 分の物理削除）に分割し、呼び出し元（`internal/trash.Worker` および `cmd/docdb/main.go` の起動時スイープ）が予約 1 件ごとに `WithKeyLock` で囲んで呼び出す。`IsTrashed` は `query` の明示エラー判定、および `upsert_documents`/`sync_documents`/`delete_documents`/`schedule_delete_series` の書き込み系操作拒否判定に使う。
+**設計判断（レビュー反映）**: 既存 `SweepPendingDeletions`（1回の呼び出しで複数 KEY にまたがる全予約行をロック無しで一括処理）は、DES-001 §4.3 の「呼び出し元がメソッド呼び出し全体を 1 回の `WithKeyLock` で囲む」という規約と両立しない（1つのロックで複数 KEY を跨げないため）。`ListPendingDeletionsOlderThan`（読み取り専用、cutoff 絞り込み）と `SweepOnePendingDeletion`（1 件＝1 KEY 分の物理削除）に分割し、呼び出し元（`internal/trash.Worker` および `cmd/docdb/main.go` の起動時スイープ）が予約 1 件ごとに `WithKeyLock` で囲んで呼び出す。`IsTrashed` は `query` の明示エラー判定、および `upsert_documents`/`sync_documents`/`delete_documents`/`delete_series`/`schedule_delete_series` の書き込み系操作拒否判定に使う。
 
 **設計判断（レビュー反映・層分離）**: `TrashedKeyInfo` は当初 `RemainingSeconds`（自動最終処分までの残り秒数）を持つ設計だったが、これを計算するには `trashed_at` に加えて保持期間の設定値（`trash.retention_days`）が必要であり、`internal/store` は設定値を知らない（レビュー指摘）。`internal/store` の責務は `trashed_at` という事実を返すことに限定し、残り時間の計算は設定にアクセスできる呼び出し元（`handleListTrashedIndexes` および `internal/trash.Worker`）が `trashed_at` と `retention_days` から算出する。これにより「Store 層は判定を持たず事実のみを返す」という本 feature 全体の設計方針（ADR-003）とも一貫する。
 
@@ -149,16 +149,16 @@ classDiagram
 
 ### 4.1 ユースケース一覧
 
-| ユースケース                          | 説明                                                                                                                                                             |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| UC-1 KEY メタデータの確認             | ユーザーが管理 SKILL 経由で全 KEY（ゴミ箱状態を除く）の chunk 数・doc 数・series・最終アクセス日時を確認する                                                     |
-| UC-2 KEY のゴミ箱投入                 | ユーザーが削除したい KEY を選択し、series の有無に応じた確認フローを経て `trash_index` を呼ぶ                                                                    |
-| UC-3 ゴミ箱一覧の確認                 | ユーザーが管理 SKILL 経由でゴミ箱内 KEY と自動処分までの残り時間を確認する                                                                                       |
-| UC-4 KEY の復活                       | ユーザーがゴミ箱内 KEY を選択し `restore_index` で Active 状態に戻す                                                                                             |
-| UC-5 自動最終処分（KEY）              | `internal/trash.Worker` が `trashed_at` 超過 KEY を KEY 単位で `WithKeyLock` + `DeleteKey` する                                                                  |
-| UC-6 自動最終処分（orphan record）    | `internal/trash.Worker` が `pending_deletions` の保持期間超過エントリを KEY 単位で `WithKeyLock` + 物理削除する                                                  |
-| UC-7 ゴミ箱 KEY への操作拒否          | ゴミ箱状態の KEY に `upsert_documents` / `sync_documents` / `delete_documents` / `schedule_delete_series` が呼ばれた場合、操作を拒否し復活操作を促すエラーを返す |
-| UC-8 ゴミ箱 KEY への query 明示エラー | ゴミ箱状態の KEY を指定して `query` が呼ばれた場合、検索を実行せず対象 KEY がゴミ箱に入っている旨の明示エラーを返す                                              |
+| ユースケース                          | 説明                                                                                                                                                                               |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| UC-1 KEY メタデータの確認             | ユーザーが管理 SKILL 経由で全 KEY（ゴミ箱状態を除く）の chunk 数・doc 数・series・最終アクセス日時を確認する                                                                       |
+| UC-2 KEY のゴミ箱投入                 | ユーザーが削除したい KEY を選択し、series の有無に応じた確認フローを経て `trash_index` を呼ぶ                                                                                      |
+| UC-3 ゴミ箱一覧の確認                 | ユーザーが管理 SKILL 経由でゴミ箱内 KEY と自動処分までの残り時間を確認する                                                                                                         |
+| UC-4 KEY の復活                       | ユーザーがゴミ箱内 KEY を選択し `restore_index` で Active 状態に戻す                                                                                                               |
+| UC-5 自動最終処分（KEY）              | `internal/trash.Worker` が `trashed_at` 超過 KEY を KEY 単位で `WithKeyLock` + `DeleteKey` する                                                                                    |
+| UC-6 自動最終処分（orphan record）    | `internal/trash.Worker` が `pending_deletions` の保持期間超過エントリを KEY 単位で `WithKeyLock` + 物理削除する                                                                    |
+| UC-7 ゴミ箱 KEY への操作拒否          | ゴミ箱状態の KEY に `upsert_documents` / `sync_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` が呼ばれた場合、操作を拒否し復活操作を促すエラーを返す |
+| UC-8 ゴミ箱 KEY への query 明示エラー | ゴミ箱状態の KEY を指定して `query` が呼ばれた場合、検索を実行せず対象 KEY がゴミ箱に入っている旨の明示エラーを返す                                                                |
 
 ### 4.2 シーケンス図（UC-2: KEY のゴミ箱投入）
 
@@ -248,7 +248,7 @@ sequenceDiagram
     participant MCP as internal/mcp
     participant DB as internal/store
 
-    Caller->>MCP: upsert_documents(key, ...) / sync_documents(key, ...) /\ndelete_documents(key, ...) / schedule_delete_series(key, ...)
+    Caller->>MCP: upsert_documents(key, ...) / sync_documents(key, ...) /\ndelete_documents(key, ...) / delete_series(key, ...) / schedule_delete_series(key, ...)
     MCP->>DB: IsTrashed(key)
     DB-->>MCP: true
     MCP-->>Caller: エラー（対象 KEY はゴミ箱に入っています。restore_index で復活してから操作してください）
@@ -256,9 +256,11 @@ sequenceDiagram
 
 **前提条件**: なし。
 **正常フロー**: `IsTrashed` が false の場合は各ツールの既存処理をそのまま実行する。
-**エラーフロー**: 上図の通り。4 ツールいずれも処理を一切実行せず、`trashed_at` も変更しない（黙って復活させない。復活は FNC-011 のユーザー明示操作のみで行う）。
+**エラーフロー**: 上図の通り。5 ツールいずれも処理を一切実行せず、`trashed_at` も変更しない（黙って復活させない。復活は FNC-011 のユーザー明示操作のみで行う）。
 
 **設計判断（レビュー反映・第2回）**: 初版は `upsert_documents`/`sync_documents` のみを拒否対象としていたが、`delete_documents`（series 単位削除）・`schedule_delete_series`（series 全体削除予約）もゴミ箱状態の KEY のデータを変更できてしまうと、復活後の内容がユーザーの想定とずれる（レビュー指摘）。ゴミ箱状態の KEY は復活するまでのあいだ、種類を問わずすべての書き込み系操作を拒否する方針に統一する。
+
+**設計判断（レビュー反映・第3回）**: 第2回改訂後も `delete_series`（KEY 全体から series を除去する branch cleanup 用ツール）が拒否対象の列挙から漏れていた（TASK-009 レビューで検出）。`delete_series` は series_keys が空になった record を即時物理削除できるため、他 4 ツールと同じ理由でゴミ箱 KEY への操作拒否が必要。第2回の「種類を問わずすべての書き込み系操作を拒否する」という方針そのものは変更せず、列挙の記述漏れを修正する。
 
 **設計判断（レビュー反映）**: 既存の `UpsertRecord` の `ON CONFLICT(key) DO UPDATE SET` は `trashed_at` を更新対象に含めていないため、対策なしにゴミ箱 KEY へ upsert すると、データは書き込まれるのに `trashed_at` が残ったまま＝`query` から検索できない状態になり得る（レビュー指摘）。書き込み自体を拒否することで、この不整合を構造的に防ぐ。
 
@@ -322,7 +324,7 @@ trash:
   - `internal/store`: `IsTrashed` の正常系
   - `internal/trash`: `runOnce` が保持期間超過分のみを処理し、未超過分に触れないこと。個別エラー時の継続動作（既存 `expiry` の回帰テストパターンを踏襲）
   - `internal/mcp`: `trash_index` 実行後に `query` が当該 KEY に対して明示エラーを返すこと（空結果ではないこと）
-  - `internal/mcp`: ゴミ箱状態の KEY に対する `upsert_documents` / `sync_documents` / `delete_documents` / `schedule_delete_series` が拒否され、`trashed_at` が変化しないこと
+  - `internal/mcp`: ゴミ箱状態の KEY に対する `upsert_documents` / `sync_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` が拒否され、`trashed_at` が変化しないこと
   - `internal/store`: 起動時マイグレーション（`trashed_at` カラムが存在しない DB に対して `ALTER TABLE` が実行されること）
 - **統合テスト対象**:
   - UC-2〜UC-8 のフロー全体（ゴミ箱投入 → 一覧確認 → 復活 → 復活後の再ゴミ箱投入 → 保持期間経過後の自動処分 → ゴミ箱状態への操作拒否 → ゴミ箱状態への query 明示エラー）

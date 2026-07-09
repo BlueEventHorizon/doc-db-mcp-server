@@ -63,7 +63,7 @@ KEY は通常「利用可能（Active）」状態にあり、システムが自�
 - KEY に series が無い場合（`series` が空）、確認を伴わない簡易な操作で削除を選択できる
 - 削除を選択した時点では、KEY の実データ（record・chunk・embedding）は物理的に削除されない。ゴミ箱状態に遷移するのみ
 - ゴミ箱状態の KEY を指定して `query` が呼ばれた場合、検索は実行せず、対象 KEY がゴミ箱に入っている旨の明示的なエラーを返す（結果を空にするだけでは、ユーザーが「何もヒットしなかった」のか「KEY がゴミ箱に入っている」のか区別できないため）
-- ゴミ箱状態の KEY に対して `upsert_documents` / `sync_documents` / `delete_documents` / `schedule_delete_series` が呼ばれた場合、操作は拒否される。呼び出し元には、対象 KEY がゴミ箱に入っている旨と、操作の前に FNC-011 の復活操作が必要である旨を伝える。ゴミ箱状態の KEY は、復活するまでのあいだ、いかなる書き込み系操作も受け付けない
+- ゴミ箱状態の KEY に対して `upsert_documents` / `sync_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` が呼ばれた場合、操作は拒否される。呼び出し元には、対象 KEY がゴミ箱に入っている旨と、操作の前に FNC-011 の復活操作が必要である旨を伝える。ゴミ箱状態の KEY は、復活するまでのあいだ、いかなる書き込み系操作も受け付けない（`delete_series` は series が空になった record を即時物理削除できるため、他 4 ツールと同様に拒否対象に含める）
 
 ### FNC-010 ゴミ箱一覧の提示
 

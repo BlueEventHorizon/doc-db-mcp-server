@@ -715,6 +715,36 @@ func TestQuery_ValidationErrors(t *testing.T) {
 	}
 }
 
+// TestQuery_RejectedWhenKeyTrashed は、trash_index 実行後の KEY に対する query が
+// 空結果ではなく明示エラーを返すことを検証する（TASK-009, DES-003 UC-7）。
+func TestQuery_RejectedWhenKeyTrashed(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nhello world"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out, err := h.handlers.handleQuery(ctx, nil, QueryInput{
+		Query: "hello", Key: "K",
+	})
+	if err == nil {
+		t.Fatal("want error for query against a trashed key")
+	}
+	if !strings.Contains(err.Error(), "ゴミ箱") || !strings.Contains(err.Error(), "restore_index") {
+		t.Errorf("error message = %q, want it to mention ゴミ箱 and restore_index", err.Error())
+	}
+	if len(out.Results) != 0 {
+		t.Errorf("out.Results = %+v, want empty (error path should not return results)", out.Results)
+	}
+}
+
 // -----------------------------------------------------------------------
 // list_indexes / manage_index
 // -----------------------------------------------------------------------
@@ -1019,8 +1049,9 @@ func TestRestoreIndex_NotTrashedIsError(t *testing.T) {
 // -----------------------------------------------------------------------
 
 // TestWriteOps_RejectedWhenKeyTrashed は、ゴミ箱状態の KEY に対する
-// upsert_documents / sync_documents / delete_documents / schedule_delete_series の
-// 呼び出しがいずれも拒否され、trashed_at が変化しないことを検証する。
+// upsert_documents / sync_documents / delete_documents / delete_series /
+// schedule_delete_series の呼び出しがいずれも拒否され、trashed_at が
+// 変化しないことを検証する。
 func TestWriteOps_RejectedWhenKeyTrashed(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -1076,6 +1107,18 @@ func TestWriteOps_RejectedWhenKeyTrashed(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("want error for delete_documents against a trashed key")
+		}
+		if !strings.Contains(err.Error(), "ゴミ箱") || !strings.Contains(err.Error(), "restore_index") {
+			t.Errorf("error message = %q, want it to mention ゴミ箱 and restore_index", err.Error())
+		}
+	})
+
+	t.Run("delete_series", func(t *testing.T) {
+		_, _, err := h.handlers.handleDeleteSeries(ctx, nil, DeleteSeriesInput{
+			Key: "K", Series: "s",
+		})
+		if err == nil {
+			t.Fatal("want error for delete_series against a trashed key")
 		}
 		if !strings.Contains(err.Error(), "ゴミ箱") || !strings.Contains(err.Error(), "restore_index") {
 			t.Errorf("error message = %q, want it to mention ゴミ箱 and restore_index", err.Error())

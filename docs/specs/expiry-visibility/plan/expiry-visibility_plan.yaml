@@ -244,7 +244,7 @@ tasks:
   - task_id: TASK-009
     title: query のゴミ箱 KEY 指定時の明示エラー化
     priority: 75
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-001
@@ -337,3 +337,5 @@ tasks:
 revision_history:
   - date: "2026-07-08"
     content: 初版作成
+  - date: "2026-07-09"
+    content: TASK-009 レビューで delete_series がゴミ箱 KEY への書き込み拒否対象（FNC-009）から漏れていることを検出。FNC-007/DES-003 を修正し、TASK-009 のスコープ内で delete_series にも拒否ガードを追加（TASK-012 で実装済みの4ツールに加え5ツール目として対応）

@@ -221,8 +221,8 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
 
 【書き込み保護】
   ゴミ箱状態の KEY への upsert_documents / sync_documents / delete_documents /
-  schedule_delete_series は拒否される (restore_index で復活してから操作すること)。
-  query のみ未実装 (計画中) で、誤って検索・参照できる。
+  delete_series / schedule_delete_series は拒否される (restore_index で復活してから
+  操作すること)。query も同様に拒否され、誤って検索・参照することはできない。
 
 【エラー】
   存在しない KEY、既にゴミ箱状態の KEY (多重投入) はエラーになる。`,
@@ -666,6 +666,9 @@ func (h *Handlers) handleDeleteSeries(
 	if in.Key == "" || in.Series == "" {
 		return nil, DeleteSeriesResult{}, errors.New("key / series は必須")
 	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, DeleteSeriesResult{}, terr
+	}
 	start := time.Now()
 	slog.Info("delete_series start", "key", in.Key, "series", in.Series)
 	defer func() {
@@ -752,6 +755,12 @@ func (h *Handlers) handleQuery(
 	}
 	if !exists {
 		err = fmt.Errorf("key %q が存在しません", in.Key)
+		return nil, QueryResult{}, err
+	}
+
+	// ゴミ箱状態の KEY は検索を実行せず明示エラーを返す (TASK-009, DES-003 UC-7)。
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		err = terr
 		return nil, QueryResult{}, err
 	}
 
