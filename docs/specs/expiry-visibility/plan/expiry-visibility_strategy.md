@@ -54,18 +54,18 @@
 
 ### フェーズ 3: internal/mcp ハンドラ拡充
 
-- **目標**: MCP ツール経由で UC-1〜UC-4（KEY メタデータ確認・ゴミ箱投入・一覧確認・復活）が一通り動作する。`manage_index` と `delete_index` が完全に削除され、`trash_index`/`list_trashed_indexes`/`restore_index` に置き換わる。`upsert_documents`/`sync_documents`/`delete_documents`/`schedule_delete_series` の 4 ツールすべてがゴミ箱状態の KEY への操作を拒否し、`query` はゴミ箱状態の KEY 指定時に明示エラーを返す。
+- **目標**: MCP ツール経由で UC-1〜UC-4（KEY メタデータ確認・ゴミ箱投入・一覧確認・復活）が一通り動作する。`manage_index` と `delete_index` が完全に削除され、`trash_index`/`list_trashed_indexes`/`restore_index` に置き換わる。`upsert_documents`/`sync_documents`/`delete_documents`/`delete_series`/`schedule_delete_series` の 5 ツールすべてがゴミ箱状態の KEY への操作を拒否し、`query` はゴミ箱状態の KEY 指定時に明示エラーを返す（`delete_series` は当初計画から漏れており、TASK-009 レビューで追加対応した。詳細は冒頭の事後注記参照）。
 - **スコープ**: DES-003 §3.1「`internal/mcp`（既存拡張）」、§4.2〜§4.5 シーケンス図（UC-2, UC-7, UC-8）。具体的には:
   - `handleListIndexes` に `chunk_count` 追加、ゴミ箱状態の KEY を結果から除外
   - `trash_index`（`TrashKey` を呼ぶ。`delete_index` を置換）/ `list_trashed_indexes`（`ListTrashedKeys` を呼び、`trashed_at` と設定値 `trash.retention_days` から `remaining_seconds` を算出して応答に含める。`Store` 層は設定値を持たないため、この計算は handler 層の責務とする）/ `restore_index`（`RestoreKey` を呼ぶ）新規ハンドラ
   - `handleDeleteIndex`・`DeleteIndexInput`/`Result` を削除する
   - `manage_index` ツール定義・ハンドラ・`ManageIndexInput` 系、`SetExpiryPolicy`/`ExpiryPolicy` の削除
   - `handleQuery` で処理開始前に `IsTrashed(key)` を確認し、true なら検索を実行せず明示エラーを返す（空結果にしない）
-  - `handleUpsert` / `handleSyncDocuments` / `handleDeleteDocuments` / `handleScheduleDeleteSeries` の 4 ハンドラすべてに、処理開始前の `IsTrashed(key)` チェックと拒否エラーを追加する（**初版はここが `upsert_documents`/`sync_documents` の 2 ツールのみだったが、レビューで `delete_documents`/`schedule_delete_series` も対象漏れと指摘され 4 ツールに拡大した**）
+  - `handleUpsert` / `handleSyncDocuments` / `handleDeleteDocuments` / `handleDeleteSeries` / `handleScheduleDeleteSeries` の 5 ハンドラすべてに、処理開始前の `IsTrashed(key)` チェックと拒否エラーを追加する（**初版はここが `upsert_documents`/`sync_documents` の 2 ツールのみだったが、レビューで `delete_documents`/`schedule_delete_series` も対象漏れと指摘され 4 ツールに拡大し、さらに TASK-009 レビューで `delete_series` の漏れも判明して 5 ツールに拡大した**）
 - **検証ポイント**:
   - `go test ./internal/mcp/... -race`
   - `trash_index` 実行後に `query` が当該 KEY に対して明示エラーを返すこと（空結果にならないこと）
-  - ゴミ箱状態の KEY への 4 ツール（upsert/sync/delete_documents/schedule_delete_series）呼び出しがすべて拒否され `trashed_at` が変化しないこと
+  - ゴミ箱状態の KEY への 5 ツール（upsert/sync/delete_documents/delete_series/schedule_delete_series）呼び出しがすべて拒否され `trashed_at` が変化しないこと
   - `manage_index`/`delete_index` 削除後、`ManageIndexInput`/`DeleteIndexInput` 系テストが残っていないことの確認（grep によるデッドコード検出）
   - DIF-02 3 テスト再確認（green 維持）
 
@@ -84,11 +84,11 @@
 
 ## リスクと対策
 
-| リスク                                                                                                  | 影響度 | 対策（どのフェーズで潰すか）                                                                                                       |
-| ------------------------------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `pending_deletions` の cutoff 絞り込み漏れ・起動時スイープ呼び出しとの不整合で GC-01/GC-02 が回帰する   | 高     | フェーズ 1 で最優先実装し、cutoff 境界値テスト（猶予期間内は未処理／超過分のみ処理）を先行して green にする                        |
-| DIF-02 不変条件（同一 key+path のハッシュ dedup）が周辺変更（schema・pending 処理契機変更）で破壊される | 高     | 全フェーズ完了ごとに既存 3 テスト（`TestAppendAndCleanSeries_DIF02` 等）を都度実行し green を維持するチェックポイント化            |
-| ゴミ箱操作拒否の対象漏れ（4 ツールのうち一部だけ実装してしまう）                                        | 高     | フェーズ 3 で 4 ツール（upsert/sync/delete_documents/schedule_delete_series）を横並びでチェックリスト化し、grep で網羅性を確認する |
-| `manage_index`/`delete_index` 廃止に伴うデッドコード（`ManageIndexInput`/`DeleteIndexInput` 等）の残存  | 中     | フェーズ 3 で grep ベースのデッドコード確認をチェックリスト化して実施                                                              |
-| SKILL 新設時に誤って PyYAML 等の外部 Python 依存を追加してしまう                                        | 低     | フェーズ 4 で `delete-db-series` の既存ファイル（stdlib のみ）をそのままコピーし、新規実装差分を対話フローのみに限定               |
-| `internal/trash.Worker` の定期実行が `WithKeyLock` 未適用のまま他の書き込み系操作と競合する             | 中     | フェーズ 2 で SYN-08 準拠のレビューを行い、`go test -race` でレース検出テストを実行                                                |
+| リスク                                                                                                  | 影響度 | 対策（どのフェーズで潰すか）                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending_deletions` の cutoff 絞り込み漏れ・起動時スイープ呼び出しとの不整合で GC-01/GC-02 が回帰する   | 高     | フェーズ 1 で最優先実装し、cutoff 境界値テスト（猶予期間内は未処理／超過分のみ処理）を先行して green にする                                                                                                                                                     |
+| DIF-02 不変条件（同一 key+path のハッシュ dedup）が周辺変更（schema・pending 処理契機変更）で破壊される | 高     | 全フェーズ完了ごとに既存 3 テスト（`TestAppendAndCleanSeries_DIF02` 等）を都度実行し green を維持するチェックポイント化                                                                                                                                         |
+| ゴミ箱操作拒否の対象漏れ（5 ツールのうち一部だけ実装してしまう）                                        | 高     | フェーズ 3 で 5 ツール（upsert/sync/delete_documents/delete_series/schedule_delete_series）を横並びでチェックリスト化し、grep で網羅性を確認する（この対策自体が当初 4 ツールで運用され `delete_series` を実際に見落とした。TASK-009 レビューで検出・修正済み） |
+| `manage_index`/`delete_index` 廃止に伴うデッドコード（`ManageIndexInput`/`DeleteIndexInput` 等）の残存  | 中     | フェーズ 3 で grep ベースのデッドコード確認をチェックリスト化して実施                                                                                                                                                                                           |
+| SKILL 新設時に誤って PyYAML 等の外部 Python 依存を追加してしまう                                        | 低     | フェーズ 4 で `delete-db-series` の既存ファイル（stdlib のみ）をそのままコピーし、新規実装差分を対話フローのみに限定                                                                                                                                            |
+| `internal/trash.Worker` の定期実行が `WithKeyLock` 未適用のまま他の書き込み系操作と競合する             | 中     | フェーズ 2 で SYN-08 準拠のレビューを行い、`go test -race` でレース検出テストを実行                                                                                                                                                                             |

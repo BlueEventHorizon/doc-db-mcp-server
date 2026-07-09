@@ -123,8 +123,8 @@ func (s *Store) ListTrashedKeys(ctx context.Context) ([]TrashedKeyInfo, error) {
 }
 
 // IsTrashed は key がゴミ箱状態かどうかを返す。
-// query / upsert_documents / sync_documents / delete_documents / schedule_delete_series の
-// ゴミ箱状態判定に使う（DES-003 UC-7/UC-8）。
+// query / upsert_documents / sync_documents / delete_documents / delete_series /
+// schedule_delete_series のゴミ箱状態判定に使う（DES-003 UC-7/UC-8）。
 // key が存在しない場合は false を返す（存在確認は呼び出し元の KeyExists 等に委ねる）。
 // 読み取り操作のため Mutex を取得しない。
 func (s *Store) IsTrashed(ctx context.Context, key string) (bool, error) {

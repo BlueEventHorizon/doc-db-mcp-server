@@ -34,7 +34,8 @@ type ScheduleDeleteSeriesResult struct {
 
 // handleScheduleDeleteSeries は指定 key・series の削除予約を記録する（GC-01）。
 // 即座に削除しない: MarkSeriesForDeletion で pending_deletions に予約行を upsert するだけで、
-// record / chunks / embeddings には一切触れない。物理削除は次回起動時スイープが行う。
+// record / chunks / embeddings には一切触れない。物理削除は起動時スイープまたは
+// internal/trash.Worker の定期実行（保持期間経過後）が行う。
 //
 // KEY 単位排他（SYN-08）: sync_documents の desired-state 判定（fn 冒頭の
 // ListPendingDeletions で series 全体予約の有無を読む）と直列化するため、

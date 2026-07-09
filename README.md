@@ -308,7 +308,8 @@ branch cleanup は `delete_series` (v0.1.9+) または SKILL `/delete-db-series 
 `upsert_documents` は追加専用のため、クライアント側で削除されたファイルには追従できない。
 `sync_documents` に **完全な現在のファイル一覧** を渡すと、一覧に無い既存 path が series
 から即時に切り離され、当該 series 指定の検索から直ちに消える。切り離しで orphan になった
-record は物理削除予約として記録され、次回サーバー起動時に一括物理削除される（それまでは
+record は物理削除予約として記録され、保持期間（`trash.retention_days`、デフォルト 3 日）
+経過後に起動時スイープまたは `internal/trash.Worker` の定期実行で物理削除される（それまでは
 同一内容の再 sync で Embedding 再計算なしに復元できる = 自己修復）。branch 削除の検知時は
 `schedule_delete_series` で series 全体を予約できる（即時削除しない・再 sync で取り消し可能）。
 

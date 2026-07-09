@@ -138,8 +138,10 @@ func (h *Handlers) handleListTrashedIndexes(
 
 // rejectIfTrashed は key がゴミ箱状態（trashed_at が非 NULL）の場合、操作を
 // 拒否するエラーを返す。upsert_documents / sync_documents / delete_documents /
-// schedule_delete_series の書き込み系 4 ツールがそれぞれの入力必須項目チェックの直後・実処理
-// （WithKeyLock 取得や DB 書き込み）の前に呼ぶ（DES-003 §4.4 UC-7）。
+// delete_series / schedule_delete_series の書き込み系 5 ツールがそれぞれの入力必須項目
+// チェックの直後・実処理（WithKeyLock 取得や DB 書き込み）の前に呼ぶ（DES-003 §4.4 UC-7）。
+// さらに各ツールは WithKeyLock 内（mutation 直前）でも再度呼ぶ（TOCTOU 対策。ロック取得前の
+// 判定とロック取得の間に trash_index が完了する余地があるため）。
 // query も KeyExists 確認の直後・検索実行前に呼ぶ（TASK-009）。
 // trashed_at は変更しない（黙って復活させない。復活は restore_index の明示操作のみ、FNC-011）。
 // 存在しない KEY は h.store.IsTrashed が false を返すため拒否対象にならない
