@@ -272,6 +272,59 @@ func TestListKeys_AggregatesSeriesAndDocCount(t *testing.T) {
 	}
 }
 
+// TestListKeys_ChunkCount は FNC-008 の chunk_count 集計を検証する。
+// K1 は 2 record（各 1 chunk）で合計 2、K2 は 1 record（1 chunk）で合計 1。
+// K3 は record を持たない（chunk 0 件）KEY で、LEFT JOIN により ChunkCount=0 として
+// 結果に含まれることを確認する（ListKeysByLRU の INNER JOIN 相当のロジックでは
+// K3 が結果から欠落してしまう点との違い）。
+func TestListKeys_ChunkCount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, r := range []Record{
+		{Key: "K1", Path: "a", ContentHash: "h_a", Series: "s1", Chunks: makeChunks("a")},
+		{Key: "K1", Path: "b", ContentHash: "h_b", Series: "s2", Chunks: makeChunks("b")},
+		{Key: "K2", Path: "c", ContentHash: "h_c", Series: "s1", Chunks: makeChunks("c")},
+	} {
+		if _, err := s.UpsertRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// K3 は record 無しで keys テーブルにのみ存在させる（expiry_policy 経由の SetExpiryPolicy
+	// は record 無しの KEY には使えないため、テスト用ヘルパーで直接 INSERT する）。
+	if _, err := ExecForTest(ctx, s,
+		`INSERT INTO keys (key, doc_count, last_accessed_at, last_updated_at) VALUES (?, 0, ?, ?)`,
+		"K3", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := s.ListKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byKey := map[string]KeyInfo{}
+	for _, k := range keys {
+		byKey[k.Key] = k
+	}
+
+	if byKey["K1"].ChunkCount != 2 {
+		t.Errorf("K1 chunk_count = %d, want 2", byKey["K1"].ChunkCount)
+	}
+	if byKey["K2"].ChunkCount != 1 {
+		t.Errorf("K2 chunk_count = %d, want 1", byKey["K2"].ChunkCount)
+	}
+	k3, ok := byKey["K3"]
+	if !ok {
+		t.Fatalf("K3 (chunk 0件) が ListKeys の結果に含まれていない（LEFT JOIN 実装漏れの疑い）")
+	}
+	if k3.ChunkCount != 0 {
+		t.Errorf("K3 chunk_count = %d, want 0", k3.ChunkCount)
+	}
+}
+
 // -----------------------------------------------------------------------
 // DIF-02: 同一ハッシュ・新規 series
 // -----------------------------------------------------------------------

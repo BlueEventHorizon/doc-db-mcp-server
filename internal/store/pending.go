@@ -300,9 +300,10 @@ func (s *Store) DeleteOrphanRecords(ctx context.Context, key, path string) (remo
 // path="" は series 全体予約（GC-01 由来）、path が非空は path 単位予約（SYN-03 由来）を表す
 // （pending_deletions.path の意味は本ファイル冒頭コメント参照）。
 type PendingDeletionEntry struct {
-	Key    string
-	Series string
-	Path   string
+	Key      string
+	Series   string
+	Path     string
+	MarkedAt string // ゴミ箱投入・削除予約日時（RFC3339）。ログ記録用（DES-003 §4.3）
 }
 
 // ListPendingDeletionsOlderThan は marked_at が cutoff より前（marked_at < cutoff の
@@ -316,7 +317,7 @@ func (s *Store) ListPendingDeletionsOlderThan(ctx context.Context, cutoff time.T
 	cutoffStr := cutoff.UTC().Format(time.RFC3339)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, series, path FROM pending_deletions WHERE marked_at < ?`,
+		`SELECT key, series, path, marked_at FROM pending_deletions WHERE marked_at < ?`,
 		cutoffStr,
 	)
 	if err != nil {
@@ -327,7 +328,7 @@ func (s *Store) ListPendingDeletionsOlderThan(ctx context.Context, cutoff time.T
 	var entries []PendingDeletionEntry
 	for rows.Next() {
 		var e PendingDeletionEntry
-		if err := rows.Scan(&e.Key, &e.Series, &e.Path); err != nil {
+		if err := rows.Scan(&e.Key, &e.Series, &e.Path, &e.MarkedAt); err != nil {
 			return nil, fmt.Errorf("store.ListPendingDeletionsOlderThan: scan: %w", err)
 		}
 		entries = append(entries, e)

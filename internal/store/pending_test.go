@@ -472,8 +472,9 @@ func TestListPendingDeletionsOlderThan_CutoffBoundary(t *testing.T) {
 		t.Fatalf("entries = %+v, want 1 件（older.md のみ）", entries)
 	}
 	got := entries[0]
-	if got.Key != "K" || got.Series != "s1" || got.Path != "older.md" {
-		t.Errorf("entries[0] = %+v, want {K s1 older.md}", got)
+	wantMarkedAt := cutoff.Add(-1 * time.Second).Format(time.RFC3339)
+	if got.Key != "K" || got.Series != "s1" || got.Path != "older.md" || got.MarkedAt != wantMarkedAt {
+		t.Errorf("entries[0] = %+v, want {K s1 older.md %s}", got, wantMarkedAt)
 	}
 }
 

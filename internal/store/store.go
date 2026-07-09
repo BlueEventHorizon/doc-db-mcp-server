@@ -32,6 +32,7 @@ type KeyInfo struct {
 	Key            string        `json:"key"`
 	Series         []string      `json:"series"`
 	DocCount       int           `json:"doc_count"`
+	ChunkCount     int           `json:"chunk_count"`
 	LastUpdatedAt  string        `json:"last_updated_at"`
 	LastAccessedAt string        `json:"last_accessed_at"`
 	ExpiryPolicy   *ExpiryPolicy `json:"expiry_policy,omitempty"`
@@ -505,11 +506,19 @@ func (s *Store) fetchSeriesKeys(ctx context.Context, recordID int64) ([]string, 
 	return ss, rows.Err()
 }
 
-// ListKeys は全 KEY の情報一覧を返す（MNG-01 対応）。
+// ListKeys は全 KEY の情報一覧を返す（MNG-01 対応、FNC-008: chunk_count 含む）。
+// ListKeysByLRU の chunk 数集計 SQL とは異なり、chunk が 0 件の KEY も
+// ChunkCount=0 で結果に含める（LEFT JOIN、全 KEY を返す責務のため INNER JOIN は使わない）。
 func (s *Store) ListKeys(ctx context.Context) ([]KeyInfo, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, doc_count, last_updated_at, last_accessed_at, expiry_policy FROM keys ORDER BY key`,
-	)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT k.key, k.doc_count, k.last_updated_at, k.last_accessed_at, k.expiry_policy,
+       COUNT(c.id) AS chunk_count
+FROM keys k
+LEFT JOIN records r ON r.key = k.key
+LEFT JOIN chunks c ON c.record_id = r.id
+GROUP BY k.key
+ORDER BY k.key
+`)
 	if err != nil {
 		return nil, fmt.Errorf("store.ListKeys: %w", err)
 	}
@@ -519,7 +528,7 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyInfo, error) {
 	for rows.Next() {
 		var ki KeyInfo
 		var policyJSON sql.NullString
-		if err := rows.Scan(&ki.Key, &ki.DocCount, &ki.LastUpdatedAt, &ki.LastAccessedAt, &policyJSON); err != nil {
+		if err := rows.Scan(&ki.Key, &ki.DocCount, &ki.LastUpdatedAt, &ki.LastAccessedAt, &policyJSON, &ki.ChunkCount); err != nil {
 			return nil, fmt.Errorf("store.ListKeys scan: %w", err)
 		}
 		if policyJSON.Valid && policyJSON.String != "" {
