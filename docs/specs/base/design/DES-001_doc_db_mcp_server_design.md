@@ -33,7 +33,7 @@ LLM Rerank は本来 Layer 1 内部の ranking 最適化オプションであり
 flowchart TB
     Client["MCP クライアント\n(Claude Code 等)\n= Layer 2 AI agent"]
     Server["MCP Server\n(go-sdk / Streamable HTTP)"]
-    Tools["Tool Handlers\nupsert / delete / query / manage\nsync / schedule"]
+    Tools["Tool Handlers\nupsert / delete / query / trash\nsync / schedule"]
     Chunker["Chunker\nMarkdown → Chunks"]
     Embedder["Embedder\nOpenAI API"]
     Fetcher["Fetcher\nURL → Content"]
@@ -42,8 +42,8 @@ flowchart TB
     SearchGrep["grep signal\n(literal)"]
     Rerank["LLM Rerank\n(optional)"]
     Merge["Candidate Merge\norigin_signals 記録"]
-    Store["Store\nSQLite (modernc)\npending_deletions 含む"]
-    Expiry["Expiry Worker\nTTL / LRU"]
+    Store["Store\nSQLite (modernc)\npending_deletions / keys.trashed_at 含む"]
+    Trash["Trash Worker\nゴミ箱投入 KEY・orphan record の\n自動最終処分（定期実行）"]
     Sweep["起動時スイープ\n削除予約の物理削除"]
 
     Client <-->|"Streamable HTTP"| Server
@@ -57,7 +57,7 @@ flowchart TB
     Embedder -->|"embedding vectors"| Store
     Fetcher -->|"raw content"| Chunker
     SearchEmb & SearchLex & SearchGrep --> Store
-    Expiry --> Store
+    Trash --> Store
     Sweep --> Store
 ```
 
@@ -67,7 +67,7 @@ flowchart TB
 cmd/          → internal/mcp
 internal/mcp  → internal/store, internal/search, internal/chunker, internal/embedder, internal/fetcher
 internal/search → internal/store
-internal/expiry → internal/store
+internal/trash  → internal/store
 internal/store  → (外部依存なし)
 ```
 
@@ -77,17 +77,17 @@ internal/store  → (外部依存なし)
 
 ### 3.1 パッケージ一覧
 
-| パッケージ          | 責務                                                                                                               | 主な依存                                                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `cmd/docdb`         | エントリポイント・設定読み込み・起動時スイープ実行（§8.5）・ジョブ用 root context の生成保持（§5.4）・サーバー起動 | `internal/mcp`, `internal/store`, `internal/expiry`                                              |
-| `internal/mcp`      | MCP ツールハンドラ（upsert/delete/query/manage/sync/schedule）・同期ジョブ状態管理                                 | `internal/store`, `internal/search`, `internal/chunker`, `internal/embedder`, `internal/fetcher` |
-| `internal/store`    | SQLite の読み書き・トランザクション管理・KEY 単位排他（`WithKeyLock`、§4.3）・削除予約の記録と回収（§4.5）         | `modernc.org/sqlite`                                                                             |
-| `internal/chunker`  | Markdown を見出し境界でチャンク分割                                                                                | （外部依存なし）                                                                                 |
-| `internal/embedder` | OpenAI Embedding API 呼び出し                                                                                      | `net/http`                                                                                       |
-| `internal/fetcher`  | HTTP/HTTPS URL からコンテンツ取得                                                                                  | `net/http`                                                                                       |
-| `internal/search`   | 3 signal 並列検索（emb / BM25 lex / 全文 GREP）・候補 merge・LLM Rerank（オプション）                              | `internal/store`                                                                                 |
-| `internal/reranker` | OpenAI Chat Completions による LLM Rerank（PHIL-02: オプション）                                                   | `internal/search`（interface 実装）                                                              |
-| `internal/expiry`   | TTL/LRU ポリシーによる自動廃棄ワーカー（KEY 削除は `WithKeyLock` 経由、§4.3）                                      | `internal/store`                                                                                 |
+| パッケージ          | 責務                                                                                                                                                                   | 主な依存                                                                                         |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `cmd/docdb`         | エントリポイント・設定読み込み・起動時スイープ実行（§8.5）・ジョブ用 root context の生成保持（§5.4）・サーバー起動                                                     | `internal/mcp`, `internal/store`, `internal/trash`                                               |
+| `internal/mcp`      | MCP ツールハンドラ（upsert/delete/query/trash_index/list_trashed_indexes/restore_index/sync/schedule）・同期ジョブ状態管理                                             | `internal/store`, `internal/search`, `internal/chunker`, `internal/embedder`, `internal/fetcher` |
+| `internal/store`    | SQLite の読み書き・トランザクション管理・KEY 単位排他（`WithKeyLock`、§4.3）・削除予約の記録と回収（§4.5）                                                             | `modernc.org/sqlite`                                                                             |
+| `internal/chunker`  | Markdown を見出し境界でチャンク分割                                                                                                                                    | （外部依存なし）                                                                                 |
+| `internal/embedder` | OpenAI Embedding API 呼び出し                                                                                                                                          | `net/http`                                                                                       |
+| `internal/fetcher`  | HTTP/HTTPS URL からコンテンツ取得                                                                                                                                      | `net/http`                                                                                       |
+| `internal/search`   | 3 signal 並列検索（emb / BM25 lex / 全文 GREP）・候補 merge・LLM Rerank（オプション）                                                                                  | `internal/store`                                                                                 |
+| `internal/reranker` | OpenAI Chat Completions による LLM Rerank（PHIL-02: オプション）                                                                                                       | `internal/search`（interface 実装）                                                              |
+| `internal/trash`    | ゴミ箱投入済み KEY・orphan record（`pending_deletions`）の自動最終処分ワーカー（定期実行。KEY 削除は `WithKeyLock` 経由、§4.3。旧 `internal/expiry`（TTL/LRU）を置換） | `internal/store`                                                                                 |
 
 ### 3.2 主要な型関係
 
@@ -105,8 +105,10 @@ classDiagram
     class QueryHandler {
         +Handle(ctx, req) QueryResult
     }
-    class ManageHandler {
-        +Handle(ctx, req) ManageResult
+    class TrashHandler {
+        +HandleTrashIndex(ctx, req) TrashIndexResult
+        +HandleListTrashedIndexes(ctx, req) ListTrashedIndexesResult
+        +HandleRestoreIndex(ctx, req) RestoreIndexResult
     }
     class Store {
         +UpsertRecord(ctx, rec) (int64, error)
@@ -117,7 +119,12 @@ classDiagram
         +TouchKey(ctx, key) error
         +WithKeyLock(ctx, key, fn) error
         +DetachSeriesFromPath(ctx, key, series, path) (bool, error)
-        +SweepPendingDeletions(ctx) (int, []error)
+        +TrashKey(ctx, key) (trashedAt string, error)
+        +RestoreKey(ctx, key) error
+        +ListTrashedKeys(ctx) []TrashedKeyInfo
+        +IsTrashed(ctx, key) (bool, error)
+        +ListPendingDeletionsOlderThan(ctx, cutoff) []PendingDeletionEntry
+        +SweepOnePendingDeletion(ctx, entry) error
     }
     class Chunker {
         +Split(path, content) ([]Chunk, error)
@@ -131,15 +138,15 @@ classDiagram
     class SearchPipeline {
         +Run(ctx, key, series, query, mode, topN) []SearchResult
     }
-    class ExpiryWorker {
+    class TrashWorker {
         +Start(ctx)
     }
 
     Server --> UpsertHandler
     Server --> DeleteHandler
     Server --> QueryHandler
-    Server --> ManageHandler
-    ManageHandler --> Store
+    Server --> TrashHandler
+    TrashHandler --> Store
     UpsertHandler --> Chunker
     UpsertHandler --> Embedder
     UpsertHandler --> Fetcher
@@ -147,12 +154,14 @@ classDiagram
     DeleteHandler --> Store
     QueryHandler --> SearchPipeline
     SearchPipeline --> Store
-    ExpiryWorker --> Store
+    TrashWorker --> Store
 ```
 
 **型定義**:
 
-- `KeyInfo`: `ListKeys` の戻り値要素。`key string`・`series []string`・`doc_count int`・`last_updated_at string`・`last_accessed_at string`・`expiry_policy *ExpiryPolicy` を含む。MNG-01「KEY・series 一覧・ドキュメント数・最終更新日時・最終アクセス日時・廃棄ポリシー設定を取得できること」に対応する。
+- `KeyInfo`: `ListKeys` の戻り値要素。`key string`・`series []string`・`doc_count int`・`chunk_count int`・`last_updated_at string`・`last_accessed_at string` を含む。MNG-01「KEY・series 一覧・ドキュメント数・chunk 数・最終更新日時・最終アクセス日時を取得できること」に対応する（ゴミ箱投入済み KEY は結果から除外する。FNC-007 TRS-04）。旧 `expiry_policy` フィールドは TTL/LRU 廃止（FNC-007）に伴い削除した。
+- `TrashedKeyInfo`: `ListTrashedKeys` の戻り値要素。`key string`・`trashed_at string` を含む。自動最終処分までの残り時間は `trashed_at` と設定値 `trash.retention_days`（§9.2）から呼び出し元が算出する（Store 層は判定を持たず事実のみを返す方針。ADR-003）。
+- `PendingDeletionEntry`: `ListPendingDeletionsOlderThan` の戻り値要素。`key string`・`series string`・`path string`・`marked_at string` を含む。
 
 ## 4. データモデル
 
@@ -165,8 +174,10 @@ CREATE TABLE keys (
     doc_count       INTEGER NOT NULL DEFAULT 0,
     last_accessed_at TEXT NOT NULL,  -- RFC3339
     last_updated_at  TEXT NOT NULL,
-    expiry_policy   TEXT             -- JSON: {"ttl_days": N, "max_chunks": N}
+    trashed_at      TEXT             -- RFC3339, NULL = Active（ゴミ箱未投入）。FNC-007
 );
+-- 旧 expiry_policy TEXT カラム（TTL/LRU 廃止に伴い FNC-007 で撤去。既存 DB へは
+-- `ALTER TABLE keys ADD COLUMN trashed_at TEXT` を起動時マイグレーションで追加する。§13 参照）
 
 -- embedding record（key + path ごとにコンテンツ1バージョン）
 CREATE TABLE records (
@@ -204,7 +215,8 @@ CREATE TABLE embeddings (
     dim       INTEGER NOT NULL
 );
 
--- 削除予約（sync_documents / schedule_delete_series が記録し、起動時スイープが回収する。§4.5 / §8.5）
+-- 削除予約（sync_documents / schedule_delete_series が記録し、起動時スイープと
+-- internal/trash.Worker の定期実行が回収する。§4.5 / §8.5）
 -- path = '' は「series 全体の削除予約」を表すセンチネル。SQLite の PRIMARY KEY は NULL の
 -- 重複を許容してしまうため、NULL ではなく空文字列で series 全体 / 特定 path を区別する。
 CREATE TABLE pending_deletions (
@@ -233,7 +245,7 @@ SQLite WAL モードと Go 側ミューテックスの組み合わせで並行�
 
 ### 4.3 KEY 単位排他制御（WithKeyLock）
 
-`sync_documents`（§5.4、FNC-006 SYN-08）は「documents 処理 → 既存 path 一覧取得 → 欠落 path の切り離し・削除予約」を desired-state 判定の単一の論理処理として扱う。この間に同じ KEY へ他の書き込みが割り込むと、判定開始時点の desired-state と処理完了時点の実データがずれる。割り込みうる操作は series 単位のもの（`upsert_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` / 別の `sync_documents`）に留まらず、**KEY 全体を削除する操作**（`delete_index`、EXP-01 の TTL、EXP-02 の LRU）も含む。KEY 全体削除が同時に走ると、sync 処理中の KEY 自体が消え、存在しない KEY への書き込みや削除と再挿入の競合による不整合が生じる。
+`sync_documents`（§5.4、FNC-006 SYN-08）は「documents 処理 → 既存 path 一覧取得 → 欠落 path の切り離し・削除予約」を desired-state 判定の単一の論理処理として扱う。この間に同じ KEY へ他の書き込みが割り込むと、判定開始時点の desired-state と処理完了時点の実データがずれる。割り込みうる操作は series 単位のもの（`upsert_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` / 別の `sync_documents`）に留まらず、**KEY 全体を削除する操作**（`trash_index` によるゴミ箱投入・`internal/trash.Worker` による自動最終処分の `DeleteKey`）も含む。KEY 全体削除が同時に走ると、sync 処理中の KEY 自体が消え、存在しない KEY への書き込みや削除と再挿入の競合による不整合が生じる。旧 EXP-01（TTL）・EXP-02（LRU）は FNC-007 により廃止されたが、KEY 全体削除が SYN-08 の排他対象である点は `trash_index`／自動最終処分に引き継がれている。
 
 これを防ぐため、Store は KEY 単位の論理ロック `WithKeyLock(ctx, key, fn func() error) error` を公開する。生の `LockKey(key) (unlock func())` ペアではなくクロージャ形式を採用するのは、呼び出し側の unlock 忘れを構造的に防ぐため。
 
@@ -247,12 +259,13 @@ SQLite WAL モードと Go 側ミューテックスの組み合わせで並行�
   - `upsert_documents` ハンドラ: 複数ドキュメント分の `UpsertRecord` 呼び出しを含む、ハンドラの Store 書き込み処理全体を 1 回で囲む
   - `delete_documents` ハンドラ: `HasRecord` による存在チェック（warning 構築）から `DeleteSeries` までを囲む。**存在チェックをロック外に置いてはならない**: `sync_documents` がロック保持中に作成する path を「存在しない」と誤判定してブロックせず即完了し、削除要求を取りこぼす（TOCTOU）
   - `delete_series` ハンドラ: `DeleteSeriesAll` 呼び出しを囲む
-  - `delete_index` ハンドラ: `DeleteKey` 呼び出しを囲む
+  - `trash_index` ハンドラ: `TrashKey` 呼び出しを囲む。呼び出し直前に `IsTrashed` を再確認する（TOCTOU 対策。§4.6）
+  - `restore_index` ハンドラ: `RestoreKey` 呼び出しを囲む
   - `schedule_delete_series` ハンドラ: `MarkSeriesForDeletion` 呼び出しを囲む
-  - `internal/expiry.Worker` の TTL / LRU: 削除対象 KEY ごとに `DeleteKey` 呼び出しを囲む（`storeForExpiry` インターフェースに `WithKeyLock` を含める。TTL/LRU の判定ロジック自体は §8 の通りで変更なし）
+  - `internal/trash.Worker` の自動最終処分: ゴミ箱投入済み KEY ごとに `IsTrashed` の再確認（復活済みならスキップ）+ `DeleteKey` 呼び出しを囲む（`storeForTrash` インターフェースに `WithKeyLock` / `IsTrashed` を含める。判定ロジックは §8 参照。旧 `internal/expiry.Worker` の TTL/LRU 判定を置換）
   - `sync_documents` のバックグラウンドゴルーチン: desired-state 判定全体（documents 処理 → path 一覧取得 → series 切り離し → 削除予約の記録・解除）を 1 回で囲む（§5.4）。`fn` 内で呼ぶ各 Store メソッドは `WithKeyLock` を持たないため、構造的に再入は起こり得ない
 
-**ロック粒度は KEY 単位**（key+series 単位ではない）とし、同一 KEY 内の異なる series 間であっても並行実行しない。`delete_index` / TTL / LRU は KEY 全体に効くため、series 単位のロックでは「他の series はロックしていないので削除してよい」という誤った並行実行を防げない。単一 KEY 内で書き込み系操作が同時に複数走る想定は薄く（branch 運用は同一 KEY 内の逐次的な series 追加・削除が主）、並行度低下の実害は小さい。
+**ロック粒度は KEY 単位**（key+series 単位ではない）とし、同一 KEY 内の異なる series 間であっても並行実行しない。`trash_index` による KEY のゴミ箱投入・自動最終処分の `DeleteKey` は KEY 全体に効くため、series 単位のロックでは「他の series はロックしていないので削除してよい」という誤った並行実行を防げない。単一 KEY 内で書き込み系操作が同時に複数走る想定は薄く（branch 運用は同一 KEY 内の逐次的な series 追加・削除が主）、並行度低下の実害は小さい。
 
 ### 4.4 Embedding Record の series_keys 管理
 
@@ -274,11 +287,11 @@ flowchart TB
 
 **重要**: series の剥がし処理（CleanOtherSeries）は DIF-02（同一ハッシュの Append）でも必須。たとえば series=main が hash=H1 に紐づいていた後、hash=H2 で上書きされ H2.series=[main] になった状態で、再び hash=H1 を main で upsert すると H1 が AppendSeries で復活しても H2 に main が残ったままになる。Append/NewRec のどちらの経路でも CleanOtherSeries を実行することで「同一 key+path+series の組み合わせは常に高々1 record」を保証する。
 
-**例外 — sync_documents の series 切り離し（FNC-006 SYN-03）**: 「series_keys が空になった record は即時物理削除」という上記の掃除は、upsert 経路（DIF-02/03）の正であり続ける。一方、`sync_documents` が desired-state から欠落した path を series から切り離す `DetachSeriesFromPath` は、この不変条件の**意図的な例外**であり、orphan（どの series からも参照されない record）を物理削除せず起動時スイープまで保持する（自己修復を Embedding 再計算なしで成立させるため。詳細は §4.5）。
+**例外 — sync_documents の series 切り離し（FNC-006 SYN-03）**: 「series_keys が空になった record は即時物理削除」という上記の掃除は、upsert 経路（DIF-02/03）の正であり続ける。一方、`sync_documents` が desired-state から欠落した path を series から切り離す `DetachSeriesFromPath` は、この不変条件の**意図的な例外**であり、orphan（どの series からも参照されない record）を物理削除せず、起動時スイープまたは `internal/trash.Worker` の定期実行のいずれかまで保持する（自己修復を Embedding 再計算なしで成立させるため。詳細は §4.5）。
 
 ### 4.5 削除予約と orphan 回収（pending_deletions）
 
-`sync_documents` / `schedule_delete_series`（FNC-006 SYN-03 / GC-01）は不要データを即時に物理削除せず、`pending_deletions` テーブル（§4.1）へ**削除予約**として記録する。物理削除は起動時スイープ（§8.5）が行う。予約は 2 種類ある:
+`sync_documents` / `schedule_delete_series`（FNC-006 SYN-03 / GC-01）は不要データを即時に物理削除せず、`pending_deletions` テーブル（§4.1）へ**削除予約**として記録する。物理削除は起動時スイープ、または保持期間経過後の `internal/trash.Worker` 定期実行のいずれかが行う（§8.5）。予約は 2 種類ある:
 
 - **path 単位**（`path` に実 path）: `sync_documents` が desired-state から欠落した path を series から**即時に切り離した**結果、orphan になった record の物理削除予約。切り離し済みのため当該 series 指定の検索からは既に消えており、予約は残骸（record・chunks・embeddings）の回収のみを意味する
 - **series 全体**（`path=''` センチネル）: `schedule_delete_series` による series 丸ごとの削除予約。path 単位と異なり**即時切り離しは行わない**（遅延方式）。誤操作時の影響範囲が branch 全体に及ぶため、「予約は起動まで完全に無害（SYN-04 の再 sync で取り消せば何も起きない）」という安全性を優先する。削除済み branch の series を検索する動線は通常存在せず、検索最新性の実害は小さい
@@ -287,22 +300,23 @@ orphan record を物理削除せず残す目的は、SYN-04 の自己修復を E
 
 #### Store メソッド仕様
 
-| メソッド                                                            | 動作                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MarkSeriesForDeletion(ctx, key, series) (alreadyScheduled, error)` | `path=''` で 1 行 upsert（冪等）。既に予約済みなら `alreadyScheduled=true`（`schedule_delete_series` の `already_scheduled` 出力に使用）                                                                                                                                                                                                                                                                                         |
-| `DetachSeriesFromPath(ctx, key, series, path) (orphaned, error)`    | 指定 key+path の record 群から当該 series の `series_keys` 行**のみ**を削除（SYN-03 の即時切り離し。当該 series 指定の検索から直ちに消える）。record・chunks・embeddings は削除しない（§4.4 の例外）。orphan が生じた場合 `orphaned=true` を返し、呼び出し元はその場合のみ `MarkDocumentForDeletion` を呼ぶ（他 series が残る record はその series の下で生き続けるため予約不要）。`records` 行は不変のため doc_count 更新は不要 |
-| `MarkDocumentForDeletion(ctx, key, series, path)`                   | 指定 path で 1 行 upsert（orphan になった record の物理削除予約）                                                                                                                                                                                                                                                                                                                                                                |
-| `ListPaths(ctx, key, series)`                                       | 当該 key+series に登録済みの path 一覧を返す（desired-state との差分検出に使用。読み取りのみ）                                                                                                                                                                                                                                                                                                                                   |
-| `ListPendingDeletions(ctx, key, series) (paths, seriesWide, error)` | 当該 key+series の削除予約を 1 回で取得する（`paths` = path 単位予約の一覧、`seriesWide` = series 全体予約の有無）。`sync_documents` の冒頭で呼び、補償 + 予約解除の対象 path と SYN-04 の series 全体予約解除の要否を判定する（読み取りのみ）                                                                                                                                                                                   |
-| `ClearPendingDeletion(ctx, key, series, path)`                      | 該当行を削除（SYN-04 の自己修復に使用）。`path=""` で series 全体の削除予約を解除する                                                                                                                                                                                                                                                                                                                                            |
-| `DeleteOrphanRecords(ctx, key, path) (removed, error)`              | 指定 key+path の record のうち **`series_keys` が 0 件のもののみ**を物理削除する（chunks / embeddings / BM25 整合含む。既存 `deleteRecordWithBM25Tx` を再利用）。series 紐付きが残る record には一切触れないため冪等かつ常に安全。record 削除を伴うため doc_count を更新する。`WithKeyLock` は内部で取得しない（sync からの呼び出しは `fn` が保持済み・起動時スイープは §8.5 の通り不要）                                        |
-| `SweepPendingDeletions(ctx) (processed, errs)`                      | `pending_deletions` 全行を処理する起動時スイープ。`path=''` なら `DeleteSeriesAll`、path 単位なら `DeleteOrphanRecords` を呼ぶ（§8.5）                                                                                                                                                                                                                                                                                           |
+| メソッド                                                                     | 動作                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MarkSeriesForDeletion(ctx, key, series) (alreadyScheduled, error)`          | `path=''` で 1 行 upsert（冪等）。既に予約済みなら `alreadyScheduled=true`（`schedule_delete_series` の `already_scheduled` 出力に使用）                                                                                                                                                                                                                                                                                         |
+| `DetachSeriesFromPath(ctx, key, series, path) (orphaned, error)`             | 指定 key+path の record 群から当該 series の `series_keys` 行**のみ**を削除（SYN-03 の即時切り離し。当該 series 指定の検索から直ちに消える）。record・chunks・embeddings は削除しない（§4.4 の例外）。orphan が生じた場合 `orphaned=true` を返し、呼び出し元はその場合のみ `MarkDocumentForDeletion` を呼ぶ（他 series が残る record はその series の下で生き続けるため予約不要）。`records` 行は不変のため doc_count 更新は不要 |
+| `MarkDocumentForDeletion(ctx, key, series, path)`                            | 指定 path で 1 行 upsert（orphan になった record の物理削除予約）                                                                                                                                                                                                                                                                                                                                                                |
+| `ListPaths(ctx, key, series)`                                                | 当該 key+series に登録済みの path 一覧を返す（desired-state との差分検出に使用。読み取りのみ）                                                                                                                                                                                                                                                                                                                                   |
+| `ListPendingDeletions(ctx, key, series) (paths, seriesWide, error)`          | 当該 key+series の削除予約を 1 回で取得する（`paths` = path 単位予約の一覧、`seriesWide` = series 全体予約の有無）。`sync_documents` の冒頭で呼び、補償 + 予約解除の対象 path と SYN-04 の series 全体予約解除の要否を判定する（読み取りのみ）                                                                                                                                                                                   |
+| `ClearPendingDeletion(ctx, key, series, path)`                               | 該当行を削除（SYN-04 の自己修復に使用）。`path=""` で series 全体の削除予約を解除する                                                                                                                                                                                                                                                                                                                                            |
+| `DeleteOrphanRecords(ctx, key, path) (removed, error)`                       | 指定 key+path の record のうち **`series_keys` が 0 件のもののみ**を物理削除する（chunks / embeddings / BM25 整合含む。既存 `deleteRecordWithBM25Tx` を再利用）。series 紐付きが残る record には一切触れないため冪等かつ常に安全。record 削除を伴うため doc_count を更新する。`WithKeyLock` は内部で取得しない（呼び出し元が `fn` 内で保持する。§8.5）                                                                           |
+| `ListPendingDeletionsOlderThan(ctx, cutoff) ([]PendingDeletionEntry, error)` | `marked_at < cutoff` の削除予約一覧を返す読み取り専用メソッド（ロック不要）。起動時スイープと `internal/trash.Worker` の定期実行が共通で使う（§8.5）                                                                                                                                                                                                                                                                             |
+| `SweepOnePendingDeletion(ctx, entry) error`                                  | 1 件（1 KEY 分）の削除予約を物理削除し予約を解除する。`path=''` なら `DeleteSeriesAll`、path 単位なら `DeleteOrphanRecords` を呼ぶ。呼び出し元がエントリごとに `WithKeyLock(entry.Key, ...)` で囲んで呼ぶ（旧 `SweepPendingDeletions` を分割した API。§8.5）                                                                                                                                                                     |
 
 path 単位のスイープに `DeleteSeries` は**使用しない**。path 単位の予約行は「この path の orphan を回収せよ」という指示であり、`DeleteOrphanRecords` は series 紐付きが残る record に触れないため、**stale な予約行が残っていても live record を壊さない**（予約後に record が復活・再紐付けされていた場合は 0 件処理の冪等動作で行だけが消える）。`DeleteSeries` を使うと復活済み record から series を剥がして削除し得る。
 
 **Mutex 直列化**: `MarkSeriesForDeletion` / `MarkDocumentForDeletion` / `ClearPendingDeletion` / `DetachSeriesFromPath` / `DeleteOrphanRecords` は単一トランザクションの書き込み操作であり、既存の削除系メソッドと同様に各メソッド自身が `s.mu` を取得して直列化する（§4.2。`WithKeyLock` とは別レイヤーであり、呼び出し側取得ルールの対象外）。
 
-**stale 予約の発生源遮断 [MANDATORY]**: `DeleteKey` は当該 KEY の全 `pending_deletions` 行を、`DeleteSeriesAll` は当該 key+series の **series 全体予約（`path=''` センチネル）のみ**を、**それぞれ本体の削除と同一トランザクションで除去する**。これを行わないと、`schedule_delete_series(K, s)` → `delete_index(K)`（または `delete_series(K, s)`）→ 同名 KEY/series の再作成 → 再起動、の順序で stale な series 全体予約が残存し、起動時スイープの `DeleteSeriesAll` が**再作成された新データを削除する**。除去範囲が両メソッドで**非対称**なのは意図的な設計である:
+**stale 予約の発生源遮断 [MANDATORY]**: `DeleteKey` は当該 KEY の全 `pending_deletions` 行を、`DeleteSeriesAll` は当該 key+series の **series 全体予約（`path=''` センチネル）のみ**を、**それぞれ本体の削除と同一トランザクションで除去する**。これを行わないと、`schedule_delete_series(K, s)` → KEY 全体の自動最終処分による `DeleteKey(K)`（または `delete_series(K, s)`）→ 同名 KEY/series の再作成 → 次回スイープ、の順序で stale な series 全体予約が残存し、起動時スイープ・定期実行の `DeleteSeriesAll` が**再作成された新データを削除する**。除去範囲が両メソッドで**非対称**なのは意図的な設計である:
 
 - `DeleteKey` は orphan record（`series_keys` 0 件）を含む当該 KEY の全 record を物理削除するため、当該 KEY の予約はすべて（path 単位含め）無意味になる → 全行除去してよい
 - `DeleteSeriesAll` は `series_keys` を JOIN して対象を列挙するため **orphan record には一切触れない**。切り離し済み orphan の唯一の回収手段は path 単位予約（起動時スイープの `DeleteOrphanRecords`）であり、ここで path 単位予約まで消すと**回収手段のない orphan が永久残留する**。path 単位予約を残しても `DeleteOrphanRecords` は orphan-only のため、同名 series 再作成後の live record を壊さない（無害） → **path 単位予約は残す**
@@ -310,11 +324,11 @@ path 単位のスイープに `DeleteSeries` は**使用しない**。path 単�
 **予約解除（`ClearPendingDeletion`）の実行条件 [MANDATORY]**: `sync_documents` は、`documents` に含まれる path のうち **1 件処理が成功（processed または skipped）し、かつ削除予約が存在する path** について、以下の 2 段階で予約を解除する:
 
 1. **`DeleteOrphanRecords` を先に実行**する。upsert 経路の `CleanOtherSeries` は個別失敗しても警告扱いで処理継続する（record 単位では processed 扱い）ため、「processed = 旧 orphan は掃除済み」とは限らない。この補償呼び出しにより、`CleanOtherSeries` の成否に関係なく旧 orphan が決定的に回収される（掃除済みなら 0 件処理の冪等動作）
-2. その後 `ClearPendingDeletion` で予約行を削除する。**手順 1 がエラーを返した場合は手順 2 を実行せず**、ログに記録して予約を保持する（次回 sync または起動時スイープが再試行する。スイープは orphan-only のため予約残置は無害）
+2. その後 `ClearPendingDeletion` で予約行を削除する。**手順 1 がエラーを返した場合は手順 2 を実行せず**、ログに記録して予約を保持する（次回 sync、または起動時スイープ・`internal/trash.Worker` の定期実行が再試行する。スイープは orphan-only のため予約残置は無害）
 
 処理が失敗（failed）した path の予約は保持し、上記 2 段階も実行しない。失敗 path は新 record が作られておらず、予約まで解除すると旧 orphan の回収手段が失われる。なお仮に実装が予約有無の判定を省き、成功 path 全件に `DeleteOrphanRecords` を呼んでも事故にはならない（DIF-02/03 の既存掃除の冪等な再実行にすぎない）。`ListPendingDeletions` で対象を絞るのは正しさのためではなく、無駄な呼び出しの削減と実装意図の明確化のためである。
 
-**orphan record の既知の制約**: 起動時スイープまで一時的に残る orphan record について:
+**orphan record の既知の制約**: 起動時スイープまたは `internal/trash.Worker` の定期実行まで一時的に残る orphan record について:
 
 - **series 指定の検索には現れない**（`GetChunksForSearch` の series 指定経路は `series_keys` を JOIN するため）。sync 完了直後から削除済み path は当該 series の検索結果から消える（SYN-03）
 - **series 未指定の KEY 全体検索には物理削除まで現れ得る**（`series == ""` 経路は `series_keys` を JOIN しない）。KEY 全体検索は全 series 横断の広域検索であり、over-recall 思想（PHIL-01）の範囲内として許容する
@@ -328,22 +342,31 @@ path 単位のスイープに `DeleteSeries` は**使用しない**。path 単�
 2. **同一 key+path に複数 orphan（複数 content_hash）が並ぶ場合**: `DeleteOrphanRecords(key, path)` は path 配下の全 record を走査して orphan を全回収するため、予約行が個々の record を識別する必要がない
 3. **record_id を持たせた場合の逆リスク**: DIF-02 の自己修復は既存 record への series 再紐付け（record 再利用）であるため、record 単位の予約では「再紐付けされて生き返った record を旧予約が指したままスイープで誤削除する」事故を防ぐ整合管理が別途必要になる。path 粒度 + 「`series_keys` 0 件のみ物理削除」の組み合わせは、この整合管理なしで安全側に倒れる
 
+### 4.6 KEY 単位ゴミ箱状態（keys.trashed_at）と TOCTOU 対策
+
+FNC-007（ADR-003）により、TTL/LRU による自動判定廃棄（旧 EXP-01/02）を廃止し、削除は必ずユーザー主導のゴミ箱投入（`trash_index`）を経由するモデルへ置き換えた。KEY のゴミ箱状態は `keys.trashed_at`（§4.1、NULL 許容）で表現し、`internal/store.IsTrashed(ctx, key) (bool, error)` が判定を提供する。record 単位（orphan）のゴミ箱管理は既存の `pending_deletions`（§4.5）をそのまま流用し、KEY 単位とは異なるライフサイクル（前者はシステム起点、後者はユーザー操作起点）を分けて表現する。
+
+**書き込み系 5 ツール + query の拒否判定**: `upsert_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` / `sync_documents` の 5 ツールは、対象 KEY がゴミ箱状態の場合、処理を一切実行せず復活操作（`restore_index`）を促すエラーを返す（`trashed_at` も変更しない。黙って復活させない）。`query` も同様にゴミ箱状態の KEY を指定された場合、空結果ではなく明示エラーを返す（空結果では「データが無い」のか「ゴミ箱に入っている」のかをユーザーが区別できないため）。
+
+**TOCTOU 対策 [MANDATORY]**: `IsTrashed` の判定は `WithKeyLock`（§4.3）取得**前**の事前チェックだけでは不十分である。事前チェックと実際の書き込み処理の間に `trash_index` が割り込むと、ゴミ箱投入後に書き込みが実行されてしまう（time-of-check-to-time-of-use）。これを防ぐため、5 ツール全ての書き込みハンドラおよび `sync_documents` のバックグラウンドジョブは、`IsTrashed` を **`WithKeyLock` の `fn` 内部で再確認**する（事前チェックは早期リターンによる無駄なロック取得回避の最適化として残すが、権威ある判定は `fn` 内部の再確認とする）。`WithKeyLock` の相互排他性により、`fn` 内部での再確認が完了するまで `trash_index` は同じ KEY のロックを取得できないため、再確認後に割り込みが発生する余地はない。
+
 ## 5. ユースケース設計
 
 ### 5.1 ユースケース一覧
 
-| ユースケース                           | 対応 MCP ツール           | 関連要件              |
-| -------------------------------------- | ------------------------- | --------------------- |
-| ドキュメント追加・更新                 | `upsert_documents`        | FNC-001               |
-| ドキュメント削除                       | `delete_documents`        | FNC-002               |
-| series 一括削除（branch cleanup）      | `delete_series`           | FNC-002 DEL-03        |
-| ドキュメント検索                       | `query`                   | FNC-003               |
-| インデックス一覧取得                   | `list_indexes`（TBD-008） | FNC-004 MNG-01        |
-| インデックス削除                       | `delete_index`（TBD-008） | FNC-004 MNG-02        |
-| KEY ごとの廃棄ポリシー設定             | `manage_index`            | EXP-04                |
-| desired-state 同期（削除ファイル追従） | `sync_documents`          | FNC-006 SYN-01〜05/08 |
-| 同期ジョブの進捗取得                   | `get_sync_status`         | FNC-006 SYN-06        |
-| series 削除予約（branch 削除検知時）   | `schedule_delete_series`  | FNC-006 GC-01         |
+| ユースケース                                              | 対応 MCP ツール           | 関連要件              |
+| --------------------------------------------------------- | ------------------------- | --------------------- |
+| ドキュメント追加・更新                                    | `upsert_documents`        | FNC-001               |
+| ドキュメント削除                                          | `delete_documents`        | FNC-002               |
+| series 一括削除（branch cleanup）                         | `delete_series`           | FNC-002 DEL-03        |
+| ドキュメント検索                                          | `query`                   | FNC-003               |
+| インデックス一覧取得（chunk_count 含む、ゴミ箱 KEY 除外） | `list_indexes`（TBD-008） | FNC-004 MNG-01        |
+| KEY のゴミ箱投入                                          | `trash_index`             | FNC-007 TRS-01        |
+| ゴミ箱一覧取得                                            | `list_trashed_indexes`    | FNC-007 TRS-04        |
+| KEY の復活                                                | `restore_index`           | FNC-007 TRS-05        |
+| desired-state 同期（削除ファイル追従）                    | `sync_documents`          | FNC-006 SYN-01〜05/08 |
+| 同期ジョブの進捗取得                                      | `get_sync_status`         | FNC-006 SYN-06        |
+| series 削除予約（branch 削除検知時）                      | `schedule_delete_series`  | FNC-006 GC-01         |
 
 ### 5.2 upsert_documents シーケンス
 
@@ -470,7 +493,7 @@ sequenceDiagram
 
 **前提条件**: `key`・`series` は既存 KEY に対する呼び出しで、`documents` は当該 key・series の完全な現在状態であること（クライアントの責務）。要素形式は `upsert_documents` と同一（content / url / local_path 排他、§5.2）。**空リストも正当な desired-state として受理する**（「この series に現存ファイルがない」の宣言。既存 path は全て切り離し + orphan 予約となり、誤送信でも同一内容の再 sync で Embedding 再計算なしに復元できる。即時物理削除する `delete_series` への誘導は自己修復性を失うため行わない）。削除予約中の path の復活は `sync_documents` で行うこと（§4.5 既知の制約）。
 
-**正常フロー**: 上図の通り。変更の無いファイルは DIF-02 によりそのまま skip される。desired-state から欠落した path は series から即時に切り離され、**当該 series を指定した検索には sync 完了直後から現れない**（SYN-03）。orphan になった record（chunks / embeddings 含む）は次回起動のスイープ（§8.5）まで物理的には残り、series 未指定の KEY 全体検索には現れ得る（§4.5 既知の制約）。予約解除は成功 path のみを対象に `DeleteOrphanRecords` → `ClearPendingDeletion` の 2 段階で行う（§4.5 [MANDATORY]）。同一 KEY を対象とする他の書き込み・削除操作（series を問わず。`delete_index`・TTL・LRU による KEY 削除を含む）は、処理完了までブロックされる（§4.3 SYN-08）。
+**正常フロー**: 上図の通り。変更の無いファイルは DIF-02 によりそのまま skip される。desired-state から欠落した path は series から即時に切り離され、**当該 series を指定した検索には sync 完了直後から現れない**（SYN-03）。orphan になった record（chunks / embeddings 含む）は次回起動のスイープ、または保持期間経過後の `internal/trash.Worker` 定期実行のいずれか（§8.5）まで物理的には残り、series 未指定の KEY 全体検索には現れ得る（§4.5 既知の制約）。予約解除は成功 path のみを対象に `DeleteOrphanRecords` → `ClearPendingDeletion` の 2 段階で行う（§4.5 [MANDATORY]）。同一 KEY を対象とする他の書き込み・削除操作（series を問わず。`trash_index` によるゴミ箱投入・自動最終処分による KEY 削除を含む）は、処理完了までブロックされる（§4.3 SYN-08）。
 
 **エラーフロー**: 個別ドキュメントの Embedding 失敗は既存 `upsertOne` の挙動を継承して処理継続（失敗 path の予約は解除しない）。存在しない・保持期限切れの `job_id` で `get_sync_status` を呼んだ場合はエラーを返す（SYN-06）。サーバーシャットダウンでジョブが中断された場合は `status="failed"` になる（GC-05）。
 
@@ -485,14 +508,119 @@ type SyncJobStatus struct {
 }
 ```
 
-`internal/expiry.Worker` の `Stats` + `sync.Mutex` パターンを踏襲し、`Handlers` 構造体に `sync.Mutex` で保護された `map[string]*SyncJobStatus` を持たせる。**メモリ保持のみ、永続化しない**（SYN-07。サーバー再起動でジョブ状態が失われても、クライアントが再度 `sync_documents` を呼べば冪等に補われる）。完了済みジョブの保持上限は 100 件（`maxCompletedSyncJobs`）とし、超過分は古い順に破棄する。
+`internal/trash.Worker` の `Stats` + `sync.Mutex` パターン（旧 `internal/expiry.Worker` から継承）を踏襲し、`Handlers` 構造体に `sync.Mutex` で保護された `map[string]*SyncJobStatus` を持たせる。**メモリ保持のみ、永続化しない**（SYN-07。サーバー再起動でジョブ状態が失われても、クライアントが再度 `sync_documents` を呼べば冪等に補われる）。完了済みジョブの保持上限は 100 件（`maxCompletedSyncJobs`）とし、超過分は古い順に破棄する。
 
 **ジョブ用 context の寿命（GC-05）**: バックグラウンド処理に MCP リクエストの context をそのまま渡すと、job_id 返却でリクエストが完了した時点でキャンセルされ、ジョブが途中停止する。これを避けるため:
 
-- サーバー起動時（`cmd/docdb`）に生成する、シャットダウンシグナルで cancel される長寿命の root context（`expiry.Worker.Start` に渡すものと同じ）を `Handlers` に保持させる
+- サーバー起動時（`cmd/docdb`）に生成する、シャットダウンシグナルで cancel される長寿命の root context（`trash.Worker.Start` に渡すものと同じ）を `Handlers` に保持させる
 - バックグラウンドゴルーチンは root context から派生させた context で実行する。クライアントが切断してもジョブは継続する
 - root context の cancel（シャットダウン）時は処理を中断し、`Status` を `"failed"` に更新してから終了する
 - `WithKeyLock` のロック待機中に cancel された場合も、channel ベース実装（§4.3）により `fn` を実行せず即座に戻れるため、ロック取得前・取得後のいずれの段階でもシャットダウンに応答できる
+
+### 5.5 KEY のゴミ箱投入・復活シーケンス（FNC-007 TRS-01/05）
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant SKILL as manage-db-indexes
+    participant MCP as internal/mcp
+    participant DB as internal/store
+
+    User->>SKILL: 管理 SKILL を実行
+    SKILL->>MCP: list_indexes
+    MCP->>DB: ListKeys（chunk_count 含む、ゴミ箱 KEY 除外）
+    DB-->>MCP: KeyInfo[]
+    MCP-->>SKILL: KEY メタデータ一覧
+    SKILL-->>User: 一覧を提示
+
+    User->>SKILL: 削除したい KEY を選択
+    alt series が1件以上ある
+        SKILL-->>User: 強制確認（本当に削除するか）
+        User->>SKILL: 確認 OK
+    else series が空
+        Note over SKILL: 簡易ゴミ捨て（確認省略）
+    end
+
+    SKILL->>MCP: trash_index(key)
+    MCP->>DB: WithKeyLock(key, fn)
+    MCP->>DB: fn 内: IsTrashed(key) 再確認 → false
+    MCP->>DB: fn 内: TrashKey(key) — trashed_at = now()
+    DB-->>MCP: trashedAt
+    MCP-->>SKILL: 成功（trashed_at）
+    SKILL-->>User: ゴミ箱へ投入完了を報告
+```
+
+**前提条件**: 対象 KEY が存在し、まだゴミ箱に入っていない（`trashed_at IS NULL`）こと。
+**正常フロー**: 上図の通り。`restore_index` は同様に `WithKeyLock` + `RestoreKey` で `trashed_at` を `NULL` に戻す。
+**エラーフロー**: 対象 KEY が既にゴミ箱に入っている場合は `trash_index` がエラーを返す（多重投入防止）。存在しない KEY を指定した場合、またはゴミ箱に入っていない KEY に `restore_index` を呼んだ場合もエラーを返す。
+
+### 5.6 自動最終処分シーケンス（FNC-007 TRS-06/07）
+
+```mermaid
+sequenceDiagram
+    participant Worker as internal/trash.Worker
+    participant DB as internal/store
+
+    loop 定期実行（trash.interval_seconds ごと）
+        Worker->>DB: ListTrashedKeys()
+        DB-->>Worker: TrashedKeyInfo[]
+        loop trashed_at が trash.retention_days 超過の KEY ごと
+            Worker->>DB: WithKeyLock(key, fn)
+            Worker->>DB: fn 内: IsTrashed(key) 再確認
+            alt 再確認で false（復活済み）
+                Worker->>Worker: skip（削除しない）
+            else 再確認で true
+                Worker->>DB: fn 内: DeleteKey(key)
+                Worker->>Worker: slog.Info("trash: KEY を最終処分", key, trashed_at, deleted_at)
+            end
+        end
+
+        Worker->>DB: ListPendingDeletionsOlderThan(cutoff)
+        DB-->>Worker: []PendingDeletionEntry
+        loop marked_at が保持期間超過の予約 1 件ごと
+            Worker->>DB: WithKeyLock(entry.Key, fn)
+            Worker->>DB: fn 内: SweepOnePendingDeletion(entry)
+            DB-->>Worker: OK
+            Worker->>Worker: slog.Info("trash: orphan record を最終処分", key, path, marked_at, deleted_at)
+        end
+    end
+```
+
+**前提条件**: なし（バックグラウンド定期実行）。
+**正常フロー**: 上図の通り。`ListTrashedKeys` / `ListPendingDeletionsOlderThan` は読み取り専用で `WithKeyLock` を取得しない。保持期間超過の判定は `trashed_at` / `marked_at` と設定値 `trash.retention_days`（§9.2）から Worker が算出する（Store 層は事実のみを返す。§4.6）。
+**エラーフロー**: 個別 KEY・record の削除失敗はログに記録し処理を継続する（silent failure 禁止。旧 `internal/expiry` の個別エラー継続パターンを踏襲）。`WithKeyLock` 内での `IsTrashed` 再確認は、ロック待機中に `restore_index` が先行して復活させた KEY を誤って削除しないための TOCTOU 対策（§4.6）。
+
+**監査記録の永続化方針**: 自動最終処分の記録は `slog.Info` によるログ出力のみとし、DB への監査テーブルは設けない。単一ユーザー運用のログファイルで事後追跡が成立する規模であり、監査テーブル追加の運用・実装コストに見合わないと判断した。ログローテーション・削除によって記録が失われるリスクは残るが許容する。
+
+### 5.7 ゴミ箱 KEY への操作拒否シーケンス（FNC-007 TRS-02/03）
+
+```mermaid
+sequenceDiagram
+    actor Caller as 書き込み系ツール / query の呼び出し元
+    participant MCP as internal/mcp
+    participant DB as internal/store
+
+    Caller->>MCP: upsert_documents / delete_documents / delete_series /\nschedule_delete_series / sync_documents / query
+    MCP->>DB: IsTrashed(key)（事前チェック）
+    alt 事前チェックで true
+        MCP-->>Caller: エラー（ゴミ箱に入っています。restore_index で復活してください）
+    else 事前チェックで false
+        MCP->>DB: WithKeyLock(key, fn)
+        MCP->>DB: fn 内: IsTrashed(key) 再確認（TOCTOU 対策）
+        alt 再確認で true
+            MCP-->>Caller: エラー（同上）
+        else 再確認で false
+            MCP->>DB: fn 内: 各ツールの既存処理を実行
+            MCP-->>Caller: 成功
+        end
+    end
+```
+
+**前提条件**: なし。
+**正常フロー**: `IsTrashed` が事前チェック・`WithKeyLock` 内再確認の両方で false の場合、各ツールの既存処理をそのまま実行する。
+**エラーフロー**: 上図の通り。書き込み系 5 ツールはいずれも処理を一切実行せず `trashed_at` も変更しない（黙って復活させない。復活は `restore_index` のユーザー明示操作のみで行う）。`query` は空結果ではなく明示エラーを返す（空結果では「データが無い」のか「ゴミ箱に入っている」のかをユーザーが区別できないため）。
+
+**設計判断**: 書き込み系の対象は種類を問わずすべて（`upsert_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` / `sync_documents`）。`delete_series`・`schedule_delete_series` も series_keys が空になった record を即時物理削除し得るため、他 3 ツールと同じ理由で拒否対象に含める。既存の `UpsertRecord` の `ON CONFLICT(key) DO UPDATE SET` は `trashed_at` を更新対象に含めないため、対策なしにゴミ箱 KEY へ upsert すると、データは書き込まれるのに `trashed_at` が残ったまま＝`query` から検索できない状態になり得る。書き込み自体を拒否することで、この不整合を構造的に防ぐ。
 
 ## 6. 検索パイプライン詳細
 
@@ -514,7 +642,7 @@ type SyncJobStatus struct {
 
 **モデル選択根拠**: `text-embedding-3-large` をデフォルトとして採用する。reference doc-db SKILL (Python 版) と同モデルにすることで日本語技術文書の検索精度を最大化する。コストは `-3-small` の約 6.5 倍だが、言い換え・抽象クエリでの recall 向上効果が大きい。コスト最適化が必要な場合は `text-embedding-3-small` (dim=1536) に切り替え可能。
 
-**スケール上限**: `expiry.max_chunks`（デフォルト 10,000）はシステム全体の上限。key 単位では通常 1,000〜5,000 チャンク程度を想定する（1,000 チャンク × 1536 dim × 4 byte ≈ 6 MB）。10,000 チャンクでも 60 MB / クエリであり、内部ツール用途では許容範囲。100,000 チャンクを超える場合はベクトルキャッシュ（起動時 mmap またはプロセス内メモリキャッシュ）の導入を検討する。
+**スケール上限**: システム全体のチャンク総数を強制する自動削除（旧 LRU、`expiry.max_chunks`）は FNC-007 により廃止済みで、上限を超えた場合に自動でデータを消す仕組みは持たない。key 単位では通常 1,000〜5,000 チャンク程度を想定する（1,000 チャンク × 1536 dim × 4 byte ≈ 6 MB）。10,000 チャンクでも 60 MB / クエリであり、内部ツール用途では許容範囲。100,000 チャンクを超える場合はベクトルキャッシュ（起動時 mmap またはプロセス内メモリキャッシュ）の導入を検討する。データ量の実態はユーザーが `list_indexes` の chunk_count で確認し、必要に応じて `trash_index` で削除する（§8.1）。
 
 **設計判断**: ベクトルをすべてメモリに展開する方式を採用。`modernc.org/sqlite` は pure-Go のため `sqlite-vec` 等の C 拡張をロードできない。内部開発ツールであり大規模データを前提としないため（NFR-07）、in-process 計算で十分。
 
@@ -658,66 +786,58 @@ fine-tuning は最小限とする（PHIL-01）。
   - `::1`、`fc00::/7`（IPv6 ループバック / ユニークローカル）
 - ホワイトリストが必要な場合は設定ファイルの `fetcher.allow_private: true` で無効化できる（デプロイ管理者が責任を持つ）。
 
-## 8. 廃棄ポリシー（Expiry Worker）
+## 8. ゴミ箱管理と自動最終処分（internal/trash.Worker）
 
-バックグラウンドゴルーチンとして起動し、定期的（デフォルト 1 時間ごと）に実行する。
+`internal/trash.Worker` はバックグラウンドゴルーチンとして起動し、定期的（`trash.interval_seconds`。デフォルト 3600 秒）に実行する。旧 `internal/expiry.Worker`（TTL/LRU による自動判定廃棄）を FNC-007（ADR-003）で廃止し、削除は必ずユーザー主導のゴミ箱投入（`trash_index`）を経由するモデルへ置き換えた。KEY のゴミ箱状態は `trashed_at`（§4.1）で表現し、削除の実行（`DeleteKey`）は KEY 単位排他の対象であり、対象 KEY ごとに `WithKeyLock` で囲んで呼び出す（FNC-006 SYN-08、§4.3。`sync_documents` 処理中の KEY を自動最終処分が同時に消す競合を防ぐ）。
 
-TTL / LRU の**判定ロジックは以下の通り無改造**だが、削除の実行（`DeleteKey`）は KEY 単位排他の対象であり、対象 KEY ごとに `WithKeyLock` で囲んで呼び出す（FNC-006 SYN-08、§4.3。`sync_documents` 処理中の KEY を TTL/LRU が同時に消す競合を防ぐ）。
+**設計判断（旧 TTL/LRU からの転換理由）**: `last_accessed_at`（TTL）や `total_chunks`（LRU）という推測的な指標に基づく自動判定廃棄は、実運用で投入直後の唯一の KEY を無警告のまま削除する事故を起こした。doc-db は「削除すべきかどうか」の判定を一切行わない設計へ転換し、KEY ごとの正確なメタデータ（chunk 数・doc 数・最終アクセス日時等）をユーザーの近辺まで届けることに徹し、削除の要否判断と実行はその情報を見た人間・AI エージェントに委ねる（詳細は ADR-003 参照）。
 
-### 8.1 TTL（EXP-01）
+### 8.1 KEY のゴミ箱投入・復活（FNC-007 TRS-01/04/05）
+
+- **`trash_index`**: 対象 KEY を Active からゴミ箱状態へ遷移させる（`trashed_at = now()`）。既にゴミ箱状態の KEY への多重投入はエラーとする。シーケンスは §5.5 参照
+- **`list_trashed_indexes`**: ゴミ箱状態の KEY 一覧を `trashed_at` 昇順（古い順）で返す。自動最終処分までの残り時間は `trashed_at` と `trash.retention_days` から算出する（§4.6）
+- **`restore_index`**: ゴミ箱状態の KEY を Active に戻す（`trashed_at = NULL`）。ゴミ箱に入っていない KEY への呼び出しはエラーとする
+- `list_indexes` はゴミ箱状態の KEY を結果から除外する（Active な KEY のみを提示する。FNC-004 MNG-01）
+
+### 8.2 自動最終処分（FNC-007 TRS-06/07）
 
 ```
-SELECT key FROM keys
-WHERE last_accessed_at < datetime('now', '-N days')
+SELECT key, trashed_at FROM keys WHERE trashed_at IS NOT NULL ORDER BY trashed_at
 ```
 
-対象 KEY のすべての records・chunks・embeddings・series_keys を削除後、`keys` レコードも削除。
+上記で取得した KEY のうち `trashed_at` が `trash.retention_days`（デフォルト 3 日）を超過したものを、KEY ごとに `WithKeyLock` + `IsTrashed` 再確認（§4.6 TOCTOU 対策）+ `DeleteKey` で物理削除する。対象 KEY のすべての records・chunks・embeddings・series_keys を削除後、`keys` レコードも削除する。シーケンスは §5.6 参照。
 
-### 8.2 LRU（EXP-02）
-
-```sql
--- システム全体のチャンク総数
-SELECT COUNT(*) FROM chunks;
-
--- KEY ごとのチャンク数（削除優先順位の判定に使用）
-SELECT r.key, COUNT(c.id) AS chunk_count
-FROM chunks c
-JOIN records r ON c.record_id = r.id
-GROUP BY r.key
-ORDER BY (SELECT last_accessed_at FROM keys WHERE key = r.key) ASC;
-```
-
-`total_chunks > max_chunks` の場合、`last_accessed_at ASC`（最も古いアクセス順）で KEY を削除し、上限以下になるまで繰り返す。
+**監査記録**: 自動最終処分の記録は `slog.Info` によるログ出力のみとし、DB への監査テーブルは設けない（§5.6 設計判断）。
 
 ### 8.3 series 廃棄ポリシー（解決済み — 削除予約 + 起動時スイープ）
 
 feature ブランチ運用ではブランチ削除後も series が残存し続ける問題があり、当初は廃棄ポリシー未確定（旧 TBD、APP-001 TBD-009）だった。FNC-006 で以下の方式により解決した:
 
 - **`schedule_delete_series`（GC-01）**: クライアントが branch 削除等の事実を検知した時点で series 全体の削除予約を記録する（§4.5）。**即時削除はしない**
-- **起動時スイープ（GC-02、§8.5）**: 予約された series を次回サーバー起動時に一括物理削除する
-- **自己修復（SYN-04）**: 予約後に同一 key・series へ `sync_documents` が呼ばれた場合は予約を解除する。予約は起動まで完全に無害であり、誤操作しても取り消せる
+- **起動時スイープ + 定期実行（GC-02、§8.5）**: 予約された series を、サーバー起動時と `internal/trash.Worker` の定期実行の双方で物理削除する
+- **自己修復（SYN-04）**: 予約後に同一 key・series へ `sync_documents` が呼ばれた場合は予約を解除する。予約は処理まで完全に無害であり、誤操作しても取り消せる
 
-**TTL/LRU の単位を series に拡張する案は不採用**。`last_accessed_at` という推測的指標に基づく自動廃棄を series へ広げるより、クライアントが確実に把握している事実（「この series はもう使われない」）だけを根拠にする方が、必要なデータが推測で消える事故（LRU 誤爆）を構造的に避けられるためである。ファイル単位の削除追従は `sync_documents` の desired-state 同期（§5.4）が担う。
+**TTL/LRU の単位を series に拡張する案は不採用**（FNC-007 により TTL/LRU 自体も廃止済み）。`last_accessed_at` という推測的指標に基づく自動廃棄を series へ広げるより、クライアントが確実に把握している事実（「この series はもう使われない」）だけを根拠にする方が、必要なデータが推測で消える事故を構造的に避けられるためである。ファイル単位の削除追従は `sync_documents` の desired-state 同期（§5.4）が担う。
 
-### 8.4 KEY ごとのポリシーオーバーライド（EXP-04）
+### 8.4 KEY ごとのポリシーオーバーライド（廃止）
 
-**設定方法**: 専用 MCP ツール `manage_index(key, expiry_policy)` を新設する（TBD-007 確定。B案採用）。
+旧 EXP-04（専用 MCP ツール `manage_index` による KEY ごとの廃棄ポリシー設定、TBD-007 旧確定）は、TTL/LRU 廃止（FNC-007）に伴い前提自体が消滅したため撤去した。KEY のライフサイクル管理は `trash_index` / `list_trashed_indexes` / `restore_index`（§8.1）に置き換わっている。
 
-- `manage_index(key string, expiry_policy {ttl_days?: int, max_chunks?: int})` — KEY の廃棄ポリシーを設定・更新する。ドキュメントの再 upsert なしにポリシー変更が可能。
-- `expiry_policy` に `null` を渡すとサーバーデフォルトにリセットする。
-- `keys.expiry_policy` JSON カラムに値を保存。`null` の場合はサーバーデフォルトを適用。
+### 8.5 削除予約の最終処分（GC-02〜04）
 
-> B案を採用した理由: ドキュメントの再 upsert なしにポリシーを変更できるため、大規模インデックスのポリシー変更が安全かつ効率的。MNG-01/02 と同様の管理操作として専用ツールへ集約することで、ツール責務が明確になる。
+`pending_deletions`（§4.5）に記録された削除予約は、以下の 2 メソッドに分割された API で処理する（旧 `SweepPendingDeletions` は KEY をまたいで無条件一括処理する 1 メソッドであり、§4.3 の「呼び出し元が対象 KEY への Store 呼び出し一式を 1 回の `WithKeyLock` で囲む」規約と両立しなかったため分割した）:
 
-### 8.5 削除予約の起動時スイープ（GC-02〜04）
+- `ListPendingDeletionsOlderThan(ctx, cutoff)`: `marked_at < cutoff` の予約一覧を返す読み取り専用メソッド（ロック不要）
+- `SweepOnePendingDeletion(ctx, entry)`: 1 件（1 KEY 分）の予約を物理削除し、予約を解除する。呼び出し元がエントリごとに `WithKeyLock(entry.Key, ...)` で囲んで呼ぶ
 
-`pending_deletions`（§4.5）に記録された削除予約は、サーバー起動時に `SweepPendingDeletions` で一括物理削除する。`cmd/docdb` の起動シーケンスは `store.New()` 直後・**起動時 DB 統計表示（keyCount / totalChunkCount 算出）より前**にスイープを同期実行する（GC-03。統計が削除済みデータを含んだ値にならないようにする）。
+**起動時スイープ**: `cmd/docdb` の起動シーケンスは `store.New()` 直後・**起動時 DB 統計表示（keyCount / totalChunkCount 算出）より前**に、上記 2 メソッドを使って同期的にスイープする（GC-03。統計が削除済みデータを含んだ値にならないようにする）。
+**定期実行**: `internal/trash.Worker` が §8.2 の KEY 自動最終処分と同じ実行サイクルで、上記 2 メソッドを使って定期的にスイープする（§5.6）。
 
-- `path=''` の行（series 全体予約）: `DeleteSeriesAll` を呼ぶ（他 series が参照する record は保持する既存の安全な不変条件込み）
-- path 単位の行: `DeleteOrphanRecords` を呼ぶ（orphan-only。stale な予約行が残っていても live record を壊さない。§4.5）
-- 成功した行は `pending_deletions` から削除する。個別失敗は警告ログ + エラー集約で記録し**起動を継続**する（GC-04、silent failure 禁止方針）。失敗行・消し忘れ行は次回起動時に再試行されるだけで安全（両処理とも冪等）
+- `path=''` の行（series 全体予約）: `SweepOnePendingDeletion` 内部で `DeleteSeriesAll` を呼ぶ（他 series が参照する record は保持する既存の安全な不変条件込み）
+- path 単位の行: `SweepOnePendingDeletion` 内部で `DeleteOrphanRecords` を呼ぶ（orphan-only。stale な予約行が残っていても live record を壊さない。§4.5）
+- 成功した行は `pending_deletions` から削除する。個別失敗は警告ログ + エラー集約で記録し**処理を継続**する（GC-04、silent failure 禁止方針）。失敗行・消し忘れ行は次回のスイープで再試行されるだけで安全（両処理とも冪等）
 
-スイープは MCP リクエストを受け付ける前の時間帯にのみ実行されるため `WithKeyLock` を取得しない。起動時以外（手動トリガー等）でスイープを実行する変更を加える場合はこの前提が崩れるため、各行ごとに `WithKeyLock` で囲むよう設計を見直すこと。
+起動時スイープは MCP リクエストを受け付ける前の時間帯にのみ実行されるため、エントリごとの `WithKeyLock` は理論上不要だが、`internal/trash.Worker` の定期実行と処理を共通化するため両者とも一貫して `WithKeyLock` で囲む。
 
 ## 9. 設定
 
@@ -770,10 +890,9 @@ fetcher:
   timeout_seconds: 30 # URL フェッチタイムアウト
   allow_private: false # プライベート IP へのフェッチを許可（SSRF 対策無効化）
 
-expiry:
-  ttl_days: 30 # 未アクセス KEY の自動削除日数（TBD-001）
-  max_chunks: 10000 # システム全体のチャンク上限（TBD-002）
-  interval_seconds: 3600 # 廃棄チェック間隔
+trash:
+  retention_days: 3 # ゴミ箱投入から自動最終処分までの保持日数（FNC-007 TRS-06）
+  interval_seconds: 3600 # internal/trash.Worker のチェック間隔
 
 log:
   path: "~/.doc-db/doc-db.log" # ログ出力先（省略可。"stdout"/"stderr" も指定可）
@@ -793,14 +912,15 @@ log:
 
 外部要因エラーのみキャッチし、内部バグはサイレントフォールバックせず伝播させる（APP-001 エラーケース節）。
 
-| レイヤー     | 方針                                                                                                                                                                                                                                   |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 起動時       | `OPENAI_API_DOCDB_KEY` と `OPENAI_API_KEY` の両方が未設定の場合、サーバーを即座に終了する（PRE-01 fail-fast）。実際の API 疎通確認はしない（遅延検出コストが不要）。起動後に無効キーだと判明した場合は Embedder レイヤーでエラーを返す |
-| Fetcher      | タイムアウト・HTTP エラーをキャッチし、該当 document をスキップして error 情報を返す                                                                                                                                                   |
-| Embedder     | API エラーをキャッチし、複数バッチ失敗は `errors.Join` で全件保持し caller に返す。指数バックオフで最大 3 回リトライ                                                                                                                   |
-| Reranker     | エラー時は merge 順結果にフォールバック（RR-02）。フォールバック発生は `QueryResult.warnings` に記録し caller が観測可能にする（silent failure 禁止方針）                                                                              |
-| Store        | DB エラーは内部バグとして伝播させる（panic または error return で MCP エラーレスポンス）。tx.Rollback 失敗は `errors.Join` で caller に伝達                                                                                            |
-| ExpiryWorker | 個別 KEY 削除失敗はログ + `Worker.Stats().LastKeyErrors` に記録し observability を担保。サーバー停止はしない                                                                                                                           |
+| レイヤー                       | 方針                                                                                                                                                                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 起動時                         | `OPENAI_API_DOCDB_KEY` と `OPENAI_API_KEY` の両方が未設定の場合、サーバーを即座に終了する（PRE-01 fail-fast）。実際の API 疎通確認はしない（遅延検出コストが不要）。起動後に無効キーだと判明した場合は Embedder レイヤーでエラーを返す |
+| Fetcher                        | タイムアウト・HTTP エラーをキャッチし、該当 document をスキップして error 情報を返す                                                                                                                                                   |
+| Embedder                       | API エラーをキャッチし、複数バッチ失敗は `errors.Join` で全件保持し caller に返す。指数バックオフで最大 3 回リトライ                                                                                                                   |
+| Reranker                       | エラー時は merge 順結果にフォールバック（RR-02）。フォールバック発生は `QueryResult.warnings` に記録し caller が観測可能にする（silent failure 禁止方針）                                                                              |
+| Store                          | DB エラーは内部バグとして伝播させる（panic または error return で MCP エラーレスポンス）。tx.Rollback 失敗は `errors.Join` で caller に伝達                                                                                            |
+| TrashWorker                    | 個別 KEY・record 削除失敗はログ + `Worker.Stats().LastKeyErrors` に記録し observability を担保。サーバー停止はしない（旧 ExpiryWorker から継承）                                                                                       |
+| MCP 書き込み系ハンドラ / query | ゴミ箱状態の KEY への操作はエラーとして拒否する（黙って復活・スキップしない。FNC-007 TRS-02/03、§4.6）                                                                                                                                 |
 
 **silent failure 禁止方針**: 全エラー経路で「ログのみ」で終わらせず caller / observable state
 に必ず伝達する。詳細は memory `feedback_no_silent_failure.md` 参照。
@@ -808,36 +928,45 @@ log:
 ## 11. テスト設計
 
 - **単体テスト対象**: `store`（SQL クエリ正確性）、`chunker`（Markdown 分割境界）、`search`（コサイン類似度・BM25・RRF の計算結果）、`embedder`（リトライロジック）
-- **統合テスト対象**: `upsert_documents` の series_keys 共有フロー（同一ハッシュで Embedding スキップされること）、`query` の mode 別結果差異、廃棄ポリシーによる削除動作
+- **統合テスト対象**: `upsert_documents` の series_keys 共有フロー（同一ハッシュで Embedding スキップされること）、`query` の mode 別結果差異、ゴミ箱投入・自動最終処分の削除動作
 - **モック方針**: `Embedder` と `Fetcher` はインターフェース経由でモック可能にする。SQLite は通常の単体テストではインメモリ（`file::memory:`）を使用する
 - **WAL 並行テスト**: WAL モードはファイルベースでしか有効化されない。並行アクセスの統合テスト（複数ゴルーチンの同時読み書き）は `os.MkdirTemp` で作成したテンポラリディレクトリに実 SQLite ファイルを使用する。インメモリ DB では WAL の挙動を検証できないため代替不可
-- **KEY 単位排他（§4.3）**: `WithKeyLock` の直接排他性（同一 KEY ブロック / 異 KEY 非ブロック / 待機中 ctx キャンセル / 参照カウントによるエントリ解放）と、MCP ハンドラ層での排他（`sync_documents` 処理中の同一 KEY への `upsert_documents` / `delete_index` / TTL・LRU 相当呼び出しがブロックされること = SYN-08）を検証する
+- **KEY 単位排他（§4.3）**: `WithKeyLock` の直接排他性（同一 KEY ブロック / 異 KEY 非ブロック / 待機中 ctx キャンセル / 参照カウントによるエントリ解放）と、MCP ハンドラ層での排他（`sync_documents` 処理中の同一 KEY への `upsert_documents` / `trash_index` / 自動最終処分相当呼び出しがブロックされること = SYN-08）を検証する
 - **削除予約と orphan 回収（§4.5 / §8.5）**: 予約の冪等性、`DetachSeriesFromPath` の即時切り離し（series 指定検索から直ちに消え、record は物理残存）、stale 予約行の無害性（復活済み record をスイープが壊さないこと）、`DeleteKey` / `DeleteSeriesAll` の予約除去（非対称込み）、共有 content_hash record の保全、`DeleteOrphanRecords` の orphan-only 性を回帰テストとして常時検証する
 - **sync_documents（§5.4）**: job_id 即時返却（SYN-05）、検索最新性（欠落 path が sync 完了直後の series 指定検索に現れないこと = SYN-03）、自己修復の API 課金ゼロ（Embedder spy で呼び出し 0 回 = SYN-04）、空 desired-state の受理、リクエスト context 非依存・root context キャンセルでの failed 遷移（GC-05）を検証する
 - **DIF-02 不変条件**: 同一 `key + path + content_hash` で Embedding を再計算しないことを Store 層・ハンドラ層・Embedder spy の 3 テストで常時保証する（これらのテストを壊す変更は不変条件の破壊を意味する）
+- **KEY ゴミ箱状態と TOCTOU 対策（§4.6 / §5.5〜§5.7、FNC-007）**: `TrashKey` / `RestoreKey` / `ListTrashedKeys` / `IsTrashed` の正常系・多重投入エラー・存在しない KEY のエラー、`trash_index` 実行後に `query` が当該 KEY へ明示エラーを返すこと（空結果ではないこと）、ゴミ箱状態の KEY に対する書き込み系 5 ツールが拒否され `trashed_at` が変化しないこと、`WithKeyLock` 内での `IsTrashed` 再確認により事前チェック後の割り込み投入・復活が正しく反映されること（TOCTOU 回帰テスト）、`TrashWorker.runOnce` が保持期間超過分のみを処理し未超過分に触れないこと、`ListPendingDeletionsOlderThan` の cutoff 絞り込み・`SweepOnePendingDeletion` の単発処理、起動時マイグレーション（`trashed_at` カラムが存在しない DB に対して `ALTER TABLE` が実行されること）を検証する
 
 ## 12. 使用する既存コンポーネント
 
 初版は新規プロジェクトのため再利用対象なし。FNC-006（desired-state 同期 + 削除予約 GC）は以下の既存コンポーネントを再利用して実装されている:
 
-| コンポーネント                     | 場所              | 利用方法                                                                                                       |
-| ---------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
-| `upsertOne`（DIF-01〜03 差分管理） | `internal/mcp`    | `sync_documents` の documents 処理で無改造再利用（SYN-02）                                                     |
-| `Store.DeleteSeriesAll`            | `internal/store`  | series 全体予約のスイープで再利用（series-wide 予約行の同一 tx 除去を追加、§4.5 [MANDATORY]）                  |
-| `Store.deleteRecordWithBM25Tx`     | `internal/store`  | `DeleteOrphanRecords` の物理削除（chunks / embeddings / BM25 整合）で再利用                                    |
-| `Store.DeleteKey`                  | `internal/store`  | `delete_index`・TTL・LRU の削除実行。呼び出し側が `WithKeyLock` で囲む（§4.3。予約行の同一 tx 全行除去を追加） |
-| `expiry.Worker` の Stats パターン  | `internal/expiry` | `SyncJobStatus`（`sync.Mutex` 保護 map）の設計踏襲（§5.4）                                                     |
+| コンポーネント                                                                     | 場所              | 利用方法                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upsertOne`（DIF-01〜03 差分管理）                                                 | `internal/mcp`    | `sync_documents` の documents 処理で無改造再利用（SYN-02）                                                                                                                       |
+| `Store.DeleteSeriesAll`                                                            | `internal/store`  | series 全体予約のスイープで再利用（series-wide 予約行の同一 tx 除去を追加、§4.5 [MANDATORY]）                                                                                    |
+| `Store.deleteRecordWithBM25Tx`                                                     | `internal/store`  | `DeleteOrphanRecords` の物理削除（chunks / embeddings / BM25 整合）で再利用                                                                                                      |
+| `Store.DeleteKey`                                                                  | `internal/store`  | 自動最終処分（`internal/trash.Worker`）の削除実行。呼び出し側が `WithKeyLock` で囲む（§4.3。予約行の同一 tx 全行除去を追加）                                                     |
+| `expiry.Worker` の Stats パターン（`Start`, `runOnce`, `Stats`, `KeyDeleteError`） | `internal/expiry` | `internal/trash.Worker`（FNC-007）の実装土台として構造を踏襲。`SyncJobStatus`（`sync.Mutex` 保護 map）の設計も同パターンを踏襲（§5.4）。TTL/LRU の判定ロジック自体は再利用しない |
+| `.claude/skills/delete-db-series/`（SKILL.md, `scripts/docdb_client.py`）          | `.claude/skills/` | 新規 SKILL `manage-db-indexes`（FNC-007）の雛形（frontmatter 構成、MCP HTTP 直叩き方式、Step 構成）として再利用                                                                  |
+
+## 13. マイグレーション（FNC-007: TTL/LRU → ゴミ箱への移行）
+
+**DB スキーマ**: 既存の `initSchema` は `CREATE TABLE IF NOT EXISTS` のみで、既存テーブルへのカラム追加を行わない。起動時に `PRAGMA table_info(keys)` で `trashed_at` 列の有無を確認し、無ければ `ALTER TABLE keys ADD COLUMN trashed_at TEXT` を実行してから起動を継続する（旧 `expiry_policy` カラムは残置してよい。読み書きしないため実害はない）。
+
+**設定ファイル（`doc-db.yaml`）**: `expiry:` セクションの削除に伴う既存設定ファイルとの後方互換性は考慮しない（本プロジェクトは単一ユーザー運用のため、利用者自身が `doc-db.yaml` から `expiry:` セクションを手動で削除し `trash:` セクション（§9.2）に置き換える前提とする）。`KnownFields(true)`（CFG-03）により、`expiry:` セクションが残ったままの設定ファイルは起動時にエラーになる。この点は CHANGELOG に明記する。`internal/config.Config` の `ExpiryConfig` は `TrashConfig{RetentionDays int, IntervalSeconds int}` に置き換える。
 
 ## 改定履歴
 
-| 日付       | バージョン | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-06-20 | 0.1        | 初版作成                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| 2026-06-20 | 0.2        | レビュー対応: C2(DIF-02 series 剥がし漏れ修正)・C3(WAL+接続プール方針に改訂)・H1(トークナイザ仕様追加)・H2(ID boost/EMB guarantee追加)・H3(スケール上限明記)・H5(LRU SQL修正)・H6(SSRF対策追加)・H7(起動時 fail-fast)・Chunker依存修正・WALテスト注記・series廃棄TBD追加                                                                                                                                                                                                                                                                                                |
-| 2026-06-20 | 0.3        | レビュー対応(追補): M1(ハッシュ正規化規則追加)・M2(部分 Embed 失敗方針を部分保存に確定)・§4.1(dim 検査の動作主体を明示)・§3.1(internal/mcp の embedder 依存を追記)                                                                                                                                                                                                                                                                                                                                                                                                      |
-| 2026-06-24 | 0.4        | §9 を YAML 設定ファイル方式に変更（`~/.doc-db/doc-db.yaml` 固定パス・環境変数オーバーライド不採用・API キーのみ環境変数）。本文中の `DOCDB_*` 環境変数参照を設定ファイルキー参照に更新                                                                                                                                                                                                                                                                                                                                                                                  |
-| 2026-06-28 | 0.5        | APP-001 PHIL-01/02 (二層検索アーキ) に対応: §2.1 アーキテクチャ概要に Layer 1/2 説明と更新 mermaid 図を追加。§6.4 全文 GREP signal の設計を新規追加 (substring 一致・origin_signals 記録)。§6.5 Candidate Merge を新規追加 (3 signal 合算ロジック)。§6.6 LLM Rerank を従来の §6.4 から番号変更 + PHIL-02 (Rerank は optional) を明記。§10 エラーハンドリングを silent failure 禁止方針 (memory: no-silent-failure) に整合させ Embedder の `errors.Join` / Reranker の warnings / Expiry の Stats() 公開を反映                                                           |
-| 2026-07-01 | 0.6        | §5.2 upsert_documents シーケンス冒頭に content 取得 3 経路 (content / url / **local_path**) の表を追加。local_path はローカル運用時の payload 削減用途で、doc-db が絶対パスから直接ディスク読み込みする。安全性制約 (絶対パス必須・`..` 禁止・symlink 解決後再検証・10MB 上限・regular file 限定) を明記                                                                                                                                                                                                                                                                |
-| 2026-07-03 | 0.7        | §4.1 の `bm25_stats`/`bm25_df` スキーマ定義・§6.2 の関連更新手順を、v0.1.2 で廃止済み (実装は substring match による都度計算方式) の実態に合わせて修正                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 2026-07-04 | 0.8        | §5.1 ユースケース一覧に未掲載だった `delete_series` / `manage_index` を追加し、既存ツール一覧として完全化                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 2026-07-06 | 0.9        | FNC-006（desired-state 同期ジョブ + 削除予約の起動時 GC、追加設計書 v1.12 相当）を統合: §4.3 KEY 単位排他制御（WithKeyLock）・§4.5 削除予約と orphan 回収（pending_deletions、[MANDATORY] 2 件含む）を新設、§4.1 に pending_deletions スキーマ、§4.4 に sync 切り離しの意図的例外注記、§5.1 を 10 ツール化 + §5.4 sync_documents シーケンス新設、§8.3 の series 廃棄 TBD を解決（削除予約 + 起動時スイープ方式、TTL/LRU series 拡張は不採用）、§8.5 起動時スイープ新設、§11 に排他・削除予約・sync・DIF-02 不変条件の検証観点を追加、§12 に再利用コンポーネント表を追加 |
+| 日付       | バージョン | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-06-20 | 0.1        | 初版作成                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 2026-06-20 | 0.2        | レビュー対応: C2(DIF-02 series 剥がし漏れ修正)・C3(WAL+接続プール方針に改訂)・H1(トークナイザ仕様追加)・H2(ID boost/EMB guarantee追加)・H3(スケール上限明記)・H5(LRU SQL修正)・H6(SSRF対策追加)・H7(起動時 fail-fast)・Chunker依存修正・WALテスト注記・series廃棄TBD追加                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 2026-06-20 | 0.3        | レビュー対応(追補): M1(ハッシュ正規化規則追加)・M2(部分 Embed 失敗方針を部分保存に確定)・§4.1(dim 検査の動作主体を明示)・§3.1(internal/mcp の embedder 依存を追記)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 2026-06-24 | 0.4        | §9 を YAML 設定ファイル方式に変更（`~/.doc-db/doc-db.yaml` 固定パス・環境変数オーバーライド不採用・API キーのみ環境変数）。本文中の `DOCDB_*` 環境変数参照を設定ファイルキー参照に更新                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 2026-06-28 | 0.5        | APP-001 PHIL-01/02 (二層検索アーキ) に対応: §2.1 アーキテクチャ概要に Layer 1/2 説明と更新 mermaid 図を追加。§6.4 全文 GREP signal の設計を新規追加 (substring 一致・origin_signals 記録)。§6.5 Candidate Merge を新規追加 (3 signal 合算ロジック)。§6.6 LLM Rerank を従来の §6.4 から番号変更 + PHIL-02 (Rerank は optional) を明記。§10 エラーハンドリングを silent failure 禁止方針 (memory: no-silent-failure) に整合させ Embedder の `errors.Join` / Reranker の warnings / Expiry の Stats() 公開を反映                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 2026-07-01 | 0.6        | §5.2 upsert_documents シーケンス冒頭に content 取得 3 経路 (content / url / **local_path**) の表を追加。local_path はローカル運用時の payload 削減用途で、doc-db が絶対パスから直接ディスク読み込みする。安全性制約 (絶対パス必須・`..` 禁止・symlink 解決後再検証・10MB 上限・regular file 限定) を明記                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 2026-07-03 | 0.7        | §4.1 の `bm25_stats`/`bm25_df` スキーマ定義・§6.2 の関連更新手順を、v0.1.2 で廃止済み (実装は substring match による都度計算方式) の実態に合わせて修正                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 2026-07-04 | 0.8        | §5.1 ユースケース一覧に未掲載だった `delete_series` / `manage_index` を追加し、既存ツール一覧として完全化                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 2026-07-06 | 0.9        | FNC-006（desired-state 同期ジョブ + 削除予約の起動時 GC、追加設計書 v1.12 相当）を統合: §4.3 KEY 単位排他制御（WithKeyLock）・§4.5 削除予約と orphan 回収（pending_deletions、[MANDATORY] 2 件含む）を新設、§4.1 に pending_deletions スキーマ、§4.4 に sync 切り離しの意図的例外注記、§5.1 を 10 ツール化 + §5.4 sync_documents シーケンス新設、§8.3 の series 廃棄 TBD を解決（削除予約 + 起動時スイープ方式、TTL/LRU series 拡張は不採用）、§8.5 起動時スイープ新設、§11 に排他・削除予約・sync・DIF-02 不変条件の検証観点を追加、§12 に再利用コンポーネント表を追加                                                                                                                                                                                                                                                                                                                                                             |
+| 2026-07-09 | 1.0        | FNC-007（KEY のゴミ箱管理、追加設計書 DES-003 相当）を統合し `docs/specs/expiry-visibility/` を削除（`/forge:merge-specs` 実行）。TTL/LRU 自動廃棄（旧 EXP-01/02、`internal/expiry`）・`manage_index`・`delete_index` を廃止し、`trash_index` / `list_trashed_indexes` / `restore_index` + `internal/trash.Worker`（定期実行）による user-driven ゴミ箱モデルに置き換え。§2.1/§3.1/§3.2 の図・型・パッケージ一覧を更新、§4.1 に `keys.trashed_at` カラム追加、§4.6 KEY 単位ゴミ箱状態と TOCTOU 対策（`WithKeyLock` 内での `IsTrashed` 再確認）を新設、§5.1 ユースケース一覧更新、§5.5〜§5.7 にゴミ箱投入・自動最終処分・操作拒否のシーケンスを新設、§8 を「ゴミ箱管理と自動最終処分」に全面改訂（TTL/LRU 判定ロジック削除）、§9.2 設定スキーマを `expiry:` → `trash:` に変更、§10 エラーハンドリング表更新、§11/§12 に検証観点・再利用コンポーネントを追加、§13 マイグレーション（DB スキーマ ALTER・設定ファイル非後方互換）を新設 |

@@ -20,12 +20,12 @@ import (
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/chunker"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/config"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/embedder"
-	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/expiry"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/fetcher"
 	docdbmcp "github.com/BlueEventHorizon/doc-db-mcp-server/internal/mcp"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/reranker"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/search"
 	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/store"
+	"github.com/BlueEventHorizon/doc-db-mcp-server/internal/trash"
 )
 
 // version はビルド時に -ldflags "-X main.version=..." で上書きされる（DES-002 §4.2）。
@@ -35,7 +35,7 @@ import (
 var version = "dev"
 
 func main() {
-	// --version は設定ファイル読み込み・API キー検証・Store/Expiry 初期化より前に処理する（APP-002 VER-03）。
+	// --version は設定ファイル読み込み・API キー検証・Store/Trash 初期化より前に処理する（APP-002 VER-03）。
 	// Homebrew test（brew test doc-db）はこの分岐を踏んで即時終了するため、
 	// 設定ファイルや API キーがなくてもパスする。
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
@@ -125,18 +125,49 @@ func setupLogging(cfg *config.Config) (io.Closer, error) {
 	return closer, nil
 }
 
+// startupSweepCutoff は起動時スイープで使う cutoff。DES-001 §8.5「起動時であっても猶予期間中の
+// 予約は処理しない」という設計要求に従い、marked_at が猶予期間（retentionDays、cfg.Trash.RetentionDays
+// と同一のソース。internal/trash.Worker の定期実行と別の値を使うと、設定した猶予期間より短い期間で
+// 起動時に物理削除されてしまい ADR-003 §2 の保証が崩れるため、必ず同じ値を呼び出し元から受け取る）を
+// 超過した予約のみを対象にする。
+func startupSweepCutoff(retentionDays int) time.Time {
+	return time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+}
+
 // startupSweep は削除予約（pending_deletions）の起動時スイープを同期実行し、
 // 結果（processed 件数・エラー件数）をログ出力する（GC-02）。
 // 個別エラーは警告ログとして出力し、起動は継続する（GC-04、silent failure 禁止）。
 // 起動時 DB 統計の算出より前に呼ぶこと（GC-03: 統計値がスイープ後の状態を反映するため）。
 // 戻り値は統合テスト（main_test.go）がスイープ結果を検証するために返す。
-func startupSweep(ctx context.Context, st *store.Store) (processed, errCount int) {
-	processed, errs := st.SweepPendingDeletions(ctx)
-	for _, sweepErr := range errs {
-		slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）", "error", sweepErr)
+//
+// ListPendingDeletionsOlderThan + SweepOnePendingDeletion（DES-001 §8.5）を使う形に分割済み。
+// 予約 1 件ごとに WithKeyLock(entry.Key, ...) で囲んで処理する（KEY 単位排他は呼び出し元の責務、
+// DES-001 §4.3）。retentionDays は呼び出し元（run()）が cfg.Trash.RetentionDays から渡す
+// （internal/trash.Worker の定期実行と同一のソースを使うことで、猶予期間の不整合を防ぐ）。
+func startupSweep(ctx context.Context, st *store.Store, retentionDays int) (processed, errCount int) {
+	entries, err := st.ListPendingDeletionsOlderThan(ctx, startupSweepCutoff(retentionDays))
+	if err != nil {
+		slog.Warn("起動時スイープ: 削除予約一覧の取得に失敗（次回起動時に再試行）", "error", err)
+		return 0, 1
 	}
-	slog.Info("起動時スイープ完了", "processed", processed, "error_count", len(errs))
-	return processed, len(errs)
+
+	for _, entry := range entries {
+		lockErr := st.WithKeyLock(ctx, entry.Key, func() error {
+			return st.SweepOnePendingDeletion(ctx, entry)
+		})
+		if lockErr != nil {
+			slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）",
+				"key", entry.Key, "series", entry.Series, "path", entry.Path, "error", lockErr)
+			errCount++
+			continue
+		}
+		// 対象・実行日時を個別エントリ単位で記録する（FNC-012/013、internal/trash.Worker と同じ粒度）
+		slog.Info("起動時スイープ: 削除予約を処理", "key", entry.Key, "series", entry.Series,
+			"path", entry.Path, "marked_at", entry.MarkedAt, "deleted_at", time.Now().UTC().Format(time.RFC3339))
+		processed++
+	}
+	slog.Info("起動時スイープ完了", "processed", processed, "error_count", errCount)
+	return processed, errCount
 }
 
 func run(ctx context.Context) error {
@@ -180,7 +211,9 @@ func run(ctx context.Context) error {
 	defer st.Close()
 
 	// 削除予約の起動時スイープ（GC-02）。統計表示より前に同期実行する（GC-03）。
-	startupSweep(ctx, st)
+	// retentionDays は internal/trash.Worker の定期実行と同一の cfg.Trash.RetentionDays を使う
+	// （猶予期間のソースを分離すると設定した期間より短く物理削除される安全性の問題が生じるため）。
+	startupSweep(ctx, st, cfg.Trash.RetentionDays)
 
 	// 起動時 DB 統計（KEY数・総チャンク数）。取得に失敗しても起動は継続する
 	// (統計表示はオペレータ向けの付加情報であり、サーバー機能に必須ではないため)。
@@ -226,20 +259,19 @@ func run(ctx context.Context) error {
 		},
 	)
 
-	// Expiry ワーカー起動（DES-001 §8）
-	expWorker := expiry.New(st, expiry.Config{
-		IntervalSecs: cfg.Expiry.IntervalSeconds,
-		TTLDays:      cfg.Expiry.TTLDays,
-		MaxChunks:    cfg.Expiry.MaxChunks,
+	// ゴミ箱最終処分ワーカー起動（DES-001 §3.1/§8。旧 internal/expiry の TTL/LRU ワーカーを置換）
+	trashWorker := trash.New(st, trash.Config{
+		IntervalSeconds: cfg.Trash.IntervalSeconds,
+		RetentionDays:   cfg.Trash.RetentionDays,
 	})
-	go expWorker.Start(ctx)
+	go trashWorker.Start(ctx)
 
 	// MCP サーバー初期化 + ツール登録
 	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "doc-db",
 		Version: version,
 	}, nil)
-	handlers := docdbmcp.New(ctx, st, ch, emb, fe, pipeline)
+	handlers := docdbmcp.New(ctx, st, ch, emb, fe, pipeline, cfg.Trash.RetentionDays)
 	handlers.Register(mcpServer)
 
 	// Streamable HTTP transport（NFR-03 / PRE-02）

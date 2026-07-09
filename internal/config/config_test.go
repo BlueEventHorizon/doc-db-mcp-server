@@ -92,9 +92,8 @@ fetcher:
   timeout_seconds: 30
   allow_private: false
 
-expiry:
-  ttl_days: 30
-  max_chunks: 10000
+trash:
+  retention_days: 3
   interval_seconds: 3600
 `
 	if err := os.WriteFile(yamlPath, []byte(yaml), 0644); err != nil {
@@ -138,9 +137,8 @@ fetcher:
   timeout_seconds: 30
   allow_private: false
 
-expiry:
-  ttl_days: 30
-  max_chunks: 10000
+trash:
+  retention_days: 3
   interval_seconds: 3600
 `
 

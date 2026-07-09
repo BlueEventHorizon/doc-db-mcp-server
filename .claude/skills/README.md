@@ -1,6 +1,6 @@
 # doc-db 用 doc-search SKILLs（参考実装）
 
-このディレクトリの 5 SKILL は、[doc-db MCP サーバー](https://github.com/BlueEventHorizon/doc-db-mcp-server)
+このディレクトリの 6 SKILL は、[doc-db MCP サーバー](https://github.com/BlueEventHorizon/doc-db-mcp-server)
 をプロジェクトの文書検索基盤として使うための **Claude Code 用クライアント参考実装**です。
 「プロジェクトの文書一覧を `.doc_structure.yaml` で定義 → doc-db へ同期 → 自然言語で検索」
 という運用を、**Python 3.9+ stdlib のみ**で実現します。
@@ -16,15 +16,17 @@ Claude Code 側の MCP 登録は**不要**です（doc-db を MCP 登録して�
 | `/query-db-specs`          | specs 対象文書を doc-db で検索 (未起動時は grep フォールバック)                                    |
 | `/query-db-rules`          | rules 対象文書を doc-db で検索 (同上)                                                              |
 | `/delete-db-series <name>` | 指定 series (Git branch 等) を specs/rules 両 KEY から一括除去 (branch cleanup)                    |
+| `/manage-db-indexes`       | KEY メタデータ (chunk 数・doc 数・series・最終アクセス日時) の提示、ゴミ箱投入・一覧確認・復活     |
 
 ## 他プロジェクトへの配布
 
-`.claude/skills/` 配下の 5 ディレクトリを **そのまま丸ごとコピー** すれば別プロジェクトでも動作する:
+`.claude/skills/` 配下の 6 ディレクトリを **そのまま丸ごとコピー** すれば別プロジェクトでも動作する:
 
 ```bash
 # コピー先プロジェクトのルートで
 rsync -av <src>/.claude/skills/{update,query}-db-{rules,specs}/ \
-          <src>/.claude/skills/delete-db-series/ .claude/skills/
+          <src>/.claude/skills/delete-db-series/ \
+          <src>/.claude/skills/manage-db-indexes/ .claude/skills/
 ```
 
 前提:

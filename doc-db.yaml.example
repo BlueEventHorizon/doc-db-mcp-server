@@ -35,10 +35,9 @@ fetcher:
   timeout_seconds: 30              # URL フェッチタイムアウト
   allow_private: false             # プライベート IP へのフェッチを許可（SSRF 対策無効化）
 
-expiry:
-  ttl_days: 30                     # 未アクセス KEY の自動削除日数（TBD-001）
-  max_chunks: 10000                # システム全体のチャンク上限（TBD-002）
-  interval_seconds: 3600           # 廃棄チェック間隔
+trash:
+  retention_days: 3                # ゴミ箱投入から自動最終処分までの保持日数（DES-001 §9.2）
+  interval_seconds: 3600           # internal/trash.Worker のチェック間隔
 
 log:
   # 省略可（省略時は下記のデフォルト値と同じ）。サーバー自身がこのパスを開いて書き込む。

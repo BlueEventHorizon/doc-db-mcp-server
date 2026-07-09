@@ -105,8 +105,8 @@ warnings や errors がある場合は必ず含めて報告する (silent failur
 
 - **desired-state 動作**: doc-db 側には「消えたファイルの自動 orphan cleanup」は無い。
   ファイルを削除した場合は別途 `mcp__doc-db__delete_documents` で明示削除するか、
-  KEY 全体を `mcp__doc-db__delete_index` で作り直す。
+  KEY 全体を `mcp__doc-db__trash_index` でゴミ箱投入してから作り直す。
 - **branch 削除時の series 撤去**: feature branch を削除した後、その series の
   record は残り続ける。`/delete-db-series <series 名>` (v0.1.9+) で specs / rules 両
   KEY から一括除去できる。
-- **KEY の TTL/max_chunks**: doc-db のデフォルト (30 days / 10000 chunks) が適用される。
+- **KEY の自動廃棄なし**: doc-db は TTL/LRU による自動削除を行わない (v0.2.x 以降)。

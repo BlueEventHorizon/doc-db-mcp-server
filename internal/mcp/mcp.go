@@ -50,11 +50,19 @@ type Handlers struct {
 	// syncJobsMu で保護する。メモリ保持のみで永続化しない。実装は sync.go。
 	syncJobsMu sync.Mutex
 	syncJobs   map[string]*SyncJobStatus
+
+	// trashRetentionDays はゴミ箱投入から自動最終処分までの保持日数
+	// （doc-db.yaml の trash.retention_days、internal/trash.Worker と同一のソース）。
+	// list_trashed_indexes の remaining_seconds 算出に使う（DES-001 §3.2 設計判断:
+	// 「Store 層は判定を持たず事実のみを返す」ため、この計算は呼び出し元 = ハンドラ層の責務）。
+	trashRetentionDays int
 }
 
 // New は Handlers を初期化する。
 // rootCtx にはサーバーシャットダウンで cancel される長寿命の root context
-// （expiry.Worker.Start に渡すものと同じ）を渡すこと（GC-05）。
+// （trash.Worker.Start に渡すものと同じ）を渡すこと（GC-05）。
+// trashRetentionDays には cfg.Trash.RetentionDays を渡すこと
+// （list_trashed_indexes の remaining_seconds 算出に使う）。
 func New(
 	rootCtx context.Context,
 	st *store.Store,
@@ -62,15 +70,17 @@ func New(
 	emb embedder.Embedder,
 	fe fetcher.Fetcher,
 	sp *search.Pipeline,
+	trashRetentionDays int,
 ) *Handlers {
 	return &Handlers{
-		rootCtx:  rootCtx,
-		store:    st,
-		chunker:  ch,
-		embedder: emb,
-		fetcher:  fe,
-		search:   sp,
-		syncJobs: make(map[string]*SyncJobStatus),
+		rootCtx:            rootCtx,
+		store:              st,
+		chunker:            ch,
+		embedder:           emb,
+		fetcher:            fe,
+		search:             sp,
+		syncJobs:           make(map[string]*SyncJobStatus),
+		trashRetentionDays: trashRetentionDays,
 	}
 }
 
@@ -187,9 +197,8 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
 		Description: `登録済み KEY (インデックス) の一覧を返す。
 
 返り値の各エントリ:
-  - key, series リスト, doc_count
+  - key, series リスト, doc_count, chunk_count
   - last_updated_at / last_accessed_at (RFC3339)
-  - expiry_policy (KEY ごとの TTL/max_chunks オーバーライド、未設定なら null)
 
 使い道:
   - どの KEY が存在するかを確認 (query の前段)
@@ -197,27 +206,51 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
 	}, h.handleListIndexes)
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name: "delete_index",
-		Description: `指定 KEY のインデックスを完全削除する (全 series / 全チャンク / 全ベクトル)。
+		Name: "trash_index",
+		Description: `指定 KEY をゴミ箱状態にする (即時物理削除はしない)。
 
-破壊的操作のため使用注意。delete_documents が series 単位の削除なのに対し、
-delete_index は KEY 全体を消す。プロジェクト終了時のクリーンアップ等で使う。`,
-	}, h.handleDeleteIndex)
-
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name: "manage_index",
-		Description: `指定 KEY の廃棄ポリシー (TTL/max_chunks) を設定・更新する。
-
-【廃棄ポリシー】
-  - ttl_days: 最終アクセスからの経過日数 (この日数を超えたら自動削除)
-  - max_chunks: KEY あたりのチャンク上限 (上限超過時に LRU で削除)
+【delete_index (旧) との違い】
+  旧 delete_index は呼んだ瞬間に全 series / 全チャンク / 全ベクトルを物理削除したが、
+  trash_index は trashed_at を記録するだけで実データには一切触れない。
+  実データは doc-db.yaml の trash.retention_days (デフォルト 3日) 経過後に
+  internal/trash.Worker が自動的に最終処分する。
 
 【動作】
-  - expiry_policy を null にするとサーバーデフォルト (30 days / 10000 chunks) に戻る
-  - 一部フィールドだけ指定可 (ttl_days のみ等)
+  - ゴミ箱に入った KEY は list_indexes から除外される (list_trashed_indexes でのみ確認可)
+  - 保持期間内であれば restore_index で復活できる (実データはそのまま残っている)
 
-長期保持したい重要 KEY や、逆に短期間で自動廃棄したいテンポラリ KEY の制御に使う。`,
-	}, h.handleManageIndex)
+【書き込み保護】
+  ゴミ箱状態の KEY への upsert_documents / sync_documents / delete_documents /
+  delete_series / schedule_delete_series は拒否される (restore_index で復活してから
+  操作すること)。query も同様に拒否され、誤って検索・参照することはできない。
+
+【エラー】
+  存在しない KEY、既にゴミ箱状態の KEY (多重投入) はエラーになる。`,
+	}, h.handleTrashIndex)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "list_trashed_indexes",
+		Description: `現在ゴミ箱状態の KEY 一覧を返す (trash_index 済みの KEY)。
+
+返り値の各エントリ:
+  - key, trashed_at (RFC3339)
+  - remaining_seconds (自動最終処分までの残り秒数。保持期間を過ぎていて
+    まだ internal/trash.Worker の次回実行が来ていない場合は 0)
+
+list_indexes はゴミ箱状態の KEY を含まないため、ゴミ箱内 KEY を確認するには
+本ツールを使う。復活するなら restore_index を使う。`,
+	}, h.handleListTrashedIndexes)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "restore_index",
+		Description: `ゴミ箱状態の KEY を利用可能な状態へ戻す (自動最終処分前に限る)。
+
+復活した KEY は trash_index 実行前と同じデータ (record / chunk / embedding) が
+そのまま利用できる (実データはゴミ箱投入時点から一切変更されていない)。
+
+【エラー】
+  存在しない KEY、ゴミ箱に入っていない KEY (未投入) を指定した場合はエラーになる。`,
+	}, h.handleRestoreIndex)
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "sync_documents",
@@ -233,7 +266,8 @@ delete_index は KEY 全体を消す。プロジェクト終了時のクリー�
   1. 一意な job_id を即座に返す (処理完了を待たない)
   2. サーバー内部で処理を継続: documents を差分処理 → 一覧に無い既存 path を
      series から切り離し → どの series からも参照されなくなった record は
-     物理削除予約として記録 (物理削除はサーバー次回起動時)
+     物理削除予約として記録 (物理削除は起動時スイープまたは internal/trash.Worker の
+     定期実行)
   3. 進捗は get_sync_status(job_id) でポーリングする
 
 【自己修復】
@@ -279,17 +313,18 @@ delete_index は KEY 全体を消す。プロジェクト終了時のクリー�
 【delete_series (即時削除) との違い】
   - delete_series: 呼んだ時点で record / チャンク / ベクトルを物理削除する
   - schedule_delete_series: 予約を記録するだけで実データには一切触れない。
-    物理削除はサーバー次回起動時に行われる (それまで完全に無害)
+    物理削除はサーバー起動時のスイープ、または internal/trash.Worker の定期実行
+    (デフォルト 1 時間毎) が行う (それまで完全に無害)
 
 【典型ユースケース】
-  Git branch の削除を検知した時点で呼ぶ。誤操作でも次回起動前なら実害ゼロで、
+  Git branch の削除を検知した時点で呼ぶ。誤操作でも物理削除前なら実害ゼロで、
   同一 KEY+series へ sync_documents を呼べば予約は自動解除される (自己修復)。
 
 【出力の解釈】
   - already_scheduled: 呼び出し時点で既に同一 series の削除予約が存在した場合 true
     (冪等な再呼び出しの判別用。true でもエラーではない)
 
-存在しない series を指定してもエラーにならない (予約行が記録され、起動時スイープが
+存在しない series を指定してもエラーにならない (予約行が記録され、次回のスイープが
 0 件処理で無害に消化する)。`,
 	}, h.handleScheduleDeleteSeries)
 }
@@ -350,6 +385,9 @@ func (h *Handlers) handleUpsert(
 	if len(in.Documents) == 0 {
 		return nil, UpsertResult{}, errors.New("documents が空")
 	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, UpsertResult{}, terr
+	}
 
 	start := time.Now()
 	slog.Info("upsert start", "key", in.Key, "series", in.Series, "count", len(in.Documents))
@@ -361,7 +399,13 @@ func (h *Handlers) handleUpsert(
 
 	// KEY 単位排他（SYN-08）: 複数ドキュメント分の upsertOne 呼び出しを含む
 	// ループ全体を 1 回の WithKeyLock で囲む（DES-001 §4.3。fn 内で再取得禁止）。
+	// ロック取得前の rejectIfTrashed 判定とロック取得の間に trash_index が割り込むと
+	// 判定が古くなる（TOCTOU）ため、ロック内で再判定する（trash_index も同一 KEY の
+	// WithKeyLock を取るため、ロック内での再判定は直前の trash_index 完了を必ず観測できる）。
 	if lerr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+			return terr
+		}
 		for _, doc := range in.Documents {
 			if uerr := h.upsertOne(ctx, in.Key, in.Series, doc, &out); uerr != nil {
 				slog.Warn("upsert: document failed", "path", doc.Path, "error", uerr)
@@ -562,6 +606,9 @@ func (h *Handlers) handleDelete(
 	if in.Key == "" || in.Series == "" || len(in.Paths) == 0 {
 		return nil, DeleteResult{}, errors.New("key / series / paths は必須")
 	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, DeleteResult{}, terr
+	}
 
 	start := time.Now()
 	slog.Info("delete_documents start", "key", in.Key, "series", in.Series, "paths", len(in.Paths))
@@ -577,6 +624,11 @@ func (h *Handlers) handleDelete(
 	var warnings []string
 	var deleted int
 	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		// ロック取得前の rejectIfTrashed 判定は TOCTOU の余地があるため、ロック内で再判定する
+		// （trash_index も同一 KEY の WithKeyLock を取るため直前の trash_index を必ず観測できる）。
+		if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+			return terr
+		}
 		existing := make([]string, 0, len(in.Paths))
 		for _, p := range in.Paths {
 			found, herr := h.store.HasRecord(ctx, in.Key, p)
@@ -627,6 +679,9 @@ func (h *Handlers) handleDeleteSeries(
 	if in.Key == "" || in.Series == "" {
 		return nil, DeleteSeriesResult{}, errors.New("key / series は必須")
 	}
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		return nil, DeleteSeriesResult{}, terr
+	}
 	start := time.Now()
 	slog.Info("delete_series start", "key", in.Key, "series", in.Series)
 	defer func() {
@@ -636,8 +691,12 @@ func (h *Handlers) handleDeleteSeries(
 	}()
 
 	// KEY 単位排他（SYN-08）: DeleteSeriesAll 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
+	// ロック取得前の rejectIfTrashed 判定は TOCTOU の余地があるため、ロック内で再判定する。
 	var removed, updated int
 	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
+		if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+			return terr
+		}
 		var werr error
 		removed, updated, werr = h.store.DeleteSeriesAll(ctx, in.Key, in.Series)
 		return werr
@@ -716,6 +775,12 @@ func (h *Handlers) handleQuery(
 		return nil, QueryResult{}, err
 	}
 
+	// ゴミ箱状態の KEY は検索を実行せず明示エラーを返す (TASK-009, DES-001 §5.7 UC-8)。
+	if terr := h.rejectIfTrashed(ctx, in.Key); terr != nil {
+		err = terr
+		return nil, QueryResult{}, err
+	}
+
 	var warnings []string
 
 	// TouchKey（last_accessed_at 更新）。致命的ではないが caller に観測可能化する。
@@ -760,7 +825,7 @@ type ListIndexesInput struct{}
 
 // ListIndexesResult は list_indexes の出力。
 type ListIndexesResult struct {
-	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/last_updated_at/last_accessed_at/expiry_policy を含む。"`
+	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/chunk_count/last_updated_at/last_accessed_at を含む。ゴミ箱状態 (trash_index 済み) の KEY はこの一覧から除外される。"`
 }
 
 func (h *Handlers) handleListIndexes(
@@ -777,77 +842,6 @@ func (h *Handlers) handleListIndexes(
 		return nil, ListIndexesResult{}, err
 	}
 	return nil, ListIndexesResult{Indexes: keys}, nil
-}
-
-// -----------------------------------------------------------------------
-// delete_index (MNG-02)
-// -----------------------------------------------------------------------
-
-// DeleteIndexInput は delete_index の入力。
-type DeleteIndexInput struct {
-	Key string `json:"key" jsonschema:"削除する KEY。指定 KEY の全 series / 全チャンク / 全ベクトルが物理削除される (破壊的)。"`
-}
-
-// DeleteIndexResult は delete_index の出力。
-type DeleteIndexResult struct {
-	Deleted bool `json:"deleted" jsonschema:"削除に成功したか。"`
-}
-
-func (h *Handlers) handleDeleteIndex(
-	ctx context.Context, _ *mcpsdk.CallToolRequest, in DeleteIndexInput,
-) (res *mcpsdk.CallToolResult, out DeleteIndexResult, err error) {
-	if in.Key == "" {
-		return nil, DeleteIndexResult{}, errors.New("key は必須")
-	}
-	start := time.Now()
-	slog.Info("delete_index start", "key", in.Key)
-	defer func() {
-		logHandlerDone("delete_index done", err, start, "key", in.Key, "deleted", out.Deleted)
-	}()
-
-	// KEY 単位排他（SYN-08）: DeleteKey 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
-	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
-		return h.store.DeleteKey(ctx, in.Key)
-	}); derr != nil {
-		err = fmt.Errorf("delete key: %w", derr)
-		return nil, DeleteIndexResult{}, err
-	}
-	return nil, DeleteIndexResult{Deleted: true}, nil
-}
-
-// -----------------------------------------------------------------------
-// manage_index (EXP-04 / MNG-03)
-// -----------------------------------------------------------------------
-
-// ManageIndexInput は manage_index の入力。
-// ExpiryPolicy が nil の場合は keys.expiry_policy を NULL にリセットする。
-type ManageIndexInput struct {
-	Key          string              `json:"key" jsonschema:"対象 KEY。"`
-	ExpiryPolicy *store.ExpiryPolicy `json:"expiry_policy,omitempty" jsonschema:"廃棄ポリシー設定。ttl_days (最終アクセスからの自動削除日数) と max_chunks (KEY あたりのチャンク上限) を指定。null/省略でサーバーデフォルト (30days/10000chunks) にリセット。"`
-}
-
-// ManageIndexResult は manage_index の出力。
-type ManageIndexResult struct {
-	Updated bool `json:"updated" jsonschema:"設定が更新されたか。"`
-}
-
-func (h *Handlers) handleManageIndex(
-	ctx context.Context, _ *mcpsdk.CallToolRequest, in ManageIndexInput,
-) (res *mcpsdk.CallToolResult, out ManageIndexResult, err error) {
-	if in.Key == "" {
-		return nil, ManageIndexResult{}, errors.New("key は必須")
-	}
-	start := time.Now()
-	slog.Info("manage_index start", "key", in.Key)
-	defer func() {
-		logHandlerDone("manage_index done", err, start, "key", in.Key, "updated", out.Updated)
-	}()
-
-	if serr := h.store.SetExpiryPolicy(ctx, in.Key, in.ExpiryPolicy); serr != nil {
-		err = fmt.Errorf("set expiry policy: %w", serr)
-		return nil, ManageIndexResult{}, err
-	}
-	return nil, ManageIndexResult{Updated: true}, nil
 }
 
 // -----------------------------------------------------------------------
