@@ -9,7 +9,35 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
+
+// sweepAllPendingDeletions は旧 SweepPendingDeletions（全件無条件処理）と同じ振る舞いを
+// 新 API（ListPendingDeletionsOlderThan + SweepOnePendingDeletion）の組み合わせで再現する
+// テストヘルパー。cutoff に十分未来の時刻を渡すことで全予約行を対象にし、
+// エントリごとに WithKeyLock で囲んで呼び出す（DES-003 §4.3 の呼び出し元契約）。
+func sweepAllPendingDeletions(t *testing.T, s *Store, ctx context.Context) (processed int, errs []error) {
+	t.Helper()
+
+	cutoff := time.Now().Add(24 * time.Hour * 365)
+	entries, err := s.ListPendingDeletionsOlderThan(ctx, cutoff)
+	if err != nil {
+		return 0, []error{err}
+	}
+
+	for _, entry := range entries {
+		e := entry
+		lockErr := s.WithKeyLock(ctx, e.Key, func() error {
+			return s.SweepOnePendingDeletion(ctx, e)
+		})
+		if lockErr != nil {
+			errs = append(errs, lockErr)
+			continue
+		}
+		processed++
+	}
+	return processed, errs
+}
 
 // countRows は任意の COUNT クエリを実行して件数を返すテストヘルパー。
 func countRows(t *testing.T, s *Store, query string, args ...any) int {
@@ -400,7 +428,59 @@ func TestDeleteOrphanRecords_RemovesOrphanOnlyAndUpdatesDocCount(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// SweepPendingDeletions — 起動時スイープ（GC-02〜04）
+// ListPendingDeletionsOlderThan — cutoff 境界値（DES-003 §4.3、猶予期間絞り込み）
+// -----------------------------------------------------------------------
+
+// insertPendingDeletionRow は pending_deletions に任意の marked_at を持つ行を直接 INSERT
+// するテストヘルパー。MarkDocumentForDeletion/MarkSeriesForDeletion は marked_at に現在時刻を
+// 強制するため、境界値テストでは SQL 直叩きで任意の marked_at を作る必要がある。
+func insertPendingDeletionRow(t *testing.T, s *Store, key, series, path, markedAt string) {
+	t.Helper()
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO pending_deletions (key, series, path, marked_at) VALUES (?, ?, ?, ?)`,
+		key, series, path, markedAt,
+	); err != nil {
+		t.Fatalf("insertPendingDeletionRow(%s,%s,%s): %v", key, series, path, err)
+	}
+}
+
+// TestListPendingDeletionsOlderThan_CutoffBoundary は marked_at < cutoff の境界値を検証する:
+// 猶予期間内（cutoff 以降、cutoff ちょうども含む）の予約は結果に含まれず、
+// 猶予期間超過分（cutoff より前）の予約のみが返ることを確認する。
+func TestListPendingDeletionsOlderThan_CutoffBoundary(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	cutoff := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	cutoffStr := cutoff.Format(time.RFC3339)
+
+	// 猶予期間超過（cutoff より前）: 結果に含まれるべき
+	insertPendingDeletionRow(t, s, "K", "s1", "older.md",
+		cutoff.Add(-1*time.Second).Format(time.RFC3339))
+	// ちょうど cutoff: marked_at < cutoff を満たさないため含まれないべき
+	insertPendingDeletionRow(t, s, "K", "s1", "exact.md", cutoffStr)
+	// 猶予期間内（cutoff より後）: 結果に含まれないべき
+	insertPendingDeletionRow(t, s, "K", "s1", "newer.md",
+		cutoff.Add(1*time.Second).Format(time.RFC3339))
+
+	entries, err := s.ListPendingDeletionsOlderThan(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("ListPendingDeletionsOlderThan: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1 件（older.md のみ）", entries)
+	}
+	got := entries[0]
+	if got.Key != "K" || got.Series != "s1" || got.Path != "older.md" {
+		t.Errorf("entries[0] = %+v, want {K s1 older.md}", got)
+	}
+}
+
+// -----------------------------------------------------------------------
+// ListPendingDeletionsOlderThan + SweepOnePendingDeletion — 起動時スイープ（GC-02〜04）
+// 旧 SweepPendingDeletions（全件無条件処理）の回帰テストを、分割後の新 API を
+// sweepAllPendingDeletions ヘルパー経由で呼ぶ形に置き換えたもの（DES-003 §4.3）。
 // -----------------------------------------------------------------------
 
 // TestSweepPendingDeletions_SeriesAndPathUnits は series 単位（DeleteSeriesAll）・
@@ -410,7 +490,7 @@ func TestSweepPendingDeletions_SeriesAndPathUnits(t *testing.T) {
 	ctx := context.Background()
 
 	// 予約なしのスイープは 0 件処理・エラーなし
-	if processed, errs := s.SweepPendingDeletions(ctx); processed != 0 || len(errs) != 0 {
+	if processed, errs := sweepAllPendingDeletions(t, s, ctx); processed != 0 || len(errs) != 0 {
 		t.Fatalf("空スイープ: processed=%d errs=%v, want 0/空", processed, errs)
 	}
 
@@ -451,7 +531,7 @@ func TestSweepPendingDeletions_SeriesAndPathUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	processed, errs := s.SweepPendingDeletions(ctx)
+	processed, errs := sweepAllPendingDeletions(t, s, ctx)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want 空", errs)
 	}
@@ -502,7 +582,7 @@ func TestSweepPendingDeletions_StaleRowKeepsLiveRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	processed, errs := s.SweepPendingDeletions(ctx)
+	processed, errs := sweepAllPendingDeletions(t, s, ctx)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want 空", errs)
 	}
@@ -549,7 +629,7 @@ func TestSweepPendingDeletions_SharedHashRecordSurvives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	processed, errs := s.SweepPendingDeletions(ctx)
+	processed, errs := sweepAllPendingDeletions(t, s, ctx)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want 空", errs)
 	}
@@ -705,7 +785,7 @@ func TestDeleteSeriesAll_KeepsPathReservation_OrphanCollectedBySweep(t *testing.
 	}
 
 	// 起動時スイープが orphan を回収し、予約行も消える
-	processed, errs := s.SweepPendingDeletions(ctx)
+	processed, errs := sweepAllPendingDeletions(t, s, ctx)
 	if len(errs) > 0 {
 		t.Fatalf("SweepPendingDeletions errs: %v", errs)
 	}
@@ -753,7 +833,7 @@ func TestSweep_StaleSeriesWideReservation_DoesNotDestroyRecreatedData(t *testing
 	}
 
 	// (c) 起動時スイープ（stale 予約が残っていればここで新データが消える）
-	processed, errs := s.SweepPendingDeletions(ctx)
+	processed, errs := sweepAllPendingDeletions(t, s, ctx)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want 空", errs)
 	}
@@ -821,7 +901,7 @@ END`); err != nil {
 		t.Fatalf("トリガー作成: %v", err)
 	}
 
-	processed, errs := s.SweepPendingDeletions(ctx)
+	processed, errs := sweepAllPendingDeletions(t, s, ctx)
 
 	// 片方の失敗にもかかわらずもう片方は処理される（継続動作）
 	if processed != 1 {
@@ -833,7 +913,7 @@ END`); err != nil {
 	if !strings.Contains(errs[0].Error(), "poison.md") {
 		t.Errorf("errs[0] に失敗 path が含まれない: %v", errs[0])
 	}
-	if !strings.Contains(logBuf.String(), "起動時スイープ個別失敗") {
+	if !strings.Contains(logBuf.String(), "削除予約スイープ個別失敗") {
 		t.Errorf("個別失敗がログに記録されていない: %q", logBuf.String())
 	}
 

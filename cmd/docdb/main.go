@@ -125,18 +125,48 @@ func setupLogging(cfg *config.Config) (io.Closer, error) {
 	return closer, nil
 }
 
+// defaultTrashRetentionDays は trash.retention_days の暫定デフォルト値（DES-003 §6 記載の
+// doc-db.yaml.example 既定値と同じ 3 日）。internal/config への TrashConfig 導入（TASK-005）までの
+// 暫定値であり、TASK-005 完了後は設定ファイルの実値に置き換える。
+const defaultTrashRetentionDays = 3
+
+// startupSweepCutoff は起動時スイープで使う cutoff。DES-003 §4.2「起動時であっても猶予期間中の
+// 予約は処理しない」という設計要求に従い、marked_at が猶予期間（defaultTrashRetentionDays）を
+// 超過した予約のみを対象にする。
+func startupSweepCutoff() time.Time {
+	return time.Now().Add(-defaultTrashRetentionDays * 24 * time.Hour)
+}
+
 // startupSweep は削除予約（pending_deletions）の起動時スイープを同期実行し、
 // 結果（processed 件数・エラー件数）をログ出力する（GC-02）。
 // 個別エラーは警告ログとして出力し、起動は継続する（GC-04、silent failure 禁止）。
 // 起動時 DB 統計の算出より前に呼ぶこと（GC-03: 統計値がスイープ後の状態を反映するため）。
 // 戻り値は統合テスト（main_test.go）がスイープ結果を検証するために返す。
+//
+// ListPendingDeletionsOlderThan + SweepOnePendingDeletion（DES-003 §4.3）を使う形に分割済み。
+// 予約 1 件ごとに WithKeyLock(entry.Key, ...) で囲んで処理する（KEY 単位排他は呼び出し元の責務、
+// DES-001 §4.3）。cutoff には startupSweepCutoff の猶予期間超過時刻を使い、猶予期間中の予約は
+// 処理しない（DES-003 §4.2）。
 func startupSweep(ctx context.Context, st *store.Store) (processed, errCount int) {
-	processed, errs := st.SweepPendingDeletions(ctx)
-	for _, sweepErr := range errs {
-		slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）", "error", sweepErr)
+	entries, err := st.ListPendingDeletionsOlderThan(ctx, startupSweepCutoff())
+	if err != nil {
+		slog.Warn("起動時スイープ: 削除予約一覧の取得に失敗（次回起動時に再試行）", "error", err)
+		return 0, 1
 	}
-	slog.Info("起動時スイープ完了", "processed", processed, "error_count", len(errs))
-	return processed, len(errs)
+
+	for _, entry := range entries {
+		lockErr := st.WithKeyLock(ctx, entry.Key, func() error {
+			return st.SweepOnePendingDeletion(ctx, entry)
+		})
+		if lockErr != nil {
+			slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）", "error", lockErr)
+			errCount++
+			continue
+		}
+		processed++
+	}
+	slog.Info("起動時スイープ完了", "processed", processed, "error_count", errCount)
+	return processed, errCount
 }
 
 func run(ctx context.Context) error {
