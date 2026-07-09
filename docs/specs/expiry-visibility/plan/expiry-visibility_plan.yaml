@@ -3,6 +3,14 @@
 # notes:
 #   - 正本は対応する追加 feature 要件定義書（FNC-007〜FNC-013、docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md）。旧仕様と矛盾する場合は要件定義書を優先する。
 #   - 本 feature 実装完了後、この計画書は破棄される予定。
+#   - 【全タスク完了後の事後注記】TASK-012（優先度78）は当初「書き込み系4ツール
+#     （upsert_documents/sync_documents/delete_documents/schedule_delete_series）の操作拒否」として
+#     スコープ・完了したが、TASK-009 実行時のレビューで delete_series も拒否対象から漏れていることが
+#     判明した。FNC-007/DES-003 を修正の上で TASK-009 のスコープ内で delete_series にも対応済みであり、
+#     現在の実装・テストは 5 ツール（upsert_documents/sync_documents/delete_documents/delete_series/
+#     schedule_delete_series）すべてを拒否する。以下の TASK-012 の title/description/acceptance_criteria
+#     および TASK-011 の description（328行目）に残る「4 ツール」は TASK-012 単体の完了時点の記録であり、
+#     本 feature 全体の最終的な拒否対象一覧としては 5 ツールと読むこと（revision_history 参照）。
 # ---
 
 # expiry-visibility 実装計画書
@@ -277,8 +285,8 @@ tasks:
       - エラーメッセージに「対象 KEY はゴミ箱に入っている旨」と「restore_index で復活してから操作する旨」を含める
       - trashed_at はこの拒否処理によって変更されないことを確認する
       - ゴミ箱状態の KEY への 4 ツールいずれの呼び出しも拒否されること、trashed_at が変化しないことの単体テストを追加する
-      - "事後注記: 本タスクは4ツール（delete_series を含まない）としてスコープされ完了した。delete_series の拒否ガード漏れは後続の TASK-009 レビューで検出され、TASK-009 のスコープ内で追加対応済み（revision_history 参照）"
-    acceptance_criteria: ゴミ箱状態の KEY への upsert_documents/sync_documents/delete_documents/schedule_delete_series がすべて拒否され、trashed_at が変化しないことをテストで確認できる
+      - "事後注記: delete_series の対応漏れと本 feature 全体での最終ツール数（5）については、本ファイル冒頭の frontmatter notes を参照"
+    acceptance_criteria: ゴミ箱状態の KEY への upsert_documents/sync_documents/delete_documents/schedule_delete_series がすべて拒否され、trashed_at が変化しないことをテストで確認できる（delete_series は別途 TASK-009 で対応。frontmatter notes 参照）
     required_reading:
       - docs/specs/expiry-visibility/design/DES-003_expiry_visibility_design.md
       - docs/specs/expiry-visibility/requirements/FNC-007_expiry_visibility_spec.md
@@ -325,7 +333,7 @@ tasks:
     build_check: per_task
     description:
       - ゴミ箱投入 → 一覧確認 → 復活 → 再投入 → 保持期間経過後の自動処分、という一連のフローの統合テストを追加する（保持期間は短縮設定でテスト）
-      - ゴミ箱投入後の upsert_documents/sync_documents/delete_documents/schedule_delete_series 拒否、および query の明示エラーを含めた統合テストを追加する
+      - ゴミ箱投入後の upsert_documents/sync_documents/delete_documents/schedule_delete_series 拒否、および query の明示エラーを含めた統合テストを追加する（delete_series は別途 TASK-009 で対応。frontmatter notes 参照）
       - make verify を実行し全体が通過することを確認する
       - 既存 DIF-02 不変条件テスト 3 件が green のままであることを最終確認する
       - README.md / docs/AI_INTEGRATION_GUIDE.md の MCP ツール一覧・SKILL 一覧の記述を更新する（delete_index 廃止・trash_index 等の新設を反映）
