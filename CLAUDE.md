@@ -46,13 +46,13 @@ LLM Rerank は **ranking 最適化オプション**であり、recall を広げ�
 
 ```
 cmd/docdb           エントリポイント・設定読み込み・配線
-internal/mcp        MCP ツールハンドラ（7 種）
+internal/mcp        MCP ツールハンドラ（11 種）
 internal/search     3 signal 検索パイプライン（emb / lex / grep / rerank）
 internal/reranker   OpenAI Chat Completions ベース LLM Rerank
 internal/chunker    Markdown → 見出し境界チャンク分割
 internal/embedder   OpenAI Embedding API（部分失敗対応）
 internal/fetcher    URL → コンテンツ取得（SSRF 防御付き）
-internal/expiry     TTL / LRU 自動廃棄ワーカー
+internal/trash      ゴミ箱投入済み KEY・orphan record の自動最終処分ワーカー（旧 internal/expiry の TTL/LRU を置換）
 internal/store      SQLite 読み書き・WAL・アトミック AppendAndCleanSeries
 internal/config     YAML 設定ローダー（~/.doc-db/doc-db.yaml）
 ```

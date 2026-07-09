@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // DetachSeriesFromPath は指定 key+path の record 群から当該 series の series_keys 行のみを
@@ -21,7 +22,8 @@ import (
 // record・chunks・embeddings は削除しない。これは既存の DeleteSeries / CleanOtherSeries が持つ
 // 「series_keys が空になった record は即時物理削除」という不変条件の意図的な例外である
 // （DES-001 §4.5）。record を残す目的は、SYN-04 の自己修復を Embedding 再計算なし
-// （API 課金ゼロ）で成立させること。物理削除は起動時スイープ（SweepPendingDeletions）まで遅延する。
+// （API 課金ゼロ）で成立させること。物理削除は削除予約スイープ（ListPendingDeletionsOlderThan +
+// SweepOnePendingDeletion）まで遅延する。
 //
 // 戻り値 orphaned は、切り離し後に当該 key+path 配下にどの series からも参照されない record が
 // 存在する場合に true を返す。呼び出し元（sync_documents）は orphaned=true の場合のみ
@@ -235,10 +237,10 @@ func (s *Store) ListPendingDeletions(ctx context.Context, key, series string) (p
 //
 // 呼び出し元は 2 箇所:
 //   - sync_documents の fn 内で ClearPendingDeletion の直前（CleanOtherSeries の個別失敗の補償）
-//   - SweepPendingDeletions の path 単位処理（起動時）
+//   - SweepOnePendingDeletion の path 単位処理（起動時・定期スイープ共通）
 //
 // record 削除を伴うため doc_count を更新する。
-// WithKeyLock は内部で取得しない（呼び出し元が保持済み、または起動時専用で不要。DES-001 §4.3）。
+// WithKeyLock は内部で取得しない（呼び出し元が保持済み。DES-001 §4.3）。
 // 単一トランザクション + s.mu で直列化する。
 func (s *Store) DeleteOrphanRecords(ctx context.Context, key, path string) (removed int, retErr error) {
 	s.mu.Lock()
@@ -294,7 +296,50 @@ func (s *Store) DeleteOrphanRecords(ctx context.Context, key, path string) (remo
 	return removed, nil
 }
 
-// SweepPendingDeletions は pending_deletions の全行を処理する起動時スイープ（GC-02〜04）。
+// PendingDeletionEntry は ListPendingDeletionsOlderThan が返す削除予約 1 件分の識別子。
+// path="" は series 全体予約（GC-01 由来）、path が非空は path 単位予約（SYN-03 由来）を表す
+// （pending_deletions.path の意味は本ファイル冒頭コメント参照）。
+type PendingDeletionEntry struct {
+	Key      string
+	Series   string
+	Path     string
+	MarkedAt string // ゴミ箱投入・削除予約日時（RFC3339）。ログ記録用（DES-001 §8.5）
+}
+
+// ListPendingDeletionsOlderThan は marked_at が cutoff より前（marked_at < cutoff の
+// RFC3339 文字列比較）の削除予約一覧を返す読み取り専用メソッド。
+// 読み取りのみのため s.mu は取得しない（ListPendingDeletions と同じ方針）。
+//
+// 呼び出し元（internal/trash.Worker、cmd/docdb/main.go の起動時スイープ）は、
+// 返された各エントリを WithKeyLock(entry.Key, ...) で囲んだ上で SweepOnePendingDeletion に
+// 渡す（DES-001 §8.5 の分割方針）。
+func (s *Store) ListPendingDeletionsOlderThan(ctx context.Context, cutoff time.Time) ([]PendingDeletionEntry, error) {
+	cutoffStr := cutoff.UTC().Format(time.RFC3339)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, series, path, marked_at FROM pending_deletions WHERE marked_at < ?`,
+		cutoffStr,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListPendingDeletionsOlderThan: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []PendingDeletionEntry
+	for rows.Next() {
+		var e PendingDeletionEntry
+		if err := rows.Scan(&e.Key, &e.Series, &e.Path, &e.MarkedAt); err != nil {
+			return nil, fmt.Errorf("store.ListPendingDeletionsOlderThan: scan: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.ListPendingDeletionsOlderThan: iterate: %w", err)
+	}
+	return entries, nil
+}
+
+// SweepOnePendingDeletion は 1 件（1 KEY 分）の削除予約を物理削除し、予約を解除する。
 //
 //   - path=” の行（series 全体予約）: 既存 DeleteSeriesAll を無改造で再利用する
 //     （他 series が参照する record は保持する安全な不変条件込み）
@@ -304,70 +349,38 @@ func (s *Store) DeleteOrphanRecords(ctx context.Context, key, path string) (remo
 //     破壊し得る。DeleteOrphanRecords は series 紐付きが残る record に一切触れないため、
 //     stale 行は 0 件処理の冪等動作で行だけが消える（DES-001 §4.5）
 //
-// 成功した行は pending_deletions から削除する。個別失敗はログ + errs に集約して処理を継続する
-// （silent failure 禁止方針、GC-04）。行の消し忘れ・失敗行は次回起動時に再試行されるだけで
-// 安全（両関数とも対象が既に無ければ 0 件処理で冪等）。
+// 成功した場合のみ pending_deletions から該当行を削除する。個別失敗は silent failure 禁止
+// 方針（CLAUDE.md、GC-04）に従い slog.Error でログしてから error を返す。失敗行は予約が
+// 保持されるため、次回のスイープ機会（起動時 or internal/trash.Worker の定期実行）で再試行される。
 //
-// [起動時専用] 本メソッドはサーバー起動時（MCP リクエストを受け付ける前、DB 統計表示より前。
-// GC-03）にのみ呼ばれる前提であり、WithKeyLock を取得しない（並行する書き込みが存在しない
-// 時間帯のため不要）。将来、起動時以外（手動トリガー等）でスイープを実行する変更を加える場合は、
-// この前提が崩れるため各行ごとに WithKeyLock で囲むよう設計を見直すこと（DES-001 §4.5）。
-func (s *Store) SweepPendingDeletions(ctx context.Context) (processed int, errs []error) {
-	type pendingRow struct {
-		key, series, path string
+// [ロックは呼び出し元の責務] 本メソッドは WithKeyLock を内部で取得しない（DES-001 §4.3）。
+// KEY 単位排他が必要な呼び出し元が、本メソッド呼び出し全体を 1 回の WithKeyLock(entry.Key, ...)
+// で囲むこと（DES-001 §8.5）。
+func (s *Store) SweepOnePendingDeletion(ctx context.Context, entry PendingDeletionEntry) error {
+	var sweepErr error
+	if entry.Path == "" {
+		// series 全体予約（GC-01 由来）: 既存 DeleteSeriesAll を無改造で再利用
+		_, _, sweepErr = s.DeleteSeriesAll(ctx, entry.Key, entry.Series)
+	} else {
+		// path 単位予約（SYN-03 由来）: orphan のみ回収（live record には不触）
+		_, sweepErr = s.DeleteOrphanRecords(ctx, entry.Key, entry.Path)
+	}
+	if sweepErr != nil {
+		slog.Error("store: 削除予約スイープ個別失敗（次回スイープで再試行）",
+			"key", entry.Key, "series", entry.Series, "path", entry.Path, "error", sweepErr)
+		return fmt.Errorf(
+			"store.SweepOnePendingDeletion: key=%q series=%q path=%q: %w",
+			entry.Key, entry.Series, entry.Path, sweepErr)
 	}
 
-	// 全予約行を読み取る（読み取りのみのため s.mu は不要。以降の各処理は
-	// 呼び出す各メソッドが個別に s.mu を取得する）
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, series, path FROM pending_deletions`,
-	)
-	if err != nil {
-		return 0, []error{fmt.Errorf("store.SweepPendingDeletions: list: %w", err)}
+	// 成功した行は予約を解除する。解除失敗は次回スイープの再試行で回収される
+	// （両処理とも冪等）が、silent failure 禁止のためログしてから error を返す
+	if err := s.ClearPendingDeletion(ctx, entry.Key, entry.Series, entry.Path); err != nil {
+		slog.Error("store: 削除予約スイープの予約行削除失敗（次回スイープで再試行）",
+			"key", entry.Key, "series", entry.Series, "path", entry.Path, "error", err)
+		return fmt.Errorf(
+			"store.SweepOnePendingDeletion: clear key=%q series=%q path=%q: %w",
+			entry.Key, entry.Series, entry.Path, err)
 	}
-	var pending []pendingRow
-	for rows.Next() {
-		var r pendingRow
-		if err := rows.Scan(&r.key, &r.series, &r.path); err != nil {
-			rows.Close()
-			return 0, []error{fmt.Errorf("store.SweepPendingDeletions: scan: %w", err)}
-		}
-		pending = append(pending, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, []error{fmt.Errorf("store.SweepPendingDeletions: iterate: %w", err)}
-	}
-
-	for _, r := range pending {
-		var sweepErr error
-		if r.path == "" {
-			// series 全体予約（GC-01 由来）: 既存 DeleteSeriesAll を無改造で再利用
-			_, _, sweepErr = s.DeleteSeriesAll(ctx, r.key, r.series)
-		} else {
-			// path 単位予約（SYN-03 由来）: orphan のみ回収（live record には不触）
-			_, sweepErr = s.DeleteOrphanRecords(ctx, r.key, r.path)
-		}
-		if sweepErr != nil {
-			slog.Error("store: 起動時スイープ個別失敗（次回起動時に再試行）",
-				"key", r.key, "series", r.series, "path", r.path, "error", sweepErr)
-			errs = append(errs, fmt.Errorf(
-				"store.SweepPendingDeletions: key=%q series=%q path=%q: %w",
-				r.key, r.series, r.path, sweepErr))
-			continue
-		}
-
-		// 成功した行は予約を解除する。解除失敗は次回起動時の再試行で回収される
-		// （両処理とも冪等）が、silent failure 禁止のためログ + errs に残す
-		if err := s.ClearPendingDeletion(ctx, r.key, r.series, r.path); err != nil {
-			slog.Error("store: 起動時スイープの予約行削除失敗（次回起動時に再試行）",
-				"key", r.key, "series", r.series, "path", r.path, "error", err)
-			errs = append(errs, fmt.Errorf(
-				"store.SweepPendingDeletions: clear key=%q series=%q path=%q: %w",
-				r.key, r.series, r.path, err))
-			continue
-		}
-		processed++
-	}
-	return processed, errs
+	return nil
 }

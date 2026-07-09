@@ -128,6 +128,7 @@ warnings や errors がある場合は必ず含めて報告する (silent failur
   doc-db v0.2.0 未満のサーバに対する後方互換のためのみ。通常は `run_sync.py` を使う
 - **branch 削除時の series 撤去**: feature branch を削除した後、その series の
   record は残り続ける。`/delete-db-series <series 名>` (v0.1.9+) で specs / rules 両
-  KEY から一括除去できる。`manage_index` の TTL 短縮で自然に消えるのを待つ選択肢もあり
-- **KEY の TTL/max_chunks**: doc-db のデフォルト (30 days / 10000 chunks) が適用される。
-  長期保持したい場合は `manage_index` 相当の呼び出しが必要 (現時点で本 SKILL は対応せず)
+  KEY から一括除去できる
+- **KEY の自動廃棄なし**: doc-db は TTL/LRU による自動削除を行わない (v0.2.x 以降)。
+  不要になった KEY は `manage-db-indexes` SKILL の `trash-index` でゴミ箱投入し、
+  保持期間 (デフォルト 3 日) 経過後に自動最終処分される

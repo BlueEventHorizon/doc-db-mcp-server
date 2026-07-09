@@ -272,6 +272,58 @@ func TestListKeys_AggregatesSeriesAndDocCount(t *testing.T) {
 	}
 }
 
+// TestListKeys_ChunkCount は FNC-008 の chunk_count 集計を検証する。
+// K1 は 2 record（各 1 chunk）で合計 2、K2 は 1 record（1 chunk）で合計 1。
+// K3 は record を持たない（chunk 0 件）KEY で、LEFT JOIN により ChunkCount=0 として
+// 結果に含まれることを確認する（INNER JOIN 相当のロジックでは K3 が結果から
+// 欠落してしまう点との違い）。
+func TestListKeys_ChunkCount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, r := range []Record{
+		{Key: "K1", Path: "a", ContentHash: "h_a", Series: "s1", Chunks: makeChunks("a")},
+		{Key: "K1", Path: "b", ContentHash: "h_b", Series: "s2", Chunks: makeChunks("b")},
+		{Key: "K2", Path: "c", ContentHash: "h_c", Series: "s1", Chunks: makeChunks("c")},
+	} {
+		if _, err := s.UpsertRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// K3 は record 無しで keys テーブルにのみ存在させる（テスト用ヘルパーで直接 INSERT する）。
+	if _, err := ExecForTest(ctx, s,
+		`INSERT INTO keys (key, doc_count, last_accessed_at, last_updated_at) VALUES (?, 0, ?, ?)`,
+		"K3", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := s.ListKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byKey := map[string]KeyInfo{}
+	for _, k := range keys {
+		byKey[k.Key] = k
+	}
+
+	if byKey["K1"].ChunkCount != 2 {
+		t.Errorf("K1 chunk_count = %d, want 2", byKey["K1"].ChunkCount)
+	}
+	if byKey["K2"].ChunkCount != 1 {
+		t.Errorf("K2 chunk_count = %d, want 1", byKey["K2"].ChunkCount)
+	}
+	k3, ok := byKey["K3"]
+	if !ok {
+		t.Fatalf("K3 (chunk 0件) が ListKeys の結果に含まれていない（LEFT JOIN 実装漏れの疑い）")
+	}
+	if k3.ChunkCount != 0 {
+		t.Errorf("K3 chunk_count = %d, want 0", k3.ChunkCount)
+	}
+}
+
 // -----------------------------------------------------------------------
 // DIF-02: 同一ハッシュ・新規 series
 // -----------------------------------------------------------------------
@@ -576,62 +628,6 @@ func TestDeleteKey_RemovesEverything(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------
-// 廃棄ポリシー用クエリ (TASK-012 サポート: §8.1 / §8.2 / §8.4)
-// -----------------------------------------------------------------------
-
-func TestListExpiredKeysByTTL_DefaultAndOverride(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	// 3 つの KEY を投入
-	for _, k := range []string{"FRESH", "OLD_DEFAULT", "OLD_OVERRIDE"} {
-		if _, err := s.UpsertRecord(ctx, Record{
-			Key: k, Path: "p", ContentHash: "h_" + k, Series: "s",
-			Chunks: makeChunks("x"),
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// last_accessed_at を制御:
-	//   FRESH        = now            （expire 対象外）
-	//   OLD_DEFAULT  = -100 days      （default TTL=30 → expire）
-	//   OLD_OVERRIDE = -10 days, ttl_days=5 override → expire
-	if _, err := s.db.ExecContext(ctx, `
-UPDATE keys SET last_accessed_at = CASE key
-  WHEN 'OLD_DEFAULT'  THEN datetime('now', '-100 days')
-  WHEN 'OLD_OVERRIDE' THEN datetime('now', '-10 days')
-  ELSE last_accessed_at
-END
-`); err != nil {
-		t.Fatal(err)
-	}
-	// OLD_OVERRIDE に ttl_days=5 のオーバーライドを設定
-	if err := s.SetExpiryPolicy(ctx, "OLD_OVERRIDE", &ExpiryPolicy{TTLDays: intPtr(5)}); err != nil {
-		t.Fatal(err)
-	}
-
-	keys, err := s.ListExpiredKeysByTTL(ctx, 30)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := map[string]bool{}
-	for _, k := range keys {
-		got[k] = true
-	}
-	if got["FRESH"] {
-		t.Error("FRESH should not be expired")
-	}
-	if !got["OLD_DEFAULT"] {
-		t.Error("OLD_DEFAULT should be expired (now - 100d < now - 30d)")
-	}
-	if !got["OLD_OVERRIDE"] {
-		t.Error("OLD_OVERRIDE should be expired (override ttl=5d, accessed 10d ago)")
-	}
-}
-
 func TestTotalChunkCount(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -651,100 +647,6 @@ func TestTotalChunkCount(t *testing.T) {
 		t.Errorf("after upsert: got (%d, %v), want (3, nil)", n, err)
 	}
 }
-
-func TestListKeysByLRU_OrderedOldestFirst(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	for _, k := range []string{"K1", "K2", "K3"} {
-		if _, err := s.UpsertRecord(ctx, Record{
-			Key: k, Path: "p", ContentHash: "h_" + k, Series: "s",
-			Chunks: makeChunks("a", "b"), // 各 KEY 2 chunks
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// K1 を最古、K3 を最新に
-	if _, err := s.db.ExecContext(ctx, `
-UPDATE keys SET last_accessed_at = CASE key
-  WHEN 'K1' THEN datetime('now', '-3 hours')
-  WHEN 'K2' THEN datetime('now', '-2 hours')
-  WHEN 'K3' THEN datetime('now', '-1 hours')
-END WHERE key IN ('K1','K2','K3')`); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := s.ListKeysByLRU(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []KeyLRUInfo{{"K1", 2}, {"K2", 2}, {"K3", 2}}
-	if len(got) != len(want) {
-		t.Fatalf("len = %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("got[%d] = %v, want %v", i, got[i], want[i])
-		}
-	}
-}
-
-func TestSetExpiryPolicy_RoundTrip(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	if _, err := s.UpsertRecord(ctx, Record{
-		Key: "K", Path: "p", ContentHash: "h", Series: "s",
-		Chunks: makeChunks("x"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// ポリシー設定
-	policy := &ExpiryPolicy{TTLDays: intPtr(7), MaxChunks: intPtr(500)}
-	if err := s.SetExpiryPolicy(ctx, "K", policy); err != nil {
-		t.Fatal(err)
-	}
-
-	// ListKeys で読み戻し
-	keys, err := s.ListKeys(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(keys) != 1 || keys[0].ExpiryPolicy == nil {
-		t.Fatalf("ExpiryPolicy not set: %+v", keys)
-	}
-	got := keys[0].ExpiryPolicy
-	if got.TTLDays == nil || *got.TTLDays != 7 {
-		t.Errorf("TTLDays = %v, want 7", got.TTLDays)
-	}
-	if got.MaxChunks == nil || *got.MaxChunks != 500 {
-		t.Errorf("MaxChunks = %v, want 500", got.MaxChunks)
-	}
-
-	// nil で reset
-	if err := s.SetExpiryPolicy(ctx, "K", nil); err != nil {
-		t.Fatal(err)
-	}
-	keys, err = s.ListKeys(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if keys[0].ExpiryPolicy != nil {
-		t.Errorf("policy should be nil after reset, got %+v", keys[0].ExpiryPolicy)
-	}
-}
-
-func TestSetExpiryPolicy_UnknownKey_Errors(t *testing.T) {
-	s := newTestStore(t)
-	err := s.SetExpiryPolicy(context.Background(), "NOTEXIST", &ExpiryPolicy{TTLDays: intPtr(1)})
-	if err == nil {
-		t.Fatal("want error for unknown key")
-	}
-}
-
-func intPtr(v int) *int { return &v }
 
 // -----------------------------------------------------------------------
 // 並行書き込み

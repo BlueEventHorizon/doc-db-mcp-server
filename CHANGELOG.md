@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-10
+
+### Removed
+
+- **TTL/LRU 自動削除ワーカー（`internal/expiry`）を廃止**: `last_accessed_at`（TTL）・総 chunk
+  数（LRU）による自動判定廃棄は、実運用で投入直後の唯一の KEY を無警告のまま削除する事故を
+  起こしたため撤去した（ADR-003）。doc-db は「削除すべきかどうか」の判定を一切行わない設計に
+  転換し、削除は必ずユーザー主導のゴミ箱投入を経由する
+- **`manage_index` / `delete_index` MCP ツールを廃止**: KEY ごとの廃棄ポリシー設定・即時物理削除の
+  経路を撤去。削除は `trash_index` に一本化した
+
+### Added
+
+- **`trash_index` / `list_trashed_indexes` / `restore_index` MCP ツールを新設**: KEY 単位のゴミ箱投入・
+  一覧確認（自動最終処分までの残り時間含む）・復活を提供する。`keys.trashed_at` カラムと
+  `TrashKey`/`RestoreKey`/`ListTrashedKeys`/`IsTrashed`（`internal/store`）で実装
+- **`internal/trash.Worker`**: ゴミ箱投入済み KEY・orphan record（`pending_deletions`）を、設定した
+  保持期間（デフォルト 3 日）経過後に定期実行で自動最終処分するワーカー。旧 `internal/expiry` を置換
+- **`list_indexes` に `chunk_count` を追加**: KEY ごとの chunk 数を返し、ゴミ箱状態の KEY は結果から
+  除外する
+- **`manage-db-indexes` SKILL を新設**: KEY メタデータの確認・ゴミ箱投入・一覧確認・復活を対話的に
+  行う管理 SKILL
+
+### Changed
+
+- **ゴミ箱状態の KEY への書き込み系操作を拒否**: `upsert_documents` / `delete_documents` /
+  `delete_series` / `schedule_delete_series` / `sync_documents` の 5 ツールは、対象 KEY がゴミ箱
+  状態の場合エラーを返し処理を実行しない（復活は `restore_index` の明示操作のみ）。`WithKeyLock`
+  取得前後の二重チェックで TOCTOU を防止する
+- **`query` はゴミ箱状態の KEY 指定時に明示エラーを返す**（空結果ではない）
+- **設定ファイルの `expiry:` セクションを `trash:` に変更**（`retention_days` / `interval_seconds`）。
+  既存設定ファイルとの後方互換性は考慮しない。`expiry:` セクションが残っている場合、
+  `KnownFields(true)`（CFG-03）により起動時にエラーになる。**アップグレード時は
+  `doc-db.yaml` の `expiry:` セクションを手動で `trash:` に置き換えること**
+- **削除予約の物理削除処理を分割**: `SweepPendingDeletions`（KEY をまたぐ無条件一括処理）を
+  `ListPendingDeletionsOlderThan` + `SweepOnePendingDeletion` に分割し、起動時スイープにも
+  猶予期間（`marked_at` の cutoff 絞り込み）を適用するよう修正
+- **仕様書統合**: 追加開発ディレクトリ `docs/specs/expiry-visibility/`（FNC-007/DES-003/ADR-003）を
+  base 仕様（APP-001/DES-001、新設 ADR-003）へ統合し削除（`/forge:merge-specs`）
+
 ## [0.2.1] - 2026-07-07
 
 ### Fixed

@@ -14,7 +14,7 @@ package mcp
 //    8. CleanOtherSeries 失敗補償の検証（人工 orphan の回収 → 予約解除）
 //    9. schedule_delete_series の series 全体予約が sync_documents で解除される（自己修復）
 //   10. schedule_delete_series が即座に削除せず already_scheduled を正しく返す（GC-01）
-//   11. sync_documents 処理中の同一 KEY への upsert_documents / delete_index がブロックされる（SYN-08）
+//   11. sync_documents 処理中の同一 KEY への upsert_documents / trash_index がブロックされる（SYN-08）
 //   12. sync_documents 処理中の同一 KEY への TTL/LRU 相当（WithKeyLock+DeleteKey）がブロックされる（SYN-08）
 //   13. root context cancel 済みで sync_documents を実行するとジョブが failed（GC-05）
 //   14. MCP リクエスト context を cancel してもジョブは done まで完走する（GC-05 再発防止）
@@ -58,7 +58,7 @@ func newRootCtxHarness(t *testing.T, rootCtx context.Context) *testHarness {
 	fe := &fakeFetcher{}
 	ch := chunker.New(1500)
 	pipe := search.New(st, &SearchEmbedderAdapter{Inner: emb}, nil, search.Config{})
-	h := New(rootCtx, st, ch, emb, fe, pipe)
+	h := New(rootCtx, st, ch, emb, fe, pipe, testTrashRetentionDays)
 	return &testHarness{t: t, store: st, embedder: emb, fetcher: fe, handlers: h}
 }
 
@@ -704,7 +704,7 @@ func TestScheduleDeleteSeries_SYN04_ClearedBySyncDocuments(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// 項目 11: SYN-08 — sync 処理中の同一 KEY への upsert / delete_index のブロック
+// 項目 11: SYN-08 — sync 処理中の同一 KEY への upsert / trash_index のブロック
 // -----------------------------------------------------------------------
 
 // startGatedSync はマーカー入り内容を含む sync_documents を投入し、ジョブ goroutine が
@@ -777,11 +777,11 @@ func TestSyncIntegration_SYN08_SyncBlocksUpsert(t *testing.T) {
 	}
 }
 
-// TestSyncIntegration_SYN08_SyncBlocksDeleteIndex は、sync_documents 処理中に同一 KEY への
-// delete_index がブロックされることを検証する（最重要回帰テスト）。ブロックされずに割り込むと、
-// 削除中の KEY へ sync が不整合データを書き込む・存在しない KEY への書き込みでエラーになる、
+// TestSyncIntegration_SYN08_SyncBlocksTrashIndex は、sync_documents 処理中に同一 KEY への
+// trash_index がブロックされることを検証する（最重要回帰テスト）。ブロックされずに割り込むと、
+// ゴミ箱投入中の KEY へ sync が不整合データを書き込む・存在しない KEY への書き込みでエラーになる、
 // のいずれかが再発する。
-func TestSyncIntegration_SYN08_SyncBlocksDeleteIndex(t *testing.T) {
+func TestSyncIntegration_SYN08_SyncBlocksTrashIndex(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
@@ -793,15 +793,15 @@ func TestSyncIntegration_SYN08_SyncBlocksDeleteIndex(t *testing.T) {
 		{Path: "gate.md", Content: "# H\n" + keyLockGateMarker + " body"},
 	})
 
-	// B: 同一 KEY への delete_index は sync 完了までブロックされる
+	// B: 同一 KEY への trash_index は sync 完了までブロックされる
 	bDone := make(chan error, 1)
 	go func() {
-		_, _, err := h.handlers.handleDeleteIndex(ctx, nil, DeleteIndexInput{Key: "K"})
+		_, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"})
 		bDone <- err
 	}()
 	select {
 	case err := <-bDone:
-		t.Fatalf("sync 処理中に delete_index が完了した（SYN-08 排他が効いていない）err=%v", err)
+		t.Fatalf("sync 処理中に trash_index が完了した（SYN-08 排他が効いていない）err=%v", err)
 	case <-time.After(100 * time.Millisecond):
 		// ブロックされている（期待どおり）
 	}
@@ -813,19 +813,27 @@ func TestSyncIntegration_SYN08_SyncBlocksDeleteIndex(t *testing.T) {
 	select {
 	case err := <-bDone:
 		if err != nil {
-			t.Errorf("delete_index error: %v", err)
+			t.Errorf("trash_index error: %v", err)
 		}
 	case <-time.After(keyLockITTimeout):
-		t.Fatal("sync 完了後も delete_index が完了しない")
+		t.Fatal("sync 完了後も trash_index が完了しない")
 	}
 
-	// 直列化の順序検証: sync（書き込み）→ delete_index の順で実行されたなら KEY ごと消えている
+	// 直列化の順序検証: TrashKey は実データを削除しないため、sync の書き込みは
+	// そのまま残り、KEY はゴミ箱状態になっている。
 	exists, err := h.store.KeyExists(ctx, "K")
 	if err != nil {
 		t.Fatalf("KeyExists: %v", err)
 	}
-	if exists {
-		t.Error("delete_index 完了後も KEY が存在する（sync の書き込みが delete に割り込んだ）")
+	if !exists {
+		t.Error("trash_index 後に KEY が消滅している（TrashKey は実データを削除しないはず）")
+	}
+	trashed, terr := h.store.IsTrashed(ctx, "K")
+	if terr != nil {
+		t.Fatalf("IsTrashed: %v", terr)
+	}
+	if !trashed {
+		t.Error("trash_index 完了後も IsTrashed = false")
 	}
 }
 
