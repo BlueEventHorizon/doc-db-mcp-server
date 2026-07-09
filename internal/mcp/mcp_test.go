@@ -746,7 +746,7 @@ func TestQuery_RejectedWhenKeyTrashed(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// list_indexes / manage_index
+// list_indexes
 // -----------------------------------------------------------------------
 
 func TestListIndexes(t *testing.T) {
