@@ -19,7 +19,6 @@
       "Bash(git config *)",
       "Bash(git rebase *)",
 
-      "Bash(chmod *)",
       "Bash(chown *)",
       "Bash(sudo *)",
       "Bash(kill *)",
@@ -160,6 +159,7 @@
       "Bash(gh issue create *)",
       "Bash(gh issue edit *)",
 
+      "Bash(chmod *)",
       "Bash(rm *)",
       "Bash(cp *)",
       "Bash(mv *)",
