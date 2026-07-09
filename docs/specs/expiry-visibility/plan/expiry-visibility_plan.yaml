@@ -11,31 +11,31 @@ requirements_traceability:
   - requirement_id: FNC-007
     title: TTL/LRU 自動削除の廃止
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: FNC-008
     title: KEY メタデータ提供の拡充
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: FNC-009
     title: ゴミ箱投入
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: FNC-010
     title: ゴミ箱一覧の提示
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: FNC-011
     title: 復活
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: FNC-012
     title: 自動最終処分
     design_id: DES-003
-    status: pending
+    status: completed
   - requirement_id: FNC-013
     title: orphan record のゴミ箱統合
     design_id: DES-003
-    status: pending
+    status: completed
 
 design_traceability:
   - design_id: DES-003
@@ -313,7 +313,7 @@ tasks:
   - task_id: TASK-011
     title: 統合テストと関連ドキュメントの更新
     priority: 65
-    status: pending
+    status: completed
     design_id: DES-003
     depends_on:
       - TASK-005

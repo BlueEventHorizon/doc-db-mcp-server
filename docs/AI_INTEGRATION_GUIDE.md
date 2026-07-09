@@ -58,7 +58,9 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 
 - **粒度**: 一緒に検索したい範囲を 1 KEY にまとめる。横断検索したくないものは別 KEY に
 - **命名**: human readable。クライアント側で意味が分かる名前
-- **数の上限**: なし (ただし `expiry.max_chunks` 超過時に LRU で古い KEY が削除される)
+- **数の上限**: なし。doc-db は「削除すべきかどうか」の判定を一切しない (FNC-007)。
+  不要な KEY はユーザーが `trash_index` で明示的にゴミ箱投入した場合のみ、
+  保持期間経過後に自動最終処分される
 
 ### 2.2 series
 
@@ -105,20 +107,21 @@ Rerank 入力に正解が含まれていなければ救えません。`mode=rera
 
 ## 3. 提供ツール (MCP)
 
-doc-db は 10 個の MCP ツールを提供します。詳細スキーマは `tools/list` で取得できます。
+doc-db は 11 個の MCP ツールを提供します。詳細スキーマは `tools/list` で取得できます。
 
-| Tool                         | 目的                                                                                     |
-| ---------------------------- | ---------------------------------------------------------------------------------------- |
-| **`upsert_documents`**       | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)                               |
-| **`sync_documents`**         | desired-state 同期 (v0.2.0+)。完全な現在ファイル一覧を渡し、削除にも追従する非同期ジョブ |
-| **`get_sync_status`**        | sync ジョブの進捗・完了・エラーを job_id でポーリング (v0.2.0+)                          |
-| **`delete_documents`**       | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須)                            |
-| **`delete_series`**          | KEY 内の全 record から指定 series を除去 (branch cleanup 用途、`paths` 不要)             |
-| **`schedule_delete_series`** | series 全体の削除予約 (v0.2.0+)。即時削除せず次回起動時に物理削除・取り消し可能          |
-| **`query`**                  | 候補プールを検索 (3 signal 並列)                                                         |
-| **`list_indexes`**           | 登録済み KEY の一覧 + メタ情報                                                           |
-| **`delete_index`**           | KEY 全体を物理削除 (破壊的)                                                              |
-| **`manage_index`**           | KEY ごとの廃棄ポリシー (TTL / max_chunks) 設定                                           |
+| Tool                         | 目的                                                                                         |
+| ---------------------------- | -------------------------------------------------------------------------------------------- |
+| **`upsert_documents`**       | ドキュメントを KEY に追加・更新 (チャンク分割 + embedding)                                   |
+| **`sync_documents`**         | desired-state 同期 (v0.2.0+)。完全な現在ファイル一覧を渡し、削除にも追従する非同期ジョブ     |
+| **`get_sync_status`**        | sync ジョブの進捗・完了・エラーを job_id でポーリング (v0.2.0+)                              |
+| **`delete_documents`**       | 特定 path 群のドキュメントから series を除去 (`paths[]` 必須)                                |
+| **`delete_series`**          | KEY 内の全 record から指定 series を除去 (branch cleanup 用途、`paths` 不要)                 |
+| **`schedule_delete_series`** | series 全体の削除予約 (v0.2.0+)。即時削除せず次回起動時に物理削除・取り消し可能              |
+| **`query`**                  | 候補プールを検索 (3 signal 並列)                                                             |
+| **`list_indexes`**           | 登録済み KEY の一覧 + メタ情報 (chunk 数を含む。ゴミ箱状態の KEY は除外)                     |
+| **`trash_index`**            | KEY をゴミ箱投入 (即時物理削除はしない。保持期間経過後に自動最終処分。`delete_index` を置換) |
+| **`list_trashed_indexes`**   | ゴミ箱内の KEY 一覧 + 自動最終処分までの残り時間を取得                                       |
+| **`restore_index`**          | ゴミ箱内の KEY を自動最終処分前に利用可能な状態へ戻す                                        |
 
 **`upsert_documents` と `sync_documents` の使い分け**:
 
@@ -395,8 +398,10 @@ Layer 2 の AI agent が **本文を読んで判定** する設計なので、�
 
 - 同一 content の再 upsert は再 embedding スキップ (DIF-02)
 - 内容変更 (hash 不一致) でのみ embedding API が呼ばれる
-- 不要になった KEY は `delete_index` で物理削除可
-- `expiry.max_chunks` 上限超過で LRU 自動削除も働く
+- 不要になった KEY は `trash_index` でゴミ箱投入すると、保持期間 (`trash.retention_days`、
+  デフォルト 3 日) 経過後に自動的に物理削除される。保持期間内は
+  `restore_index` で復活できる。TTL / LRU による自動削除判定は行わない
+  (FNC-007。doc-db は「削除すべきかどうか」の判定をしない)
 
 ---
 
@@ -404,7 +409,7 @@ Layer 2 の AI agent が **本文を読んで判定** する設計なので、�
 
 doc-db は「クライアントが自分の文書一覧を管理し、サーバーへ同期・検索する」設計のため、
 運用にはクライアント実装が必要になる。本リポジトリの
-[`.claude/skills/`](../.claude/skills/README.md) に **Claude Code 用 SKILL 5 種の
+[`.claude/skills/`](../.claude/skills/README.md) に **Claude Code 用 SKILL 6 種の
 参考実装**（Python 3.9+ stdlib のみ・MCP 登録不要）を同梱している。
 独自クライアントを作る場合の基本形は次の 3 段:
 

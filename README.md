@@ -5,9 +5,9 @@
 Markdown ドキュメントを **Embedding + BM25 + 全文 GREP** の 3 signal で横断検索し、
 必要に応じて **LLM Rerank** で並べ替える汎用 MCP サーバー（Streamable HTTP transport）。
 
-**現バージョン: v0.2.0**（`VERSION` / `CHANGELOG.md` が canonical）。
-基盤コンポーネント・MCP ツール 10 種・3 signal 検索パイプライン・LLM Rerank・
-Homebrew 自家 tap 配布まで実装済み。
+基盤コンポーネント・MCP ツール群・3 signal 検索パイプライン・LLM Rerank・
+Homebrew 自家 tap 配布まで実装済み（現バージョンは `VERSION` / `CHANGELOG.md` が
+canonical）。
 
 ## 何の問題を解決するのか
 
@@ -38,18 +38,18 @@ LLM Rerank は **ranking 最適化のためのオプション**であり、recal
 
 ## 主な特徴
 
-| 特徴                    | 説明                                                                          |
-| ----------------------- | ----------------------------------------------------------------------------- |
-| **3 signal 並列検索**   | Embedding / BM25 / 全文 GREP を並列実行し `origin_signals` を各 chunk に付与  |
-| **ID パターン対応**     | `FNC-001` / `DES-028` のような規格 ID は BM25 substring + GREP で確実にマッチ |
-| **LLM Rerank（任意）**  | 3 signal で集めた候補を gpt-4o-mini 等で再ランク（`mode=rerank`）             |
-| **local_path 経路**     | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+） |
-| **重複 Embedding 排除** | 同一内容は hash で検出し Embedding を共有。branch/series を低コストで多重管理 |
-| **series 削除**         | branch 単位で `delete_series` により record から除去（v0.1.9+）               |
-| **desired-state 同期**  | `sync_documents` で削除ファイルにも追従（欠落 path を即時切り離し。v0.2.0+）  |
-| **シングルバイナリ**    | pure-Go SQLite。Homebrew tap で 1 コマンド導入                                |
-| **TTL / LRU 自動廃棄**  | 期限切れ・容量超過のインデックスを Expiry ワーカーが自動削除                  |
-| **SSRF 防御**           | URL 登録はプライベート IP をデフォルトで拒否                                  |
+| 特徴                    | 説明                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| **3 signal 並列検索**   | Embedding / BM25 / 全文 GREP を並列実行し `origin_signals` を各 chunk に付与                            |
+| **ID パターン対応**     | `FNC-001` / `DES-028` のような規格 ID は BM25 substring + GREP で確実にマッチ                           |
+| **LLM Rerank（任意）**  | 3 signal で集めた候補を gpt-4o-mini 等で再ランク（`mode=rerank`）                                       |
+| **local_path 経路**     | 大容量 Markdown は本文送信なしでサーバー側から絶対パスで読み込み可（v0.1.8+）                           |
+| **重複 Embedding 排除** | 同一内容は hash で検出し Embedding を共有。branch/series を低コストで多重管理                           |
+| **series 削除**         | branch 単位で `delete_series` により record から除去（v0.1.9+）                                         |
+| **desired-state 同期**  | `sync_documents` で削除ファイルにも追従（欠落 path を即時切り離し。v0.2.0+）                            |
+| **シングルバイナリ**    | pure-Go SQLite。Homebrew tap で 1 コマンド導入                                                          |
+| **ゴミ箱経由の削除**    | KEY 削除は即時物理削除せずゴミ箱投入。保持期間（デフォルト 3 日）経過後に自動最終処分。期間内は復活可能 |
+| **SSRF 防御**           | URL 登録はプライベート IP をデフォルトで拒否                                                            |
 
 ## アーキテクチャ
 
@@ -60,8 +60,8 @@ flowchart TD
     Client["MCP クライアント<br/>(Claude Code / Desktop 等)"]
     Client -->|"Streamable HTTP (MCP 2025-03)<br/>http://localhost:58080/mcp"| Tools
 
-    subgraph "MCP Server (go-sdk) — 10 tools"
-        Tools["upsert_documents / delete_documents / delete_series<br/>query / list_indexes / delete_index / manage_index<br/>sync_documents / get_sync_status / schedule_delete_series"]
+    subgraph "MCP Server (go-sdk) — 11 tools"
+        Tools["upsert_documents / delete_documents / delete_series<br/>query / list_indexes / trash_index / list_trashed_indexes / restore_index<br/>sync_documents / get_sync_status / schedule_delete_series"]
         Chunker["Chunker<br/>(見出し境界チャンク分割)"]
         Embedder["Embedder<br/>(OpenAI Embedding API)"]
         SearchPipeline["Search Pipeline<br/>emb + lex + grep 並列"]
@@ -77,7 +77,7 @@ flowchart TD
         SearchPipeline --> Store
     end
 
-    Expiry["Expiry Worker<br/>(TTL / LRU 自動廃棄)"] -.->|"廃棄"| Store
+    Trash["Trash Worker<br/>(ゴミ箱の自動最終処分)"] -.->|"保持期間超過分を物理削除"| Store
 ```
 
 `query` 内部の 3 signal 検索パイプライン（PHIL-01 の詳細）:
@@ -102,13 +102,13 @@ flowchart LR
 | パッケージ          | 責務                                                   |
 | ------------------- | ------------------------------------------------------ |
 | `cmd/docdb`         | エントリポイント・設定読み込み・配線                   |
-| `internal/mcp`      | MCP ツールハンドラ（10 種）                            |
+| `internal/mcp`      | MCP ツールハンドラ（11 種）                            |
 | `internal/search`   | 3 signal 検索パイプライン（emb / lex / grep / rerank） |
 | `internal/reranker` | OpenAI Chat Completions ベース LLM Rerank              |
 | `internal/chunker`  | Markdown → 見出し境界チャンク分割                      |
 | `internal/embedder` | OpenAI Embedding API（部分失敗対応）                   |
 | `internal/fetcher`  | URL → コンテンツ取得（SSRF 防御付き）                  |
-| `internal/expiry`   | TTL / LRU 自動廃棄ワーカー                             |
+| `internal/trash`    | ゴミ箱（KEY・orphan record）自動最終処分ワーカー       |
 | `internal/store`    | SQLite 読み書き・WAL・アトミック AppendAndCleanSeries  |
 | `internal/config`   | YAML 設定ローダー（`~/.doc-db/doc-db.yaml`）           |
 
@@ -130,7 +130,7 @@ doc-db --version
 git clone https://github.com/BlueEventHorizon/doc-db-mcp-server.git
 cd doc-db-mcp-server
 make build            # ldflags 経由で VERSION を注入
-./doc-db --version    # 0.2.0
+./doc-db --version    # VERSION ファイルの値が表示される
 ```
 
 ## セットアップ
@@ -168,10 +168,9 @@ bm25:
 fetcher:
   timeout_seconds: 30
   allow_private: false
-expiry:
-  ttl_days: 30
-  max_chunks: 10000
-  interval_seconds: 3600
+trash:
+  retention_days: 3 # ゴミ箱投入から自動最終処分までの保持日数
+  interval_seconds: 3600 # internal/trash.Worker のチェック間隔
 log:
   path: "~/.doc-db/doc-db.log" # 省略可（省略時デフォルト値と同じ）。"stdout"/"stderr" も指定可
   level: "info" # debug/info/warn/error
@@ -229,9 +228,10 @@ claude mcp add --transport http -s user doc-db http://localhost:58080/mcp
 | `delete_documents`       | 指定 series の特定 path ドキュメントを削除                                                                                                           |
 | `delete_series`          | KEY 内の全 record から指定 series を一括除去（v0.1.9+、branch cleanup 用）                                                                           |
 | `query`                  | 3 signal 検索（Embedding + BM25 + GREP）＋任意 Rerank                                                                                                |
-| `list_indexes`           | 登録済み KEY 一覧を取得                                                                                                                              |
-| `delete_index`           | KEY 全体を削除                                                                                                                                       |
-| `manage_index`           | KEY のメタ情報操作（TTL / max_chunks 等）                                                                                                            |
+| `list_indexes`           | 登録済み KEY 一覧を取得（chunk 数を含む。ゴミ箱状態の KEY は除外）                                                                                   |
+| `trash_index`            | KEY をゴミ箱投入（即時物理削除はしない。保持期間経過後に自動最終処分。`delete_index` を置換）                                                        |
+| `list_trashed_indexes`   | 現在ゴミ箱に入っている KEY 一覧と自動最終処分までの残り時間を取得                                                                                    |
+| `restore_index`          | ゴミ箱内の KEY を自動最終処分前に利用可能な状態へ戻す                                                                                                |
 | `sync_documents`         | desired-state 同期（v0.2.0+）。documents を完全な現在状態とみなし、一覧に無い既存 path を series から即時切り離す。job_id を即時返却する非同期ジョブ |
 | `get_sync_status`        | sync ジョブの進捗・完了・エラーを job_id でポーリング（v0.2.0+）                                                                                     |
 | `schedule_delete_series` | series 全体の削除予約（v0.2.0+）。即時削除せず次回起動時に物理削除。再 sync で取り消し可能                                                           |
@@ -316,7 +316,7 @@ record は物理削除予約として記録され、次回サーバー起動時�
 
 doc-db は「クライアント側が自分の文書一覧を管理し、サーバーへ同期・検索する」設計のため、
 実際の運用にはクライアント実装が必要になる。本リポジトリの
-[`.claude/skills/`](.claude/skills/README.md) に **Claude Code 用の SKILL 5 種を
+[`.claude/skills/`](.claude/skills/README.md) に **Claude Code 用の SKILL 6 種を
 参考実装として同梱**している:
 
 | SKILL                      | 役割                                                                     |
@@ -326,6 +326,7 @@ doc-db は「クライアント側が自分の文書一覧を管理し、サー�
 | `/query-db-specs`          | 仕様文書を 3 signal 検索                                                 |
 | `/query-db-rules`          | ルール文書を 3 signal 検索                                               |
 | `/delete-db-series <name>` | 指定 series（Git branch 等）を一括除去（branch cleanup）                 |
+| `/manage-db-indexes`       | KEY メタデータ提示・ゴミ箱投入・一覧確認・復活を対話的に行う             |
 
 特徴:
 
