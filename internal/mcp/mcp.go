@@ -50,11 +50,19 @@ type Handlers struct {
 	// syncJobsMu で保護する。メモリ保持のみで永続化しない。実装は sync.go。
 	syncJobsMu sync.Mutex
 	syncJobs   map[string]*SyncJobStatus
+
+	// trashRetentionDays はゴミ箱投入から自動最終処分までの保持日数
+	// （doc-db.yaml の trash.retention_days、internal/trash.Worker と同一のソース）。
+	// list_trashed_indexes の remaining_seconds 算出に使う（DES-003 §3.2 設計判断:
+	// 「Store 層は判定を持たず事実のみを返す」ため、この計算は呼び出し元 = ハンドラ層の責務）。
+	trashRetentionDays int
 }
 
 // New は Handlers を初期化する。
 // rootCtx にはサーバーシャットダウンで cancel される長寿命の root context
-// （expiry.Worker.Start に渡すものと同じ）を渡すこと（GC-05）。
+// （trash.Worker.Start に渡すものと同じ）を渡すこと（GC-05）。
+// trashRetentionDays には cfg.Trash.RetentionDays を渡すこと
+// （list_trashed_indexes の remaining_seconds 算出に使う）。
 func New(
 	rootCtx context.Context,
 	st *store.Store,
@@ -62,15 +70,17 @@ func New(
 	emb embedder.Embedder,
 	fe fetcher.Fetcher,
 	sp *search.Pipeline,
+	trashRetentionDays int,
 ) *Handlers {
 	return &Handlers{
-		rootCtx:  rootCtx,
-		store:    st,
-		chunker:  ch,
-		embedder: emb,
-		fetcher:  fe,
-		search:   sp,
-		syncJobs: make(map[string]*SyncJobStatus),
+		rootCtx:            rootCtx,
+		store:              st,
+		chunker:            ch,
+		embedder:           emb,
+		fetcher:            fe,
+		search:             sp,
+		syncJobs:           make(map[string]*SyncJobStatus),
+		trashRetentionDays: trashRetentionDays,
 	}
 }
 
@@ -197,12 +207,50 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
 	}, h.handleListIndexes)
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name: "delete_index",
-		Description: `指定 KEY のインデックスを完全削除する (全 series / 全チャンク / 全ベクトル)。
+		Name: "trash_index",
+		Description: `指定 KEY をゴミ箱状態にする (即時物理削除はしない)。
 
-破壊的操作のため使用注意。delete_documents が series 単位の削除なのに対し、
-delete_index は KEY 全体を消す。プロジェクト終了時のクリーンアップ等で使う。`,
-	}, h.handleDeleteIndex)
+【delete_index (旧) との違い】
+  旧 delete_index は呼んだ瞬間に全 series / 全チャンク / 全ベクトルを物理削除したが、
+  trash_index は trashed_at を記録するだけで実データには一切触れない。
+  実データは doc-db.yaml の trash.retention_days (デフォルト 3日) 経過後に
+  internal/trash.Worker が自動的に最終処分する。
+
+【動作】
+  - ゴミ箱に入った KEY は list_indexes から除外される (list_trashed_indexes でのみ確認可)
+  - 保持期間内であれば restore_index で復活できる (実データはそのまま残っている)
+
+【未実装 (計画中)】
+  ゴミ箱状態の KEY への query / upsert_documents / sync_documents / delete_documents /
+  schedule_delete_series の拒否は本バージョンでは未実装。誤って書き込み・参照できる。
+
+【エラー】
+  存在しない KEY、既にゴミ箱状態の KEY (多重投入) はエラーになる。`,
+	}, h.handleTrashIndex)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "list_trashed_indexes",
+		Description: `現在ゴミ箱状態の KEY 一覧を返す (trash_index 済みの KEY)。
+
+返り値の各エントリ:
+  - key, trashed_at (RFC3339)
+  - remaining_seconds (自動最終処分までの残り秒数。保持期間を過ぎていて
+    まだ internal/trash.Worker の次回実行が来ていない場合は 0)
+
+list_indexes はゴミ箱状態の KEY を含まないため、ゴミ箱内 KEY を確認するには
+本ツールを使う。復活するなら restore_index を使う。`,
+	}, h.handleListTrashedIndexes)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "restore_index",
+		Description: `ゴミ箱状態の KEY を利用可能な状態へ戻す (自動最終処分前に限る)。
+
+復活した KEY は trash_index 実行前と同じデータ (record / chunk / embedding) が
+そのまま利用できる (実データはゴミ箱投入時点から一切変更されていない)。
+
+【エラー】
+  存在しない KEY、ゴミ箱に入っていない KEY (未投入) を指定した場合はエラーになる。`,
+	}, h.handleRestoreIndex)
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "manage_index",
@@ -777,42 +825,6 @@ func (h *Handlers) handleListIndexes(
 		return nil, ListIndexesResult{}, err
 	}
 	return nil, ListIndexesResult{Indexes: keys}, nil
-}
-
-// -----------------------------------------------------------------------
-// delete_index (MNG-02)
-// -----------------------------------------------------------------------
-
-// DeleteIndexInput は delete_index の入力。
-type DeleteIndexInput struct {
-	Key string `json:"key" jsonschema:"削除する KEY。指定 KEY の全 series / 全チャンク / 全ベクトルが物理削除される (破壊的)。"`
-}
-
-// DeleteIndexResult は delete_index の出力。
-type DeleteIndexResult struct {
-	Deleted bool `json:"deleted" jsonschema:"削除に成功したか。"`
-}
-
-func (h *Handlers) handleDeleteIndex(
-	ctx context.Context, _ *mcpsdk.CallToolRequest, in DeleteIndexInput,
-) (res *mcpsdk.CallToolResult, out DeleteIndexResult, err error) {
-	if in.Key == "" {
-		return nil, DeleteIndexResult{}, errors.New("key は必須")
-	}
-	start := time.Now()
-	slog.Info("delete_index start", "key", in.Key)
-	defer func() {
-		logHandlerDone("delete_index done", err, start, "key", in.Key, "deleted", out.Deleted)
-	}()
-
-	// KEY 単位排他（SYN-08）: DeleteKey 呼び出しを WithKeyLock で囲む（DES-001 §4.3）。
-	if derr := h.store.WithKeyLock(ctx, in.Key, func() error {
-		return h.store.DeleteKey(ctx, in.Key)
-	}); derr != nil {
-		err = fmt.Errorf("delete key: %w", derr)
-		return nil, DeleteIndexResult{}, err
-	}
-	return nil, DeleteIndexResult{Deleted: true}, nil
 }
 
 // -----------------------------------------------------------------------

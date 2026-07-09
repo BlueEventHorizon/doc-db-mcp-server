@@ -271,7 +271,7 @@ func run(ctx context.Context) error {
 		Name:    "doc-db",
 		Version: version,
 	}, nil)
-	handlers := docdbmcp.New(ctx, st, ch, emb, fe, pipeline)
+	handlers := docdbmcp.New(ctx, st, ch, emb, fe, pipeline, cfg.Trash.RetentionDays)
 	handlers.Register(mcpServer)
 
 	// Streamable HTTP transport（NFR-03 / PRE-02）

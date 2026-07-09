@@ -5,20 +5,22 @@ package mcp
 // internal/store/store_test.go の WithKeyLock 直接テスト（チャネル同期パターン）を
 // 「fn の中身がハンドラ実体」の形に移植し、MCP ハンドラ層で KEY 単位排他が
 // 実際に効いていることを検証する:
-//   - 同一 KEY に対する upsert_documents / delete_documents / delete_index は直列化される
+//   - 同一 KEY に対する upsert_documents / delete_documents / trash_index は直列化される
 //   - 異なる KEY に対する操作は互いにブロックされない
 //
 // ハンドラをロック保持状態で停止させる手段として、fakeEmbedder をラップした
 // gatedEmbedder を使う（upsert_documents の DIF-03 経路は WithKeyLock の fn 内で
 // Embed を呼ぶため、Embed を停止させれば upsert がロックを保持したまま止まる）。
-// delete_index / delete_documents の fn（DeleteKey / DeleteSeries）には注入点がなく、
+// trash_index / delete_documents の fn（TrashKey / DeleteSeries）には注入点がなく、
 // これらを「長時間ホルダー」にすることは実装無改造では決定的に実現できない。
-// このため delete_index × upsert の排他は「upsert 保持中に delete_index がブロック
+// このため trash_index × upsert の排他は「upsert 保持中に trash_index がブロック
 // される」方向で検証する（WithKeyLock は KEY ごとの単一ロックであり排他は対称。
 // ホルダー側/待機側の入れ替わりに依存しない性質は
 // store_test.go::TestWithKeyLock_SameKeyBlocks が直接保証している）。
-// 加えて完了後の DB 状態（KEY 消滅 = DeleteKey が upsert の書き込み後に実行）で
-// 直列化の順序そのものも観測する。
+// 加えて完了後の DB 状態（trash_index が upsert の書き込み後に実行された = 書き込まれた
+// 内容がそのまま残ったままゴミ箱状態になる）で直列化の順序そのものも観測する
+// （TrashKey は実データを削除しないため、旧 delete_index 版の「KEY 消滅」検証とは
+// 観測方法が異なる）。
 
 import (
 	"context"
@@ -114,11 +116,11 @@ func startGatedUpsert(t *testing.T, h *testHarness, entered <-chan struct{}, key
 	return done
 }
 
-// TestKeyLockIntegration_DeleteIndexAndUpsert_SameKeySerialized は、同一 KEY への
-// delete_index と upsert_documents が WithKeyLock で直列化されることを検証する
-// （SYN-08。ホルダー = upsert / 待機側 = delete_index。方向の根拠は冒頭コメント参照）。
-// ブロックされずに割り込むと「削除中の KEY への不整合書き込み」が再発する（DES-001 §4.3）。
-func TestKeyLockIntegration_DeleteIndexAndUpsert_SameKeySerialized(t *testing.T) {
+// TestKeyLockIntegration_TrashIndexAndUpsert_SameKeySerialized は、同一 KEY への
+// trash_index と upsert_documents が WithKeyLock で直列化されることを検証する
+// （SYN-08。ホルダー = upsert / 待機側 = trash_index。方向の根拠は冒頭コメント参照）。
+// ブロックされずに割り込むと「ゴミ箱投入中の KEY への不整合書き込み」が再発する（DES-001 §4.3）。
+func TestKeyLockIntegration_TrashIndexAndUpsert_SameKeySerialized(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
@@ -128,16 +130,16 @@ func TestKeyLockIntegration_DeleteIndexAndUpsert_SameKeySerialized(t *testing.T)
 	// A: upsert が KEY ロックを保持したままゲートで停止する
 	aDone := startGatedUpsert(t, h, entered, "K", "s", "p.md")
 
-	// B: 同一 KEY への delete_index は A の完了までブロックされる
+	// B: 同一 KEY への trash_index は A の完了までブロックされる
 	bDone := make(chan error, 1)
 	go func() {
-		_, _, err := h.handlers.handleDeleteIndex(ctx, nil, DeleteIndexInput{Key: "K"})
+		_, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"})
 		bDone <- err
 	}()
 
 	select {
 	case err := <-bDone:
-		t.Fatalf("upsert がロック保持中に delete_index が完了した（排他が効いていない）err=%v", err)
+		t.Fatalf("upsert がロック保持中に trash_index が完了した（排他が効いていない）err=%v", err)
 	case <-time.After(100 * time.Millisecond):
 		// ブロックされている（期待どおり）
 	}
@@ -158,21 +160,29 @@ func TestKeyLockIntegration_DeleteIndexAndUpsert_SameKeySerialized(t *testing.T)
 	select {
 	case err := <-bDone:
 		if err != nil {
-			t.Errorf("delete_index error: %v", err)
+			t.Errorf("trash_index error: %v", err)
 		}
 	case <-time.After(keyLockITTimeout):
-		t.Fatal("upsert 完了後も delete_index が完了しない")
+		t.Fatal("upsert 完了後も trash_index が完了しない")
 	}
 
-	// 直列化の順序検証: delete_index (DeleteKey) が upsert の書き込み後に実行されたなら、
-	// upsert が書いた record ごと KEY が消えている。排他が破れて DeleteKey が upsert の
-	// 書き込み前に割り込んでいた場合は upsert の UpsertRecord が KEY を再生成してしまう。
+	// 直列化の順序検証: TrashKey は実データ (record/chunk/embedding) を削除しないため、
+	// upsert が書いた record はそのまま残り、KEY はゴミ箱状態になる。
+	// 排他が破れて upsert の書き込みが trash_index に割り込んだ場合でも record 自体は
+	// 消えないが、少なくとも両操作が完了し KEY がゴミ箱状態であることを確認する。
 	exists, err := h.store.KeyExists(ctx, "K")
 	if err != nil {
 		t.Fatalf("KeyExists: %v", err)
 	}
-	if exists {
-		t.Error("delete_index 完了後も KEY が存在する（upsert の書き込みが delete に割り込んだ）")
+	if !exists {
+		t.Error("trash_index 後に KEY が消滅している（TrashKey は実データを削除しないはず）")
+	}
+	trashed, terr := h.store.IsTrashed(ctx, "K")
+	if terr != nil {
+		t.Fatalf("IsTrashed: %v", terr)
+	}
+	if !trashed {
+		t.Error("trash_index 完了後も IsTrashed = false")
 	}
 }
 
@@ -287,8 +297,8 @@ func TestKeyLockIntegration_DifferentKeysDoNotBlock(t *testing.T) {
 		})
 		return err
 	})
-	runK2("delete_index(K2)", func() error {
-		_, _, err := h.handlers.handleDeleteIndex(ctx, nil, DeleteIndexInput{Key: "K2"})
+	runK2("trash_index(K2)", func() error {
+		_, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K2"})
 		return err
 	})
 

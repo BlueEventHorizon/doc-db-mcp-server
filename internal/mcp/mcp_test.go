@@ -22,6 +22,10 @@ import (
 
 const testDim = 3
 
+// testTrashRetentionDays はテストで使う trash.retention_days の固定値
+// (list_trashed_indexes の remaining_seconds 算出テストで参照する)。
+const testTrashRetentionDays = 3
+
 type fakeEmbedder struct {
 	// fixed が non-nil なら全テキストに同じベクトルを返す。
 	fixed []float32
@@ -97,7 +101,7 @@ func newHarness(t *testing.T) *testHarness {
 	fe := &fakeFetcher{}
 	ch := chunker.New(1500)
 	pipe := search.New(st, &SearchEmbedderAdapter{Inner: emb}, nil, search.Config{})
-	h := New(context.Background(), st, ch, emb, fe, pipe)
+	h := New(context.Background(), st, ch, emb, fe, pipe, testTrashRetentionDays)
 	return &testHarness{t: t, store: st, embedder: emb, fetcher: fe, handlers: h}
 }
 
@@ -712,7 +716,7 @@ func TestQuery_ValidationErrors(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// list_indexes / delete_index / manage_index
+// list_indexes / manage_index
 // -----------------------------------------------------------------------
 
 func TestListIndexes(t *testing.T) {
@@ -786,7 +790,11 @@ func TestListIndexes_ExcludesTrashedKeys(t *testing.T) {
 	}
 }
 
-func TestDeleteIndex(t *testing.T) {
+// -----------------------------------------------------------------------
+// trash_index / list_trashed_indexes / restore_index (TASK-007, DES-003)
+// -----------------------------------------------------------------------
+
+func TestTrashIndex(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
@@ -795,24 +803,214 @@ func TestDeleteIndex(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, out, err := h.handlers.handleDeleteIndex(ctx, nil, DeleteIndexInput{Key: "K"})
+
+	_, out, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.Deleted {
-		t.Error("Deleted = false")
+	if !out.Trashed {
+		t.Error("Trashed = false")
 	}
-	keys, _ := h.store.ListKeys(ctx)
-	if len(keys) != 0 {
-		t.Errorf("len = %d, want 0 after delete", len(keys))
+	if out.Key != "K" {
+		t.Errorf("Key = %q, want K", out.Key)
+	}
+	if out.TrashedAt == "" {
+		t.Error("TrashedAt is empty")
+	}
+
+	// 実データは物理削除されず残っている (list_indexes からは除外される)。
+	trashed, terr := h.store.IsTrashed(ctx, "K")
+	if terr != nil {
+		t.Fatal(terr)
+	}
+	if !trashed {
+		t.Error("IsTrashed = false, want true after trash_index")
 	}
 }
 
-func TestDeleteIndex_MissingKey(t *testing.T) {
+func TestTrashIndex_MissingKey(t *testing.T) {
 	h := newHarness(t)
-	_, _, err := h.handlers.handleDeleteIndex(context.Background(), nil, DeleteIndexInput{Key: ""})
+	_, _, err := h.handlers.handleTrashIndex(context.Background(), nil, TrashIndexInput{Key: ""})
 	if err == nil {
 		t.Fatal("want error for empty key")
+	}
+}
+
+func TestTrashIndex_NonExistentKey(t *testing.T) {
+	h := newHarness(t)
+	_, _, err := h.handlers.handleTrashIndex(context.Background(), nil, TrashIndexInput{Key: "no-such-key"})
+	if err == nil {
+		t.Fatal("want error for non-existent key")
+	}
+}
+
+func TestTrashIndex_DoubleTrashIsError(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"}); err != nil {
+		t.Fatal(err)
+	}
+	// 多重投入はエラー。
+	_, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"})
+	if err == nil {
+		t.Fatal("want error for double trash_index (already trashed)")
+	}
+}
+
+func TestListTrashedIndexes(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	for _, k := range []string{"K1", "K2"} {
+		if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+			Key: k, Series: "s",
+			Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// K2 のみゴミ箱投入。K1 は Active のままなので一覧に出ない。
+	if _, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out, err := h.handlers.handleListTrashedIndexes(ctx, nil, ListTrashedIndexesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Indexes) != 1 {
+		t.Fatalf("len = %d, want 1", len(out.Indexes))
+	}
+	entry := out.Indexes[0]
+	if entry.Key != "K2" {
+		t.Errorf("Key = %q, want K2", entry.Key)
+	}
+	if entry.TrashedAt == "" {
+		t.Error("TrashedAt is empty")
+	}
+	// testTrashRetentionDays = 3日 = 259200秒。直後の呼び出しなので、残り秒数は
+	// ほぼ 259200 秒に近い値になるはず (許容誤差 10秒、テスト実行時間分のブレを吸収)。
+	wantApprox := int64(testTrashRetentionDays * 24 * 60 * 60)
+	diff := wantApprox - entry.RemainingSeconds
+	if diff < 0 || diff > 10 {
+		t.Errorf("RemainingSeconds = %d, want close to %d (diff=%d)", entry.RemainingSeconds, wantApprox, diff)
+	}
+}
+
+func TestListTrashedIndexes_RemainingSecondsClampedToZero(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.TrashKey(ctx, "K"); err != nil {
+		t.Fatal(err)
+	}
+	// trashRetentionDays=0 の Handlers を別途構築し、保持期間超過状態を模擬する。
+	h.handlers.trashRetentionDays = 0
+
+	_, out, err := h.handlers.handleListTrashedIndexes(ctx, nil, ListTrashedIndexesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Indexes) != 1 {
+		t.Fatalf("len = %d, want 1", len(out.Indexes))
+	}
+	if out.Indexes[0].RemainingSeconds != 0 {
+		t.Errorf("RemainingSeconds = %d, want 0 (超過分は負値ではなく 0 にクランプされる)", out.Indexes[0].RemainingSeconds)
+	}
+}
+
+func TestListTrashedIndexes_Empty(t *testing.T) {
+	h := newHarness(t)
+	_, out, err := h.handlers.handleListTrashedIndexes(context.Background(), nil, ListTrashedIndexesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Indexes) != 0 {
+		t.Errorf("len = %d, want 0", len(out.Indexes))
+	}
+}
+
+func TestRestoreIndex(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.handlers.handleTrashIndex(ctx, nil, TrashIndexInput{Key: "K"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out, err := h.handlers.handleRestoreIndex(ctx, nil, RestoreIndexInput{Key: "K"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Restored {
+		t.Error("Restored = false")
+	}
+	if out.Key != "K" {
+		t.Errorf("Key = %q, want K", out.Key)
+	}
+
+	trashed, terr := h.store.IsTrashed(ctx, "K")
+	if terr != nil {
+		t.Fatal(terr)
+	}
+	if trashed {
+		t.Error("IsTrashed = true, want false after restore_index")
+	}
+
+	// list_indexes に戻っていること (実データがそのまま残っている)。
+	_, li, lerr := h.handlers.handleListIndexes(ctx, nil, ListIndexesInput{})
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(li.Indexes) != 1 || li.Indexes[0].Key != "K" {
+		t.Errorf("list_indexes after restore = %+v, want [K]", li.Indexes)
+	}
+}
+
+func TestRestoreIndex_MissingKey(t *testing.T) {
+	h := newHarness(t)
+	_, _, err := h.handlers.handleRestoreIndex(context.Background(), nil, RestoreIndexInput{Key: ""})
+	if err == nil {
+		t.Fatal("want error for empty key")
+	}
+}
+
+func TestRestoreIndex_NonExistentKey(t *testing.T) {
+	h := newHarness(t)
+	_, _, err := h.handlers.handleRestoreIndex(context.Background(), nil, RestoreIndexInput{Key: "no-such-key"})
+	if err == nil {
+		t.Fatal("want error for non-existent key")
+	}
+}
+
+func TestRestoreIndex_NotTrashedIsError(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "s",
+		Documents: []UpsertDocument{{Path: "p", Content: "# H\nx"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// K はゴミ箱に入っていない (Active) のに復活を試みる → エラー。
+	_, _, err := h.handlers.handleRestoreIndex(ctx, nil, RestoreIndexInput{Key: "K"})
+	if err == nil {
+		t.Fatal("want error for restoring a non-trashed key")
 	}
 }
 
