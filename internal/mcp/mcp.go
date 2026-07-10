@@ -222,7 +222,10 @@ func (h *Handlers) Register(s *mcpsdk.Server) {
 【書き込み保護】
   ゴミ箱状態の KEY への upsert_documents / sync_documents / delete_documents /
   delete_series / schedule_delete_series は拒否される (restore_index で復活してから
-  操作すること)。query も同様に拒否され、誤って検索・参照することはできない。
+  操作すること)。query も通常はゴミ箱投入済みの KEY を明示エラーで拒否する
+  (空結果ではない)。ただし query は読み取り専用パスのため KEY 単位ロックを
+  取得しない設計であり、trash_index 実行と同時期に実行中だった query は、
+  投入直後の KEY に対する検索結果を返し得る (次回以降の呼び出しでは正しく拒否される)。
 
 【エラー】
   存在しない KEY、既にゴミ箱状態の KEY (多重投入) はエラーになる。`,

@@ -144,6 +144,11 @@ func startupSweepCutoff(retentionDays int) time.Time {
 // 予約 1 件ごとに WithKeyLock(entry.Key, ...) で囲んで処理する（KEY 単位排他は呼び出し元の責務、
 // DES-001 §4.3）。retentionDays は呼び出し元（run()）が cfg.Trash.RetentionDays から渡す
 // （internal/trash.Worker の定期実行と同一のソースを使うことで、猶予期間の不整合を防ぐ）。
+//
+// ゴミ箱投入中の KEY への削除予約はスキップする（internal/trash.Worker.sweepPendingDeletions と
+// 同じ理由・同じ対策。レビュー指摘対応）: marked_at は trashed_at と無関係に進行するため、
+// 対策なしでは KEY の保持期間内に古い series 全体予約が独立して sweep され、restore_index 後も
+// series データが戻らない事故が起き得る（ADR-003 の復活保証に反する）。
 func startupSweep(ctx context.Context, st *store.Store, retentionDays int) (processed, errCount int) {
 	entries, err := st.ListPendingDeletionsOlderThan(ctx, startupSweepCutoff(retentionDays))
 	if err != nil {
@@ -152,13 +157,27 @@ func startupSweep(ctx context.Context, st *store.Store, retentionDays int) (proc
 	}
 
 	for _, entry := range entries {
+		skippedTrashed := false
 		lockErr := st.WithKeyLock(ctx, entry.Key, func() error {
+			trashed, isTrashedErr := st.IsTrashed(ctx, entry.Key)
+			if isTrashedErr != nil {
+				return fmt.Errorf("is trashed check: %w", isTrashedErr)
+			}
+			if trashed {
+				skippedTrashed = true
+				return nil
+			}
 			return st.SweepOnePendingDeletion(ctx, entry)
 		})
 		if lockErr != nil {
 			slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）",
 				"key", entry.Key, "series", entry.Series, "path", entry.Path, "error", lockErr)
 			errCount++
+			continue
+		}
+		if skippedTrashed {
+			slog.Info("起動時スイープ: KEY がゴミ箱投入中のため削除予約の処理を先送り",
+				"key", entry.Key, "series", entry.Series, "path", entry.Path, "marked_at", entry.MarkedAt)
 			continue
 		}
 		// 対象・実行日時を個別エントリ単位で記録する（FNC-012/013、internal/trash.Worker と同じ粒度）
@@ -259,12 +278,24 @@ func run(ctx context.Context) error {
 		},
 	)
 
-	// ゴミ箱最終処分ワーカー起動（DES-001 §3.1/§8。旧 internal/expiry の TTL/LRU ワーカーを置換）
+	// ゴミ箱最終処分ワーカー起動（DES-001 §3.1/§8。旧 internal/expiry の TTL/LRU ワーカーを置換）。
+	// worker 専用の子 context を使う（レビュー指摘対応）: run() の親 ctx は
+	// signal.NotifyContext（SIGINT/SIGTERM）にのみ連動するため、ListenAndServe が
+	// 即座に失敗する経路（例: ポート使用中）では親 ctx が一切キャンセルされない。
+	// 親 ctx をそのまま渡すと、その経路で trashWorker.Start が終了せず、
+	// 後述の Done() 待ち defer が永久にブロックして run() がハングする。
+	workerCtx, stopWorker := context.WithCancel(ctx)
 	trashWorker := trash.New(st, trash.Config{
 		IntervalSeconds: cfg.Trash.IntervalSeconds,
 		RetentionDays:   cfg.Trash.RetentionDays,
 	})
-	go trashWorker.Start(ctx)
+	go trashWorker.Start(workerCtx)
+	// defer は登録の逆順に実行される。実行順序は
+	// stopWorker()（workerCtx キャンセル・run() のどの return 経路でも必ず発火）→
+	// trashWorker.Done() 待ち → st.Close() となるよう、この 2 つを st.Close() の
+	// defer より後に、かつ Done() 待ちより後に stopWorker() を登録する。
+	defer func() { <-trashWorker.Done() }()
+	defer stopWorker()
 
 	// MCP サーバー初期化 + ツール登録
 	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{

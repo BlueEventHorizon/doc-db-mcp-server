@@ -99,3 +99,64 @@ func TestStartupSweep_StatsReflectSweptState(t *testing.T) {
 			processed, errCount)
 	}
 }
+
+// TestStartupSweep_SkipsPendingDeletionForTrashedKey はレビュー指摘の回帰テスト:
+// schedule_delete_series で series 全体予約を作った後に当該 KEY を trash_index した場合、
+// 予約の marked_at が保持期間を超過していても、KEY 自体がゴミ箱状態の間はスイープしない
+// （series を、KEY の猶予期間とは無関係に消してしまうと、restore_index で KEY を復活させても
+// series データが戻らず ADR-003 の「猶予期間中いつでも復活できる」保証に反するため）。
+func TestStartupSweep_SkipsPendingDeletionForTrashedKey(t *testing.T) {
+	ctx := context.Background()
+
+	st, err := store.New(filepath.Join(t.TempDir(), "test.db"), 3)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.UpsertRecord(ctx, store.Record{
+		Key: "K", Path: "doc.md", ContentHash: "h1", Series: "s1",
+		Chunks: []store.ChunkInput{{
+			ChunkIndex: 0, HeadingPath: "# H", Text: "body",
+			Vector: []float32{1, 0.5, -0.5},
+		}},
+	}); err != nil {
+		t.Fatalf("UpsertRecord: %v", err)
+	}
+
+	// series 全体の削除予約（schedule_delete_series 相当）。marked_at は十分過去にし、
+	// 保持期間（3日）を超過させる。
+	if _, err := store.ExecForTest(ctx, st,
+		`INSERT INTO pending_deletions (key, series, path, marked_at) VALUES (?, ?, '', ?)`,
+		"K", "s1", "2026-01-01T00:00:00Z",
+	); err != nil {
+		t.Fatalf("pending_deletions 手動投入: %v", err)
+	}
+
+	// KEY 全体を trash_index 相当でゴミ箱投入する（TrashKey は KEY 単位ロックの内側で
+	// 呼ばれる想定だが、ここでは対象の振る舞いのみを検証するため直接呼ぶ）。
+	if _, err := st.TrashKey(ctx, "K"); err != nil {
+		t.Fatalf("TrashKey: %v", err)
+	}
+
+	// スイープ: series 全体予約の marked_at は超過しているが、KEY はゴミ箱状態のためスキップされ、
+	// series のデータ（chunk）は生き残るはず。
+	processed, errCount := startupSweep(ctx, st, 3)
+	if errCount != 0 {
+		t.Fatalf("startupSweep errCount = %d, want 0", errCount)
+	}
+	if processed != 0 {
+		t.Errorf("startupSweep processed = %d, want 0（ゴミ箱状態の KEY の予約はスキップされるべき）", processed)
+	}
+	if n, err := st.TotalChunkCount(ctx); err != nil || n != 1 {
+		t.Fatalf("スイープ後 TotalChunkCount = %d (err=%v), want 1（series データが残っているはず）", n, err)
+	}
+
+	// KEY を復活させる（restore_index 相当）。series データがまだ残っていることを確認する。
+	if err := st.RestoreKey(ctx, "K"); err != nil {
+		t.Fatalf("RestoreKey: %v", err)
+	}
+	if n, err := st.TotalChunkCount(ctx); err != nil || n != 1 {
+		t.Fatalf("復活後 TotalChunkCount = %d (err=%v), want 1（series データが保持されているべき）", n, err)
+	}
+}

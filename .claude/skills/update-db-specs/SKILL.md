@@ -63,29 +63,43 @@ python3 .claude/skills/update-db-specs/scripts/resolve_docs.py --type specs \
 `status: "error"` が返る場合はエラー内容を報告して終了。`0` の場合は
 「specs 対象文書がありません。`.doc_structure.yaml` を確認してください」と報告して終了。
 
-### Step 3: `run_sync.py` で resolve〜sync を一括実行 [MANDATORY]
+### Step 3: `run_sync.py` で resolve〜sync 投入 + ポーリングして進捗を報告 [MANDATORY]
 
-`run_sync.py` が「対象文書列挙 → KEY/series 自動決定 → 一覧全体を desired-state
-として `sync_documents` に 1 回投入 → `get_sync_status` を完了までポーリング」を
-**1 プロセス内で完結**させる。バッチ分割・offset ループは不要
-（local_path 経路のため投入 payload は小さく、Embedding はサーバー側ジョブで進む）。
+`run_sync.py --start-only` が「対象文書列挙 → KEY/series 自動決定 → 一覧全体を
+desired-state として `sync_documents` に 1 回投入」を行い、**完了を待たず即座に
+`job_id` を返す**。バッチ分割・offset ループは不要（local_path 経路のため投入
+payload は小さく、Embedding はサーバー側ジョブで進む）。
 
 KEY・series は省略時に自動決定される (KEY: `<project_name>-specs`、
 series: 現在の git branch。git 不在等は `main`)。手動指定したい場合のみ
 `--key` / `--series` を渡す。
 
 ```bash
-python3 .claude/skills/update-db-specs/scripts/run_sync.py --type specs
+python3 .claude/skills/update-db-specs/scripts/run_sync.py --type specs --start-only
 ```
 
-2 回目以降の同期は大半が skip (hash 一致) なので数秒で終わる。**初回投入や大量変更**
-(目安 200+ ファイルの新規 Embedding) は完了まで時間がかかるため、Bash tool の
-`timeout` パラメータで最大 600000 (10分) を指定するか、`run_in_background: true` で
-実行し完了通知を待つ。ポーリングが `--wait` (デフォルト 600s) を超えても、ジョブは
-サーバー側で継続しており再実行すれば冪等に収束する (status="timeout" で報告される)。
+**重要 [MANDATORY]**: `sync_documents` の進捗は Bash tool の stderr に出力される
+実装もあるが、Bash tool の実行結果はユーザーには直接見えない（AI だけが見える）。
+そのため **AI 自身が `docdb_client.py sync-status` を間隔を空けて繰り返し呼び、
+そのつどテキストでユーザーに進捗を報告すること**:
 
-stdout は最終ジョブ状態 JSON、stderr には進捗
-(例: `[running] processed=12 skipped=460 failed=0 detached=3`) が出る。
+```bash
+python3 .claude/skills/update-db-specs/scripts/docdb_client.py sync-status --job-id <job_id 上記の値>
+```
+
+- `status: "running"` → 現在の `processed`/`skipped`/`failed` をチャットに 1 行で
+  報告し、数秒待ってから再度呼ぶ（初回投入や大量変更時は間隔を広げてよい。
+  無音のまま長時間待たせないことが目的であり、毎秒ポーリングする必要はない）
+- `status: "done"` → Step 4 の完了レポートへ進む
+- `status: "failed"` → stdout の `errors[]` を含めて Step 4 で報告する
+- ジョブがサーバー側で長時間かかる場合、AI 側のポーリングを打ち切っても
+  ジョブ自体は継続しており、後で同じ `job_id` に `sync-status` を呼べば
+  状態を確認できる（再度 `run_sync.py` を実行しても DIF-02 により冪等に収束する）
+
+（進捗表示を必要としない自動実行・CI 用途では `--start-only` を付けず
+`run_sync.py --type specs` を実行すれば、1 プロセス内で完結して最終ジョブ状態
+JSON を返す簡易モードも使える。ただしこのモードの stderr 進捗はユーザーには
+届かない点に注意）
 
 **接続失敗・サーバが v0.2.0 未満** (exit 1): Step 1 の案内を提示して終了する。
 ジョブ失敗・一部ドキュメント失敗 (exit 2) は stdout の `errors[]` を含めて

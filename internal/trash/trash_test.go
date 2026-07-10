@@ -116,6 +116,77 @@ func TestNew_PreservesPositiveValues(t *testing.T) {
 	}
 }
 
+// TestWorker_Done_ClosesAfterStartReturns はレビュー指摘の回帰テスト:
+// shutdown 時に呼び出し元（cmd/docdb）が Done() を待ってから Store.Close() できるよう、
+// Start の goroutine が実際に終了してから Done() が close されることを検証する。
+func TestWorker_Done_ClosesAfterStartReturns(t *testing.T) {
+	w := New(&mockStore{}, Config{IntervalSeconds: 3600, RetentionDays: 3})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	select {
+	case <-w.Done():
+		t.Fatal("Done() が Start 呼び出し前から close されている")
+	default:
+	}
+
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		w.Start(ctx)
+	}()
+	<-started
+
+	// ctx をまだキャンセルしていないので Done() は close されないはず
+	select {
+	case <-w.Done():
+		t.Fatal("Done() が ctx キャンセル前に close された")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+
+	select {
+	case <-w.Done():
+		// OK: Start の goroutine が終了し Done() が close された
+	case <-time.After(2 * time.Second):
+		t.Fatal("ctx キャンセル後、タイムアウトまでに Done() が close されなかった")
+	}
+}
+
+// TestWorker_Done_ClosesViaOwnCancelEvenIfParentContextNeverCancelled はレビュー指摘の
+// 回帰テスト: cmd/docdb の run() は、HTTP サーバー起動の即時失敗（例: ポート使用中）の
+// ような一部の終了経路で、シグナル駆動の親 ctx を一切キャンセルしない。Worker に親 ctx を
+// そのまま渡すと、その経路で Start の goroutine が終了できず Done() 待ちが永久にブロック
+// する（run() のハング）。修正は Worker 専用の子 context を用意し、run() のどの終了経路
+// でも必ず子 context 自身をキャンセルすること。本テストは「親 ctx が一切キャンセルされな
+// くても、子 context 自身のキャンセルだけで Done() が close される」ことを検証する。
+func TestWorker_Done_ClosesViaOwnCancelEvenIfParentContextNeverCancelled(t *testing.T) {
+	w := New(&mockStore{}, Config{IntervalSeconds: 3600, RetentionDays: 3})
+
+	// 親 ctx はキャンセルしない (cmd/docdb の signal.NotifyContext が
+	// SIGINT/SIGTERM 以外の終了経路で発火しない状況を模擬する)。
+	parentCtx := context.Background()
+	workerCtx, stopWorker := context.WithCancel(parentCtx)
+
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		w.Start(workerCtx)
+	}()
+	<-started
+
+	// 子 context 自身をキャンセルする（親は無関係のまま）。
+	stopWorker()
+
+	select {
+	case <-w.Done():
+		// OK: 親 ctx が未キャンセルでも、子 context 自身のキャンセルだけで終了できる
+	case <-time.After(2 * time.Second):
+		t.Fatal("親 ctx が未キャンセルの状態で stopWorker() しても、" +
+			"タイムアウトまでに Done() が close されなかった（run() ハングの再発）")
+	}
+}
+
 // -----------------------------------------------------------------------
 // sweepTrashedKeys: 保持期間超過分のみ処理する
 // -----------------------------------------------------------------------
@@ -319,6 +390,10 @@ func TestSweepPendingDeletions_LocksAndSweepsEachEntry(t *testing.T) {
 			{Key: "k1", Series: "s1", Path: ""},
 			{Key: "k2", Series: "s2", Path: "doc.md"},
 		},
+		// k1/k2 は Active な KEY（ゴミ箱投入中ではない）という前提。restoredKeys=true で
+		// mockStore.IsTrashed を false にする（レビュー指摘対応で追加した trashed KEY スキップの
+		// 対象外にするため）。
+		restoredKeys: map[string]bool{"k1": true, "k2": true},
 	}
 	w := New(ms, Config{RetentionDays: 3})
 
@@ -362,6 +437,64 @@ func TestSweepPendingDeletions_NoEntries_NoOp(t *testing.T) {
 	}
 }
 
+// TestSweepPendingDeletions_SkipsWhenKeyTrashed はレビュー指摘の回帰テスト:
+// schedule_delete_series 等で series 全体予約が作られた後に当該 KEY が trash_index された場合、
+// 予約の marked_at が保持期間を超過していても、KEY 自体がゴミ箱状態の間は sweep しない
+// （ADR-003 の「猶予期間中いつでも復活できる」保証を、KEY と無関係に進む pending_deletions の
+// 期限で壊さないため）。mockStore.IsTrashed はデフォルトで true を返すため、restoredKeys に
+// 含めない k1 は「ゴミ箱状態」として扱われる。
+func TestSweepPendingDeletions_SkipsWhenKeyTrashed(t *testing.T) {
+	ms := &mockStore{
+		pending: []store.PendingDeletionEntry{
+			{Key: "k1", Series: "s1", Path: ""},
+		},
+	}
+	w := New(ms, Config{RetentionDays: 3})
+
+	if err := w.sweepPendingDeletions(context.Background()); err != nil {
+		t.Fatalf("sweepPendingDeletions returned error: %v", err)
+	}
+	if len(ms.sweptEntries) != 0 {
+		t.Fatalf("sweptEntries = %+v, want empty (KEY がゴミ箱状態のためスキップされるべき)", ms.sweptEntries)
+	}
+	wantCalls := []string{"WithKeyLock:k1", "Unlock:k1"}
+	if len(ms.calls) != len(wantCalls) {
+		t.Fatalf("calls = %v, want %v", ms.calls, wantCalls)
+	}
+	for i, c := range wantCalls {
+		if ms.calls[i] != c {
+			t.Errorf("calls[%d] = %s, want %s", i, ms.calls[i], c)
+		}
+	}
+	stats := w.Stats()
+	if len(stats.LastKeyErrors) != 0 {
+		t.Errorf("LastKeyErrors = %+v, want empty（スキップはエラーではない）", stats.LastKeyErrors)
+	}
+}
+
+// TestSweepPendingDeletions_IsTrashedCheckFails_RecordsErrorAndContinues は IsTrashed 自体が
+// エラーを返した場合、silent failure にせず Stats に記録して継続することを検証する。
+func TestSweepPendingDeletions_IsTrashedCheckFails_RecordsErrorAndContinues(t *testing.T) {
+	ms := &mockStore{
+		pending: []store.PendingDeletionEntry{
+			{Key: "k1", Series: "s1", Path: ""},
+		},
+		isTrashedErr: errors.New("db error"),
+	}
+	w := New(ms, Config{RetentionDays: 3})
+
+	if err := w.sweepPendingDeletions(context.Background()); err != nil {
+		t.Fatalf("sweepPendingDeletions returned error: %v", err)
+	}
+	if len(ms.sweptEntries) != 0 {
+		t.Fatalf("sweptEntries = %+v, want empty", ms.sweptEntries)
+	}
+	stats := w.Stats()
+	if len(stats.LastKeyErrors) != 1 || stats.LastKeyErrors[0].Key != "k1" {
+		t.Fatalf("LastKeyErrors = %+v, want 1 entry for k1", stats.LastKeyErrors)
+	}
+}
+
 // -----------------------------------------------------------------------
 // sweepPendingDeletions: 個別エラー時の継続動作
 // -----------------------------------------------------------------------
@@ -376,6 +509,7 @@ func TestSweepPendingDeletions_PartialFailure_Continues(t *testing.T) {
 		sweepErrForKey: map[string]error{
 			"k2": errors.New("sweep failed"),
 		},
+		restoredKeys: map[string]bool{"k1": true, "k2": true, "k3": true},
 	}
 	w := New(ms, Config{RetentionDays: 3})
 
@@ -405,6 +539,7 @@ func TestSweepPendingDeletions_LockFailure_Continues(t *testing.T) {
 		lockErrForKey: map[string]error{
 			"k1": errors.New("lock timeout"),
 		},
+		restoredKeys: map[string]bool{"k1": true, "k2": true},
 	}
 	w := New(ms, Config{RetentionDays: 3})
 
@@ -432,6 +567,9 @@ func TestRunOnce_BothPathsExecuted(t *testing.T) {
 		pending: []store.PendingDeletionEntry{
 			{Key: "pending-key", Series: "s1", Path: "doc.md"},
 		},
+		// pending-key は Active な KEY（trashed-key とは別 KEY）という前提のため、
+		// mockStore.IsTrashed が false を返すようにする。
+		restoredKeys: map[string]bool{"pending-key": true},
 	}
 	w := New(ms, Config{RetentionDays: 3})
 
