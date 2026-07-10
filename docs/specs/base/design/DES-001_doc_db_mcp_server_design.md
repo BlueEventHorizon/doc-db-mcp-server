@@ -596,11 +596,11 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    actor Caller as 書き込み系ツール / query の呼び出し元
+    actor Caller as 書き込み系ツールの呼び出し元
     participant MCP as internal/mcp
     participant DB as internal/store
 
-    Caller->>MCP: upsert_documents / delete_documents / delete_series /\nschedule_delete_series / sync_documents / query
+    Caller->>MCP: upsert_documents / delete_documents / delete_series /\nschedule_delete_series / sync_documents
     MCP->>DB: IsTrashed(key)（事前チェック）
     alt 事前チェックで true
         MCP-->>Caller: エラー（ゴミ箱に入っています。restore_index で復活してください）
@@ -618,9 +618,11 @@ sequenceDiagram
 
 **前提条件**: なし。
 **正常フロー**: `IsTrashed` が事前チェック・`WithKeyLock` 内再確認の両方で false の場合、各ツールの既存処理をそのまま実行する。
-**エラーフロー**: 上図の通り。書き込み系 5 ツールはいずれも処理を一切実行せず `trashed_at` も変更しない（黙って復活させない。復活は `restore_index` のユーザー明示操作のみで行う）。`query` は空結果ではなく明示エラーを返す（空結果では「データが無い」のか「ゴミ箱に入っている」のかをユーザーが区別できないため）。
+**エラーフロー**: 上図の通り。書き込み系 5 ツールはいずれも処理を一切実行せず `trashed_at` も変更しない（黙って復活させない。復活は `restore_index` のユーザー明示操作のみで行う）。
 
 **設計判断**: 書き込み系の対象は種類を問わずすべて（`upsert_documents` / `delete_documents` / `delete_series` / `schedule_delete_series` / `sync_documents`）。`delete_series`・`schedule_delete_series` も series_keys が空になった record を即時物理削除し得るため、他 3 ツールと同じ理由で拒否対象に含める。既存の `UpsertRecord` の `ON CONFLICT(key) DO UPDATE SET` は `trashed_at` を更新対象に含めないため、対策なしにゴミ箱 KEY へ upsert すると、データは書き込まれるのに `trashed_at` が残ったまま＝`query` から検索できない状態になり得る。書き込み自体を拒否することで、この不整合を構造的に防ぐ。
+
+**`query` は上記 `WithKeyLock` 再確認フローの対象外（設計判断・レビュー反映）**: `query` は `IsTrashed` の事前チェックのみを行い、`空結果ではなく明示エラーを返す`（空結果では「データが無い」のか「ゴミ箱に入っている」のかをユーザーが区別できないため）。ただし `query` は §4.2/§4.3 の方針どおり読み取り専用パスであり `WithKeyLock` を取得しない（KEY 単位ロックは書き込み系操作の排他のみに用いる設計）。そのため事前チェック通過後、`TouchKey`・実際の検索実行までの間に `trash_index` が完了すると、ゴミ箱投入された直後の KEY に対する検索結果が返り得る（TOCTOU の競合ウィンドウ）。これは書き込み系のように永続的なデータ不整合（`trashed_at` は立っているのに新規データが書き込まれる等）を生まない一時的な表示ラグに過ぎず、次回以降の `query` 呼び出しでは事前チェックが正しく拒否するため自己修復する。読み取り性能を優先し `query` を `WithKeyLock` で直列化しない設計上のトレードオフとして許容する。より厳密な線形化可視性が必要になった場合は、検索対象取得の SQL に `keys.trashed_at IS NULL` 条件を含める等、読み取りロックを追加せずに競合窓を縮小する対応を別途検討する。
 
 ## 6. 検索パイプライン詳細
 
@@ -790,6 +792,8 @@ fine-tuning は最小限とする（PHIL-01）。
 
 `internal/trash.Worker` はバックグラウンドゴルーチンとして起動し、定期的（`trash.interval_seconds`。デフォルト 3600 秒）に実行する。旧 `internal/expiry.Worker`（TTL/LRU による自動判定廃棄）を FNC-007（ADR-003）で廃止し、削除は必ずユーザー主導のゴミ箱投入（`trash_index`）を経由するモデルへ置き換えた。KEY のゴミ箱状態は `trashed_at`（§4.1）で表現し、削除の実行（`DeleteKey`）は KEY 単位排他の対象であり、対象 KEY ごとに `WithKeyLock` で囲んで呼び出す（FNC-006 SYN-08、§4.3。`sync_documents` 処理中の KEY を自動最終処分が同時に消す競合を防ぐ）。
 
+**シャットダウン時の Store クローズ順序（レビュー反映）**: `Worker.Start(ctx)` は `ctx` キャンセルを検知して終了するが、`runOnce` 実行中は次の `select` 評価まで終了を待たされる。呼び出し元（`cmd/docdb`）が `Worker` の終了を待たずに `Store.Close()` を呼ぶと、実行中の DB 操作とクローズが競合しうる。これを防ぐため `Worker` は `Done() <-chan struct{}`（`Start` の goroutine 終了時に close される）を公開し、`cmd/docdb` は `defer` の登録順序を利用して `Store.Close()` より先に `<-trashWorker.Done()` を待つ。
+
 **設計判断（旧 TTL/LRU からの転換理由）**: `last_accessed_at`（TTL）や `total_chunks`（LRU）という推測的な指標に基づく自動判定廃棄は、実運用で投入直後の唯一の KEY を無警告のまま削除する事故を起こした。doc-db は「削除すべきかどうか」の判定を一切行わない設計へ転換し、KEY ごとの正確なメタデータ（chunk 数・doc 数・最終アクセス日時等）をユーザーの近辺まで届けることに徹し、削除の要否判断と実行はその情報を見た人間・AI エージェントに委ねる（詳細は ADR-003 参照）。
 
 ### 8.1 KEY のゴミ箱投入・復活（FNC-007 TRS-01/04/05）
@@ -838,6 +842,8 @@ feature ブランチ運用ではブランチ削除後も series が残存し続�
 - 成功した行は `pending_deletions` から削除する。個別失敗は警告ログ + エラー集約で記録し**処理を継続**する（GC-04、silent failure 禁止方針）。失敗行・消し忘れ行は次回のスイープで再試行されるだけで安全（両処理とも冪等）
 
 起動時スイープは MCP リクエストを受け付ける前の時間帯にのみ実行されるため、エントリごとの `WithKeyLock` は理論上不要だが、`internal/trash.Worker` の定期実行と処理を共通化するため両者とも一貫して `WithKeyLock` で囲む。
+
+**ゴミ箱状態の KEY への削除予約はスキップする [MANDATORY]（レビュー反映）**: `pending_deletions.marked_at` は当該 KEY の `trashed_at`（§8.1）と完全に独立して進行する。対策なしでは、`schedule_delete_series` で series 全体予約を作った**後に**当該 KEY を `trash_index` した場合、KEY 自体はまだ猶予期間内（`restore_index` で復活可能）であっても、予約作成済みの `marked_at` が保持期間を超過していれば `SweepOnePendingDeletion` が series を物理削除してしまい、その後 `restore_index` で KEY を復活させても series データは戻らない（ADR-003 の「猶予期間中いつでも復活できる」という保証に反する）。これを防ぐため、`WithKeyLock(entry.Key, ...)` の `fn` 内で `IsTrashed(entry.Key)` を確認し、true の場合は `SweepOnePendingDeletion` を呼ばずスキップする（今回のスイープでは処理せず、次回以降 KEY が Active に戻った時点、または KEY 自体が最終処分（`DeleteKey`）された時点のいずれかで解消させる。`DeleteKey` は当該 KEY の全 `pending_deletions` 行を同一トランザクションで除去するため、スキップした予約行が孤立して残り続けることはない。§4.5 [MANDATORY] 参照）。起動時スイープ・`internal/trash.Worker` の定期実行の両方に同一の対策を適用する。
 
 ## 9. 設定
 
@@ -936,6 +942,8 @@ log:
 - **sync_documents（§5.4）**: job_id 即時返却（SYN-05）、検索最新性（欠落 path が sync 完了直後の series 指定検索に現れないこと = SYN-03）、自己修復の API 課金ゼロ（Embedder spy で呼び出し 0 回 = SYN-04）、空 desired-state の受理、リクエスト context 非依存・root context キャンセルでの failed 遷移（GC-05）を検証する
 - **DIF-02 不変条件**: 同一 `key + path + content_hash` で Embedding を再計算しないことを Store 層・ハンドラ層・Embedder spy の 3 テストで常時保証する（これらのテストを壊す変更は不変条件の破壊を意味する）
 - **KEY ゴミ箱状態と TOCTOU 対策（§4.6 / §5.5〜§5.7、FNC-007）**: `TrashKey` / `RestoreKey` / `ListTrashedKeys` / `IsTrashed` の正常系・多重投入エラー・存在しない KEY のエラー、`trash_index` 実行後に `query` が当該 KEY へ明示エラーを返すこと（空結果ではないこと）、ゴミ箱状態の KEY に対する書き込み系 5 ツールが拒否され `trashed_at` が変化しないこと、`WithKeyLock` 内での `IsTrashed` 再確認により事前チェック後の割り込み投入・復活が正しく反映されること（TOCTOU 回帰テスト）、`TrashWorker.runOnce` が保持期間超過分のみを処理し未超過分に触れないこと、`ListPendingDeletionsOlderThan` の cutoff 絞り込み・`SweepOnePendingDeletion` の単発処理、起動時マイグレーション（`trashed_at` カラムが存在しない DB に対して `ALTER TABLE` が実行されること）を検証する
+- **ゴミ箱状態 KEY への削除予約先送り（§8.5 [MANDATORY]、レビュー回帰テスト）**: `sweepPendingDeletions`/`startupSweep` が、`marked_at` 超過済みでも対象 KEY が現在ゴミ箱状態なら `SweepOnePendingDeletion` を呼ばずスキップすること、`IsTrashed` 自体のエラーは silent failure にせず記録して継続すること、KEY を `trash_index` → 保持期間内の `restore_index` で復活させた場合に series データ（chunk）が失われていないことを検証する
+- **シャットダウン時の Worker 待機**: `internal/trash.Worker.Done()` が `Start` の goroutine 終了後に close されること（`ctx` キャンセル前は close されないこと・キャンセル後は妥当な時間内に close されること）を検証する
 
 ## 12. 使用する既存コンポーネント
 
@@ -970,3 +978,4 @@ log:
 | 2026-07-04 | 0.8        | §5.1 ユースケース一覧に未掲載だった `delete_series` / `manage_index` を追加し、既存ツール一覧として完全化                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2026-07-06 | 0.9        | FNC-006（desired-state 同期ジョブ + 削除予約の起動時 GC、追加設計書 v1.12 相当）を統合: §4.3 KEY 単位排他制御（WithKeyLock）・§4.5 削除予約と orphan 回収（pending_deletions、[MANDATORY] 2 件含む）を新設、§4.1 に pending_deletions スキーマ、§4.4 に sync 切り離しの意図的例外注記、§5.1 を 10 ツール化 + §5.4 sync_documents シーケンス新設、§8.3 の series 廃棄 TBD を解決（削除予約 + 起動時スイープ方式、TTL/LRU series 拡張は不採用）、§8.5 起動時スイープ新設、§11 に排他・削除予約・sync・DIF-02 不変条件の検証観点を追加、§12 に再利用コンポーネント表を追加                                                                                                                                                                                                                                                                                                                                                             |
 | 2026-07-09 | 1.0        | FNC-007（KEY のゴミ箱管理、追加設計書 DES-003 相当）を統合し `docs/specs/expiry-visibility/` を削除（`/forge:merge-specs` 実行）。TTL/LRU 自動廃棄（旧 EXP-01/02、`internal/expiry`）・`manage_index`・`delete_index` を廃止し、`trash_index` / `list_trashed_indexes` / `restore_index` + `internal/trash.Worker`（定期実行）による user-driven ゴミ箱モデルに置き換え。§2.1/§3.1/§3.2 の図・型・パッケージ一覧を更新、§4.1 に `keys.trashed_at` カラム追加、§4.6 KEY 単位ゴミ箱状態と TOCTOU 対策（`WithKeyLock` 内での `IsTrashed` 再確認）を新設、§5.1 ユースケース一覧更新、§5.5〜§5.7 にゴミ箱投入・自動最終処分・操作拒否のシーケンスを新設、§8 を「ゴミ箱管理と自動最終処分」に全面改訂（TTL/LRU 判定ロジック削除）、§9.2 設定スキーマを `expiry:` → `trash:` に変更、§10 エラーハンドリング表更新、§11/§12 に検証観点・再利用コンポーネントを追加、§13 マイグレーション（DB スキーマ ALTER・設定ファイル非後方互換）を新設 |
+| 2026-07-10 | 1.1        | レビュー指摘 3 件に対応。(1) §5.6/§8.5: `sweepPendingDeletions`/`startupSweep` が KEY のゴミ箱猶予期間と無関係に古い series 全体予約を sweep してしまい、`restore_index` 後も series データが戻らない事故を防ぐため、KEY がゴミ箱状態の間は当該 KEY の削除予約処理を先送りする仕様を明記（`internal/trash/trash.go`・`cmd/docdb/main.go` を対応する実装に修正）。(2) §5.7: `query` は `WithKeyLock` 再確認の対象外（読み取り専用パスのため）である点と、それに伴う TOCTOU 競合ウィンドウの許容理由を明記（診断のみで実装は変更せず）。(3) §8: シャットダウン時に `internal/trash.Worker` の実行完了を待たず `Store.Close()` する問題を修正するため `Worker.Done()` を新設し、`cmd/docdb/main.go` がこれを待ってから Store を閉じるよう変更した旨を記録                                                                                                                                                                              |

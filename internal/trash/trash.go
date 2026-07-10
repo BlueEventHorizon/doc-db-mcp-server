@@ -86,6 +86,13 @@ type Worker struct {
 
 	mu    sync.Mutex
 	stats Stats
+
+	// done は Start の goroutine が終了すると close される（レビュー指摘対応）。
+	// 呼び出し元（cmd/docdb）は Done() でこれを待ってから Store.Close() すること。
+	// runOnce 実行中に ctx がキャンセルされても、Start の select は runOnce の
+	// 完了まで ctx.Done() を評価できない。Done() を待たずに Store を閉じると、
+	// 実行中の DB 操作とクローズが競合しうる。
+	done chan struct{}
 }
 
 // New は Config を使って Worker を生成する。
@@ -96,7 +103,14 @@ func New(st storeForTrash, cfg Config) *Worker {
 	if cfg.RetentionDays <= 0 {
 		cfg.RetentionDays = 3
 	}
-	return &Worker{st: st, cfg: cfg}
+	return &Worker{st: st, cfg: cfg, done: make(chan struct{})}
+}
+
+// Done は Start の goroutine が終了すると close される channel を返す。
+// シャットダウン時、呼び出し元はこれを待ってから Store.Close() を呼ぶことで、
+// 実行中の最終処分処理と DB クローズの競合を防ぐ。
+func (w *Worker) Done() <-chan struct{} {
+	return w.done
 }
 
 // Stats はワーカー稼働状態のスナップショットを返す。
@@ -145,7 +159,10 @@ func (w *Worker) markRun(err error) {
 // エラーはログ出力して継続する（サーバー停止はしない: DES-001 §10 と同方針）。
 //
 // cmd/docdb/main.go への起動配線（go trashWorker.Start(ctx) 等）は TASK-005 のスコープ。
+// 終了時は必ず done channel を close する（defer）。呼び出し元は Done() で待機できる。
 func (w *Worker) Start(ctx context.Context) {
+	defer close(w.done)
+
 	interval := time.Duration(w.cfg.IntervalSeconds) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -251,6 +268,15 @@ func (w *Worker) sweepTrashedKeys(ctx context.Context) error {
 // sweepPendingDeletions は marked_at が保持期間を超過した削除予約（series 全体予約 /
 // orphan record 予約）を検出し、予約 1 件ごとに KEY 単位排他ロック内で SweepOnePendingDeletion
 // により最終処分する（DES-001 §5.6 UC-6、cmd/docdb/main.go の startupSweep とほぼ同じパターン）。
+//
+// ゴミ箱投入中の KEY への削除予約はスキップする（レビュー指摘対応）:
+// pending_deletions の marked_at は KEY の trashed_at と無関係に進行するため、対策なしでは
+// 「schedule_delete_series 済みの series を持つ KEY を trash_index し、KEY の保持期間内に
+// restore_index しても、古い series 全体予約が独立して sweep されて series データが消える」
+// という、ADR-003 の「猶予期間中いつでも復活できる」という保証に反する事故が起き得る。
+// KEY がゴミ箱状態の間は該当 KEY の予約処理を先送りし、KEY 自身の最終処分（DeleteKey が
+// 同一トランザクションで当該 KEY の全予約行を除去する。§4.5 [MANDATORY]）または復活後の
+// 通常のスイープに委ねる。
 func (w *Worker) sweepPendingDeletions(ctx context.Context) error {
 	entries, err := w.st.ListPendingDeletionsOlderThan(ctx, w.retentionCutoff())
 	if err != nil {
@@ -262,13 +288,27 @@ func (w *Worker) sweepPendingDeletions(ctx context.Context) error {
 	}
 
 	for _, entry := range entries {
+		skippedTrashed := false
 		err := w.st.WithKeyLock(ctx, entry.Key, func() error {
+			trashed, isTrashedErr := w.st.IsTrashed(ctx, entry.Key)
+			if isTrashedErr != nil {
+				return fmt.Errorf("is trashed check: %w", isTrashedErr)
+			}
+			if trashed {
+				skippedTrashed = true
+				return nil
+			}
 			return w.st.SweepOnePendingDeletion(ctx, entry)
 		})
 		if err != nil {
 			// 個別の削除失敗（ロック取得失敗含む）はログ + Stats に記録して継続（silent failure 禁止）
 			slog.Error("trash: 削除予約の最終処分失敗", "key", entry.Key, "series", entry.Series, "path", entry.Path, "error", err)
 			w.recordKeyError("pending_deletion", entry.Key, err)
+			continue
+		}
+		if skippedTrashed {
+			slog.Info("trash: KEY がゴミ箱投入中のため削除予約の処理を先送り", "key", entry.Key,
+				"series", entry.Series, "path", entry.Path, "marked_at", entry.MarkedAt)
 			continue
 		}
 		slog.Info("trash: orphan record / series 削除予約を最終処分", "key", entry.Key, "series", entry.Series,

@@ -144,6 +144,11 @@ func startupSweepCutoff(retentionDays int) time.Time {
 // 予約 1 件ごとに WithKeyLock(entry.Key, ...) で囲んで処理する（KEY 単位排他は呼び出し元の責務、
 // DES-001 §4.3）。retentionDays は呼び出し元（run()）が cfg.Trash.RetentionDays から渡す
 // （internal/trash.Worker の定期実行と同一のソースを使うことで、猶予期間の不整合を防ぐ）。
+//
+// ゴミ箱投入中の KEY への削除予約はスキップする（internal/trash.Worker.sweepPendingDeletions と
+// 同じ理由・同じ対策。レビュー指摘対応）: marked_at は trashed_at と無関係に進行するため、
+// 対策なしでは KEY の保持期間内に古い series 全体予約が独立して sweep され、restore_index 後も
+// series データが戻らない事故が起き得る（ADR-003 の復活保証に反する）。
 func startupSweep(ctx context.Context, st *store.Store, retentionDays int) (processed, errCount int) {
 	entries, err := st.ListPendingDeletionsOlderThan(ctx, startupSweepCutoff(retentionDays))
 	if err != nil {
@@ -152,13 +157,27 @@ func startupSweep(ctx context.Context, st *store.Store, retentionDays int) (proc
 	}
 
 	for _, entry := range entries {
+		skippedTrashed := false
 		lockErr := st.WithKeyLock(ctx, entry.Key, func() error {
+			trashed, isTrashedErr := st.IsTrashed(ctx, entry.Key)
+			if isTrashedErr != nil {
+				return fmt.Errorf("is trashed check: %w", isTrashedErr)
+			}
+			if trashed {
+				skippedTrashed = true
+				return nil
+			}
 			return st.SweepOnePendingDeletion(ctx, entry)
 		})
 		if lockErr != nil {
 			slog.Warn("起動時スイープ個別エラー（次回起動時に再試行）",
 				"key", entry.Key, "series", entry.Series, "path", entry.Path, "error", lockErr)
 			errCount++
+			continue
+		}
+		if skippedTrashed {
+			slog.Info("起動時スイープ: KEY がゴミ箱投入中のため削除予約の処理を先送り",
+				"key", entry.Key, "series", entry.Series, "path", entry.Path, "marked_at", entry.MarkedAt)
 			continue
 		}
 		// 対象・実行日時を個別エントリ単位で記録する（FNC-012/013、internal/trash.Worker と同じ粒度）
@@ -265,6 +284,10 @@ func run(ctx context.Context) error {
 		RetentionDays:   cfg.Trash.RetentionDays,
 	})
 	go trashWorker.Start(ctx)
+	// シャットダウン時、実行中の runOnce が Store.Close() と競合しないよう待つ（レビュー指摘対応）。
+	// defer は登録の逆順に実行されるため、この defer は st.Close() より後に登録することで
+	// st.Close() より先に（= trashWorker の終了を待ってから）実行される。
+	defer func() { <-trashWorker.Done() }()
 
 	// MCP サーバー初期化 + ツール登録
 	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{
