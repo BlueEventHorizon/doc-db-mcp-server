@@ -159,11 +159,15 @@ branch を削除した後は `/delete-db-series <branch 名>` で cleanup する
 - `docdb_client.py` (同じく同一コピー) — MCP Streamable HTTP を **stdlib のみ (urllib)**
   で扱う軽量クライアント。`~/.doc-db/doc-db.yaml` から port を抽出し、
   `initialize → notifications/initialized → tools/call` の handshake を発行する。
-  サブコマンド: `query` / `sync` (v0.2.0+ 推奨、削除追従 + 完了ポーリング) /
-  `upsert` `upsert-batch` (旧方式) / `delete-series`
-- `run_sync.py` (update-db-{specs,rules} 配下) — 「resolve → sync_documents 投入 →
-  get_sync_status ポーリング」を 1 コマンドに統合したラッパー。**独自 SKILL を作る場合は
-  この組み立て（一覧解決 → sync → ポーリング）が基本形**。詳細は
+  サブコマンド: `query` / `sync` (v0.2.0+、1 プロセス内で完了までポーリング。
+  stderr の進捗はユーザーに中継されない点に注意) / `sync-start` + `sync-status`
+  (job_id 投入とポーリングを分離した低レベル API。AI がポーリングループを回して
+  テキストで進捗を報告する用途に使う) / `upsert` `upsert-batch` (旧方式) / `delete-series`
+- `run_sync.py` (update-db-{specs,rules} 配下) — 「resolve → sync_documents 投入」を
+  1 コマンドに統合したラッパー。`--start-only` で job_id を即座に返し、呼び出し側が
+  `docdb_client.py sync-status` をループして進捗をテキストで報告する
+  (Bash tool の stderr はユーザーに直接届かないため)。**独自 SKILL を作る場合は
+  この組み立て（一覧解決 → sync 投入 → AI 駆動ポーリング）が基本形**。詳細は
   [AI 統合ガイドの「独自クライアント / SKILL を作る」](../../docs/AI_INTEGRATION_GUIDE.md)を参照
 - forge に持っていく際は forge の resolver / client に統合する想定 (現状は本プロジェクト
   内で自己完結)

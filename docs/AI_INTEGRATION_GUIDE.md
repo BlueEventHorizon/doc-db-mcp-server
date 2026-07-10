@@ -419,7 +419,7 @@ doc-db は「クライアントが自分の文書一覧を管理し、サーバ�
 2. 同期       : sync_documents に一覧全体を渡す (local_path 経路なら payload は小さい)。
                 job_id が即時返る
 3. 完了待ち   : get_sync_status(job_id) を done/failed までポーリング
-                (参考実装: docdb_client.py の sync_and_wait / run_sync.py)
+                (参考実装: docdb_client.py の sync-start + sync-status / run_sync.py --start-only)
 ```
 
 実装上の要点:
@@ -436,6 +436,15 @@ doc-db は「クライアントが自分の文書一覧を管理し、サーバ�
   再実行すれば冪等に収束する。クライアント側は気軽に中断してよい
 - **branch 連動**: KEY を「プロジェクト名 + 種別」、series を「git branch 名」で自動決定
   すると、branch 切替・削除と自然に連動する（参考実装の命名規則）
+- **エージェント経由での進捗表示**: `job_id` 取得（ステップ 2）と完了待ちポーリング
+  （ステップ 3）を **1 プロセス内で完結させると**（`docdb_client.py sync` の内部実装）、
+  進捗はプロセスの stderr に出るだけになる。CLI ツールを人間が直接ターミナルで実行する
+  場合はそれで見えるが、Claude Code のような「エージェントが Bash 経由でツールを叩き、
+  結果をチャットで報告する」統合では、**Bash 実行結果はユーザーに直接見えない**ため
+  stderr の進捗は届かない。エージェント統合で進捗をユーザーに見せたい場合は、
+  ステップ 2 とステップ 3 を分離した低レベル API（`sync-start` で job_id だけ即座に
+  受け取り、`sync-status` を呼び出し側が間隔を空けて繰り返し呼ぶ）を使い、
+  エージェント自身がポーリングのたびにテキストで進捗を報告すること
 
 ## 関連ドキュメント
 

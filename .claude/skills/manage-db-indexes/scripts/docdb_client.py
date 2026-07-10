@@ -7,26 +7,29 @@ JSON-RPC で initialize → notifications/initialized → tools/call を送る�
 依存: Python 3.9+ stdlib のみ。
 
 サブコマンド:
-    query                 KEY に検索クエリを投げ、hits を JSON で stdout に返す
-    upsert                entries[] を local_path 経由で upsert する。デフォルトで
-                          30 件ごとにバッチ分割し、進捗を stderr に表示。集約結果を
-                          JSON で stdout に返す。
-                          注意: 全バッチをこのプロセス内で連続実行するため、大量
-                          ファイル (200+) では Claude Code の Bash tool デフォルト
-                          timeout (2分) を超えうる。Claude Code から呼ぶ場合は
-                          upsert-batch を使うこと。
-    upsert-batch          entries[] のうち 1 バッチ分 (--offset/--limit で指定)
-                          だけを処理して即 return する。呼び出し側 (SKILL/AI) が
-                          全体をループする前提の低レベル API。1 呼び出しは通常 30
-                          秒未満で完了するため、Bash tool のデフォルト timeout に
-                          依存せず動作する。
-    delete-series         KEY 内の全 record から series を除去し、結果を stdout に返す
-    list-indexes          list_indexes を呼び、KEY メタデータ一覧 (chunk_count 含む、
-                          ゴミ箱状態の KEY は除外) を JSON で stdout に返す
-    trash-index           trash_index を呼び、指定 KEY をゴミ箱状態にする
-    list-trashed-indexes  list_trashed_indexes を呼び、ゴミ箱状態の KEY 一覧
-                          (trashed_at / remaining_seconds 含む) を JSON で stdout に返す
-    restore-index         restore_index を呼び、ゴミ箱状態の KEY を利用可能な状態へ戻す
+    query          KEY に検索クエリを投げ、hits を JSON で stdout に返す
+    upsert         entries[] を local_path 経由で upsert する。デフォルトで 30 件
+                   ごとにバッチ分割し、進捗を stderr に表示。集約結果を JSON で
+                   stdout に返す。
+                   注意: 全バッチをこのプロセス内で連続実行するため、大量ファイル
+                   (200+) では Claude Code の Bash tool デフォルト timeout (2分) を
+                   超えうる。Claude Code から呼ぶ場合は upsert-batch を使うこと。
+    upsert-batch   entries[] のうち 1 バッチ分 (--offset/--limit で指定) だけを
+                   処理して即 return する。呼び出し側 (SKILL/AI) が全体をループする
+                   前提の低レベル API。1 呼び出しは通常 30 秒未満で完了するため、
+                   Bash tool のデフォルト timeout に依存せず動作する。
+    sync           entries[] を desired-state として sync_documents に投入し、
+                   get_sync_status を完了までこのプロセス内でポーリングする。
+                   進捗は stderr に表示するが、Claude Code の Bash tool 経由では
+                   stderr はユーザーに中継されないため、エージェントが進捗を
+                   チャット上で報告する必要がある場合は sync-start/sync-status を
+                   使うこと。
+    sync-start     sync_documents を投入し、ポーリングせず即座に job_id を返す
+                   低レベル API。呼び出し側 (SKILL/AI) が sync-status をループし、
+                   そのつどテキストで進捗を報告する前提。
+    sync-status    get_sync_status を 1 回だけ呼び、結果を JSON で返す
+                   (ポーリングしない)。AI が間隔を空けて繰り返し呼ぶこと。
+    delete-series  KEY 内の全 record から series を除去し、結果を stdout に返す
 
 いずれのサブコマンドも stdout に JSON、失敗時は stderr にエラー詳細を書き
 non-zero exit する (silent failure 禁止方針)。
@@ -376,41 +379,57 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0 if int(result.get("failed", 0) or 0) == 0 else 2
 
 
+def cmd_sync_start(args: argparse.Namespace) -> int:
+    """sync_documents を 1 回投入し、ポーリングせず即座に job_id を返す。
+
+    呼び出し側 (SKILL/AI) が sync-status を繰り返し呼んでポーリングし、
+    そのつどテキストでユーザーに進捗を中継する前提の低レベル API
+    (upsert-batch と同じ設計方針: このプロセスは長時間ブロックしない)。
+    Bash tool 経由では stderr の進捗表示がユーザーに届かないため、
+    AI が能動的にポーリング結果を報告する必要がある場合はこちらを使うこと。
+    """
+    documents = _normalize_entries(json.loads(args.entries_json))
+    client = Client(timeout=args.timeout)
+    try:
+        r = client.call("sync_documents", {"key": args.key, "series": args.series, "documents": documents})
+    except RuntimeError as e:
+        if "sync_documents" in str(e) or "not found" in str(e).lower():
+            raise RuntimeError(
+                f"{e}\nsync_documents は doc-db v0.2.0+ の機能です。"
+                f"`brew upgrade doc-db` でサーバを更新してください。") from e
+        raise
+    job_id = r.get("job_id")
+    if not job_id:
+        raise RuntimeError(f"sync_documents が job_id を返しませんでした: {r}")
+
+    result = {"job_id": job_id, "key": args.key, "series": args.series, "total": len(documents)}
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+def cmd_sync_status(args: argparse.Namespace) -> int:
+    """get_sync_status を 1 回だけ呼び、結果を JSON で返す (ポーリングしない)。
+
+    呼び出し側 (SKILL/AI) がこのコマンドを間隔を空けて繰り返し呼び、
+    そのつど status を読んでテキストでユーザーに進捗を中継する想定。
+    """
+    client = Client(timeout=args.timeout)
+    result = client.call("get_sync_status", {"job_id": args.job_id})
+    result["job_id"] = args.job_id
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    status = result.get("status", "")
+    if status == "failed":
+        return 2
+    if status == "done":
+        return 0 if int(result.get("failed", 0) or 0) == 0 else 2
+    return 0  # running: まだ完了していない (呼び出し側が再度ポーリングする)
+
+
 def cmd_delete_series(args: argparse.Namespace) -> int:
     client = Client(timeout=args.timeout)
     result = client.call("delete_series", {"key": args.key, "series": args.series})
-    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write("\n")
-    return 0
-
-
-def cmd_list_indexes(args: argparse.Namespace) -> int:
-    client = Client(timeout=args.timeout)
-    result = client.call("list_indexes", {})
-    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write("\n")
-    return 0
-
-
-def cmd_trash_index(args: argparse.Namespace) -> int:
-    client = Client(timeout=args.timeout)
-    result = client.call("trash_index", {"key": args.key})
-    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write("\n")
-    return 0
-
-
-def cmd_list_trashed_indexes(args: argparse.Namespace) -> int:
-    client = Client(timeout=args.timeout)
-    result = client.call("list_trashed_indexes", {})
-    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write("\n")
-    return 0
-
-
-def cmd_restore_index(args: argparse.Namespace) -> int:
-    client = Client(timeout=args.timeout)
-    result = client.call("restore_index", {"key": args.key})
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     return 0
@@ -466,30 +485,26 @@ def main() -> int:
                         help=f"ジョブ完了待ちの上限秒 (デフォルト {DEFAULT_TIMEOUT})")
     p_sync.set_defaults(func=cmd_sync)
 
+    p_sync_start = sub.add_parser("sync-start",
+                                  help="sync_documents を投入し、ポーリングせず即座に job_id を返す。"
+                                       "Claude Code から呼ぶ場合は SKILL 側で sync-status をループすること"
+                                       "（stderr の進捗はユーザーに届かないため）。")
+    p_sync_start.add_argument("--key", required=True)
+    p_sync_start.add_argument("--series", required=True)
+    p_sync_start.add_argument("--entries-json", required=True, dest="entries_json",
+                              help="[{path, local_path}, ...] の JSON 文字列 (当該 key・series の完全な現在状態)")
+    p_sync_start.set_defaults(func=cmd_sync_start)
+
+    p_sync_status = sub.add_parser("sync-status",
+                                   help="get_sync_status を 1 回だけ呼び、結果を JSON で返す (ポーリングしない)。"
+                                        "AI が間隔を空けて繰り返し呼び、そのつど進捗をテキストで報告すること。")
+    p_sync_status.add_argument("--job-id", required=True, dest="job_id")
+    p_sync_status.set_defaults(func=cmd_sync_status)
+
     p_ds = sub.add_parser("delete-series", help="doc-db delete_series を実行")
     p_ds.add_argument("--key", required=True)
     p_ds.add_argument("--series", required=True)
     p_ds.set_defaults(func=cmd_delete_series)
-
-    p_li = sub.add_parser("list-indexes",
-                          help="doc-db list_indexes を実行 (KEY メタデータ一覧、"
-                               "chunk_count 含む、ゴミ箱状態の KEY は除外)")
-    p_li.set_defaults(func=cmd_list_indexes)
-
-    p_ti = sub.add_parser("trash-index",
-                          help="doc-db trash_index を実行 (指定 KEY をゴミ箱状態にする)")
-    p_ti.add_argument("--key", required=True)
-    p_ti.set_defaults(func=cmd_trash_index)
-
-    p_lt = sub.add_parser("list-trashed-indexes",
-                          help="doc-db list_trashed_indexes を実行 (ゴミ箱状態の KEY 一覧、"
-                               "trashed_at / remaining_seconds 含む)")
-    p_lt.set_defaults(func=cmd_list_trashed_indexes)
-
-    p_ri = sub.add_parser("restore-index",
-                          help="doc-db restore_index を実行 (ゴミ箱状態の KEY を復活させる)")
-    p_ri.add_argument("--key", required=True)
-    p_ri.set_defaults(func=cmd_restore_index)
 
     args = parser.parse_args()
     try:
