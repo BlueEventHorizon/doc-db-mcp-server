@@ -153,6 +153,40 @@ func TestWorker_Done_ClosesAfterStartReturns(t *testing.T) {
 	}
 }
 
+// TestWorker_Done_ClosesViaOwnCancelEvenIfParentContextNeverCancelled はレビュー指摘の
+// 回帰テスト: cmd/docdb の run() は、HTTP サーバー起動の即時失敗（例: ポート使用中）の
+// ような一部の終了経路で、シグナル駆動の親 ctx を一切キャンセルしない。Worker に親 ctx を
+// そのまま渡すと、その経路で Start の goroutine が終了できず Done() 待ちが永久にブロック
+// する（run() のハング）。修正は Worker 専用の子 context を用意し、run() のどの終了経路
+// でも必ず子 context 自身をキャンセルすること。本テストは「親 ctx が一切キャンセルされな
+// くても、子 context 自身のキャンセルだけで Done() が close される」ことを検証する。
+func TestWorker_Done_ClosesViaOwnCancelEvenIfParentContextNeverCancelled(t *testing.T) {
+	w := New(&mockStore{}, Config{IntervalSeconds: 3600, RetentionDays: 3})
+
+	// 親 ctx はキャンセルしない (cmd/docdb の signal.NotifyContext が
+	// SIGINT/SIGTERM 以外の終了経路で発火しない状況を模擬する)。
+	parentCtx := context.Background()
+	workerCtx, stopWorker := context.WithCancel(parentCtx)
+
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		w.Start(workerCtx)
+	}()
+	<-started
+
+	// 子 context 自身をキャンセルする（親は無関係のまま）。
+	stopWorker()
+
+	select {
+	case <-w.Done():
+		// OK: 親 ctx が未キャンセルでも、子 context 自身のキャンセルだけで終了できる
+	case <-time.After(2 * time.Second):
+		t.Fatal("親 ctx が未キャンセルの状態で stopWorker() しても、" +
+			"タイムアウトまでに Done() が close されなかった（run() ハングの再発）")
+	}
+}
+
 // -----------------------------------------------------------------------
 // sweepTrashedKeys: 保持期間超過分のみ処理する
 // -----------------------------------------------------------------------

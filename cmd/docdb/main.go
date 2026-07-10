@@ -278,16 +278,24 @@ func run(ctx context.Context) error {
 		},
 	)
 
-	// ゴミ箱最終処分ワーカー起動（DES-001 §3.1/§8。旧 internal/expiry の TTL/LRU ワーカーを置換）
+	// ゴミ箱最終処分ワーカー起動（DES-001 §3.1/§8。旧 internal/expiry の TTL/LRU ワーカーを置換）。
+	// worker 専用の子 context を使う（レビュー指摘対応）: run() の親 ctx は
+	// signal.NotifyContext（SIGINT/SIGTERM）にのみ連動するため、ListenAndServe が
+	// 即座に失敗する経路（例: ポート使用中）では親 ctx が一切キャンセルされない。
+	// 親 ctx をそのまま渡すと、その経路で trashWorker.Start が終了せず、
+	// 後述の Done() 待ち defer が永久にブロックして run() がハングする。
+	workerCtx, stopWorker := context.WithCancel(ctx)
 	trashWorker := trash.New(st, trash.Config{
 		IntervalSeconds: cfg.Trash.IntervalSeconds,
 		RetentionDays:   cfg.Trash.RetentionDays,
 	})
-	go trashWorker.Start(ctx)
-	// シャットダウン時、実行中の runOnce が Store.Close() と競合しないよう待つ（レビュー指摘対応）。
-	// defer は登録の逆順に実行されるため、この defer は st.Close() より後に登録することで
-	// st.Close() より先に（= trashWorker の終了を待ってから）実行される。
+	go trashWorker.Start(workerCtx)
+	// defer は登録の逆順に実行される。実行順序は
+	// stopWorker()（workerCtx キャンセル・run() のどの return 経路でも必ず発火）→
+	// trashWorker.Done() 待ち → st.Close() となるよう、この 2 つを st.Close() の
+	// defer より後に、かつ Done() 待ちより後に stopWorker() を登録する。
 	defer func() { <-trashWorker.Done() }()
+	defer stopWorker()
 
 	// MCP サーバー初期化 + ツール登録
 	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{
