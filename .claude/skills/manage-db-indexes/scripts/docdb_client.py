@@ -30,6 +30,12 @@ JSON-RPC で initialize → notifications/initialized → tools/call を送る�
     sync-status    get_sync_status を 1 回だけ呼び、結果を JSON で返す
                    (ポーリングしない)。AI が間隔を空けて繰り返し呼ぶこと。
     delete-series  KEY 内の全 record から series を除去し、結果を stdout に返す
+    list-indexes          list_indexes を呼び、KEY メタデータ一覧 (chunk_count 含む、
+                          ゴミ箱状態の KEY は除外) を JSON で stdout に返す
+    trash-index           trash_index を呼び、指定 KEY をゴミ箱状態にする
+    list-trashed-indexes  list_trashed_indexes を呼び、ゴミ箱状態の KEY 一覧
+                          (trashed_at / remaining_seconds 含む) を JSON で stdout に返す
+    restore-index         restore_index を呼び、ゴミ箱状態の KEY を利用可能な状態へ戻す
 
 いずれのサブコマンドも stdout に JSON、失敗時は stderr にエラー詳細を書き
 non-zero exit する (silent failure 禁止方針)。
@@ -435,6 +441,38 @@ def cmd_delete_series(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_list_indexes(args: argparse.Namespace) -> int:
+    client = Client(timeout=args.timeout)
+    result = client.call("list_indexes", {})
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+def cmd_trash_index(args: argparse.Namespace) -> int:
+    client = Client(timeout=args.timeout)
+    result = client.call("trash_index", {"key": args.key})
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+def cmd_list_trashed_indexes(args: argparse.Namespace) -> int:
+    client = Client(timeout=args.timeout)
+    result = client.call("list_trashed_indexes", {})
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+def cmd_restore_index(args: argparse.Namespace) -> int:
+    client = Client(timeout=args.timeout)
+    result = client.call("restore_index", {"key": args.key})
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
@@ -505,6 +543,26 @@ def main() -> int:
     p_ds.add_argument("--key", required=True)
     p_ds.add_argument("--series", required=True)
     p_ds.set_defaults(func=cmd_delete_series)
+
+    p_li = sub.add_parser("list-indexes",
+                          help="doc-db list_indexes を実行 (KEY メタデータ一覧、"
+                               "chunk_count 含む、ゴミ箱状態の KEY は除外)")
+    p_li.set_defaults(func=cmd_list_indexes)
+
+    p_ti = sub.add_parser("trash-index",
+                          help="doc-db trash_index を実行 (指定 KEY をゴミ箱状態にする)")
+    p_ti.add_argument("--key", required=True)
+    p_ti.set_defaults(func=cmd_trash_index)
+
+    p_lt = sub.add_parser("list-trashed-indexes",
+                          help="doc-db list_trashed_indexes を実行 (ゴミ箱状態の KEY 一覧、"
+                               "trashed_at / remaining_seconds 含む)")
+    p_lt.set_defaults(func=cmd_list_trashed_indexes)
+
+    p_ri = sub.add_parser("restore-index",
+                          help="doc-db restore_index を実行 (ゴミ箱状態の KEY を復活させる)")
+    p_ri.add_argument("--key", required=True)
+    p_ri.set_defaults(func=cmd_restore_index)
 
     args = parser.parse_args()
     try:
