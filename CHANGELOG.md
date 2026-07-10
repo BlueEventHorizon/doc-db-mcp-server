@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-10
+
+### Fixed
+
+- **シャットダウン時のハング修正**: `internal/trash.Worker` の実行完了を待たず
+  `Store.Close()` する競合を修正した際に追加した `Worker.Done()` 待ちが、
+  HTTP サーバー起動の即時失敗（ポート使用中等）経路ではシグナル駆動の親
+  context が一切キャンセルされず、`run()` が永久にハングする欠陥を招いていた。
+  worker 専用の子 context を導入し、`run()` のどの終了経路でも必ずキャンセル
+  してから `Done()` を待つよう修正
+- **ゴミ箱状態 KEY への削除予約先送り**: `sweepPendingDeletions`/`startupSweep`
+  が、対象 KEY のゴミ箱猶予期間と無関係に古い series 全体予約を sweep して
+  しまい、`restore_index` 後も series データが戻らない事故を防止。KEY が
+  ゴミ箱状態の間は当該 KEY の削除予約処理を先送りするよう修正
+- **`trash_index` ツール説明の修正**: 「query も同様に拒否され、誤って検索・
+  参照することはできない」という断定を、実際の設計判断（query は読み取り
+  専用パスのため TOCTOU 競合ウィンドウを許容する）と整合するよう表現を修正
+- **`manage-db-indexes` SKILL のゴミ箱操作コマンド復元**: `docdb_client.py`
+  の更新時に誤って削除されていた `list-indexes`/`trash-index`/
+  `list-trashed-indexes`/`restore-index` サブコマンドを復元
+
+### Added
+
+- **`docdb_client.py` に `sync-start`/`sync-status` を追加**: `sync_documents`
+  投入と完了ポーリングを分離した低レベル API。Bash tool の stderr 出力は
+  ユーザーのチャットに中継されないため、AI がポーリングループを回して
+  進捗をテキストで報告できるようにした（`update-db-specs`/`update-db-rules`
+  SKILL に反映）
+
 ## [0.3.0] - 2026-07-10
 
 ### Removed
