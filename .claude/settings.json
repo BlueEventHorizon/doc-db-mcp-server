@@ -66,10 +66,10 @@
       "Read(**/access_token*)",
       "Read(**/refresh_token*)",
 
-      "Write(.env*)",
-      "Write(.env.*)",
-      "Write(**/secrets/**)",
-      "Write(**/.ssh/**)"
+      "Edit(.env*)",
+      "Edit(.env.*)",
+      "Edit(**/secrets/**)",
+      "Edit(**/.ssh/**)"
     ],
     "allow": [
       "Read",
