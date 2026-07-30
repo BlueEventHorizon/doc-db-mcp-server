@@ -266,6 +266,7 @@ await mcp.call("upsert_documents", {
 // 2. 検索 (mode=all がデフォルト)
 const r = await mcp.call("query", {
   key: "myrepo-docs",
+  series: "main",   // 登録に使っている series を指定する (下記注記)
   query: "認証エラーのハンドリング"
 });
 
@@ -281,6 +282,26 @@ if (r.warnings?.length > 0) {
   console.warn("検索に異常:", r.warnings);
 }
 ```
+
+**`series` を指定する理由 [推奨]**: `sync_documents` で登録している場合、当該 series は
+「その時点の完全な現在状態」であり、削除したファイルは sync 完了直後に当該 series から
+外れる (SYN-03)。一方 `series` 省略時の KEY 全体検索は全 series 横断であるため、他 series
+にしか無い文書に加えて、**sync で切り離された削除済み文書が物理削除まで結果に混入し得る**
+(§4.5 既知の制約)。
+
+`series` 指定でヒット 0 件だった場合に **series 省略で再検索しないこと**。当該 series が
+desired-state である以上、0 件は「その series に該当文書が無い」という正しい答えであり、
+他 series の文書で代替すると削除済み・別バージョンの文書を掴む。series 自体が未登録
+(`list_indexes` の `series[]` に無い) 場合も同様に、横断検索へ切り替えるのではなく
+`sync_documents` の実行を促すのが安全側の設計である。
+
+**ただし `list_indexes` の `series[]` は「一度も sync していない」と「sync 済みだが
+desired-state が空だった」を区別できない**。`series[]` は record に現在紐づく series から
+作られるため、空の `documents` で sync した series は一覧から消える（空リストは正当な
+desired-state として受理される。§5.4）。後者に対して `sync_documents` の再実行を促しても
+状況は変わらない（再実行しても 0 件のままで series は現れない）。クライアント側で
+**送信対象ファイル数が 0 かどうかを先に判定**し、0 件なら「対象文書が無い」として扱い、
+1 件以上あるのに `series[]` に無い場合のみ未同期として `sync_documents` を促すこと。
 
 ### 5.3 branch 更新
 

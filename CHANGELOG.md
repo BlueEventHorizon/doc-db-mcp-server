@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-30
+
+### Changed
+
+- **query 系 SKILL の検索既定を現 branch の series 指定へ変更**: `/query-db-specs` /
+  `/query-db-rules`（HTTP 版・`mcp版` とも）が series 無指定で全 branch 横断検索していた
+  既定を、`resolve_docs.py` の `git_branch` を `--series` に渡す形へ変更。update 側は
+  `sync_documents`（desired-state 同期）で登録するため当該 series は「その branch の
+  完全な現在状態」であり、series 無指定の全 series 横断検索には、他 branch にしか無い
+  文書に加えて **sync で切り離された削除済み文書が物理削除まで混入し得る**
+  （APP-001 SYN-03 / DES-001 §4.5 の既知の制約）。ヒット 0 件でも series 無指定での
+  再検索は行わない（0 件は「この branch に該当文書が無い」という正しい結果であり、
+  他 branch の文書で代替すると、その branch で削除した文書を提示してしまう）
+- **`docdb_client.py query` に series 登録検証を追加**（6 コピー共通）: `--series` 指定時は
+  検索前に `list_indexes` で登録を確認し、当該 series（または KEY）が無ければ検索せず
+  exit 3 で終了する。全 series 横断へのフォールバックはしない。`--no-verify-series` で
+  検証を無効化できる。`list_indexes` の series 一覧は record の紐付きから作られるため
+  **「未同期」と「同期済みだが対象文書 0 件」を区別できない**ことをエラーメッセージ・
+  docstring に明記し、SKILL 手順側では Step 1 で `resolve_docs.py` の `count == 0` を
+  先に判定して後者を切り分ける（同期済みで 0 件の branch に無意味な `/update-db-*` の
+  再実行を案内し続けないため）
+- **`docs/AI_INTEGRATION_GUIDE.md` / SKILL README の追記**: AI agent 一般向けにも
+  `series` 指定を推奨とし、上記の区別不能な制約と切り分け手順を明記
+
+### Documentation
+
+- **APP-001 MNG-01 / DES-001 §3.2・§4.5 に `list_indexes` の series 一覧の制約を明記**:
+  series 一覧は `series_keys JOIN records` の `DISTINCT`（`fetchSeriesForKey`）であり、
+  record の紐付きが残っていない series は現れないため「未同期」と「同期済みだが
+  desired-state が空だった」を区別できない。クライアントは送信対象ドキュメント数
+  0 件との併用で切り分ける必要があること、および `pending_deletions` の予約行が
+  スイープまで内部の痕跡として残る一方でそれを API へ公開せず、恒久的に区別可能な
+  状態も新設しない設計判断を追記した（**実装変更は無く、既存実装の観測可能な性質の
+  文書化**。query 系 SKILL がこの一覧に依存する検証を追加したため、契約として明文化した）
+
 ## [0.3.1] - 2026-07-10
 
 ### Fixed
@@ -561,7 +596,7 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.3.2...HEAD
 [0.2.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.2.0
 [0.1.12]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.12
 [0.1.11]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.11

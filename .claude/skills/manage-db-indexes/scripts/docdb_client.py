@@ -7,7 +7,13 @@ JSON-RPC で initialize → notifications/initialized → tools/call を送る�
 依存: Python 3.9+ stdlib のみ。
 
 サブコマンド:
-    query          KEY に検索クエリを投げ、hits を JSON で stdout に返す
+    query          KEY に検索クエリを投げ、hits を JSON で stdout に返す。
+                   --series 指定時は list_indexes で当該 series の登録を検証し、
+                   未登録なら検索せず exit 3 で終了する (他 series の文書を代わりに
+                   返さない = 返す結果は常に当該 series の正とする)。
+                   --series 省略時は KEY 内の全 series を横断検索するが、
+                   sync_documents で切り離された削除済み文書が物理削除まで混入し得る
+                   (DES-001 §4.5 / APP-001 SYN-03 の既知の制約)
     upsert         entries[] を local_path 経由で upsert する。デフォルトで 30 件
                    ごとにバッチ分割し、進捗を stderr に表示。集約結果を JSON で
                    stdout に返す。
@@ -174,7 +180,66 @@ class Client:
         return result
 
 
+SERIES_NOT_INDEXED_EXIT = 3
+
+
+def _lookup_series(client: Client, key: str) -> "list[str] | None":
+    """list_indexes から当該 KEY の series 一覧を返す。KEY が無ければ None。
+
+    list_indexes はゴミ箱状態 (trash_index 済み) の KEY を一覧から除外するため、
+    ゴミ箱投入済みの KEY も None になる。
+
+    返る series 一覧は record に現在紐づく series から作られるため、
+    **「未同期」と「同期済みだが対象文書 0 件」を区別できない**
+    (sync_documents は空リストも正当な desired-state として受理し、その結果
+    当該 series は全 record から切り離されて一覧から消える)。
+    呼び出し側はこの両義性を前提にメッセージを組むこと。
+    """
+    result = client.call("list_indexes", {})
+    for info in result.get("indexes") or []:
+        if info.get("key") == key:
+            return list(info.get("series") or [])
+    return None
+
+
 def cmd_query(args: argparse.Namespace) -> int:
+    client = Client(timeout=args.timeout)
+
+    # --series 指定時は検索前に登録を検証する。未登録のときに series 無指定
+    # (全 series 横断) へフォールバックしないのは意図的な設計:
+    #   - 当該 series は sync_documents の desired-state により「その branch の
+    #     完全な現在状態」であるため、ヒット 0 件は「この branch に無い」という
+    #     正しい答えである
+    #   - 全 series 横断は sync で切り離された削除済み文書を物理削除まで拾い得る
+    #     (APP-001 SYN-03)。フォールバックはその混入経路を開き直す
+    # 検証が落ちる状態には「未同期」と「同期済みだが対象文書 0 件」の両方が含まれ、
+    # list_indexes では区別できない (_lookup_series の docstring 参照)。後者でも
+    # 当該 series の検索結果は 0 件のため機能的な損失はなく、メッセージで両方の
+    # 可能性を提示して誤った再 update の案内を避ける。
+    if args.series and args.verify_series:
+        available = _lookup_series(client, args.key)
+        if available is None:
+            print(
+                f"ERROR: KEY が見つかりません (key={args.key})。未作成、または"
+                f"ゴミ箱状態 (trash_index 済み) です。update 系 SKILL で"
+                f"インデックスを作成してください。",
+                file=sys.stderr,
+            )
+            return SERIES_NOT_INDEXED_EXIT
+        if args.series not in available:
+            print(
+                f"ERROR: この series に検索対象がありません "
+                f"(key={args.key} series={args.series})。"
+                f"登録済み series: {available}。"
+                f"原因は (1) この branch で update 系 SKILL を未実行 (未同期)、"
+                f"または (2) 同期済みだが対象文書が 0 件 のいずれかです "
+                f"(list_indexes の series 一覧は record の紐付きから作られるため"
+                f"両者を区別できません)。いずれの場合も当該 series の検索結果は "
+                f"0 件であり、他 series の文書で代替はしません。",
+                file=sys.stderr,
+            )
+            return SERIES_NOT_INDEXED_EXIT
+
     arguments = {
         "key": args.key,
         "query": args.query,
@@ -183,7 +248,6 @@ def cmd_query(args: argparse.Namespace) -> int:
     }
     if args.series:
         arguments["series"] = args.series
-    client = Client(timeout=args.timeout)
     result = client.call("query", arguments)
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
@@ -485,8 +549,15 @@ def main() -> int:
     p_query.add_argument("--mode", default="all",
                          choices=["all", "rerank", "emb", "lex", "grep", "hybrid"])
     p_query.add_argument("--top-n", type=int, default=20, dest="top_n")
-    p_query.add_argument("--series", default=None)
-    p_query.set_defaults(func=cmd_query)
+    p_query.add_argument("--series", default=None,
+                         help="絞り込む series (Git branch 名)。指定時は登録を検証し、"
+                              "未登録なら検索せず exit 3 で終了する。"
+                              "省略時は全 series 横断検索 (削除済み文書が混入し得る)")
+    p_query.add_argument("--no-verify-series", action="store_false",
+                         dest="verify_series",
+                         help="--series の登録検証 (list_indexes) を省略する。"
+                              "未登録 series を指定した場合はヒット 0 件が返る")
+    p_query.set_defaults(func=cmd_query, verify_series=True)
 
     p_up = sub.add_parser("upsert",
                           help="doc-db upsert_documents (local_path 経路、バッチ分割 + 進捗表示)")
