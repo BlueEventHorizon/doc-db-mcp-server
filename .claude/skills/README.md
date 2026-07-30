@@ -114,7 +114,20 @@ MCP handshake (initialize → notifications/initialized → tools/call) を発�
 
 - 同一 path のファイルでも branch が違えば別 series として管理される
 - 同一内容 (SHA-256 一致) なら embedding は共有される (doc-db DIF-02)
-- query 側はデフォルトで series 指定なし = **KEY 内の全 branch を横断検索** (recall 優先)
+- query 側は **現在の branch の series を指定して検索する**。update は `sync_documents`
+  (desired-state 同期) なので当該 series は「その branch の完全な現在状態」になる。
+  series 無指定の全 branch 横断検索には、他 branch にしか無い文書に加え、**sync で
+  切り離された削除済み文書が物理削除まで混入し得る** (DES-001 §4.5 / APP-001 SYN-03)
+- **series が未登録なら検索しない**: branch を切って `/update-db-*` を未実行の場合、
+  query 系 SKILL は全 branch 横断へフォールバックせず `/update-db-*` の実行を促して
+  終了する (`docdb_client.py query` は exit 3)。他 branch の文書で代替すると、その
+  branch で削除済みの文書を提示してしまうため
+- **`list_indexes` の series 一覧は「未同期」と「同期済みだが対象文書 0 件」を区別できない**:
+  series 一覧は record に現在紐づく series から作られるため、`sync_documents` に空の
+  desired-state を渡した series は一覧から消える。query 系 SKILL は Step 1 で
+  `resolve_docs.py` の `count == 0` を先に判定し、その場合は doc-db を叩かずに
+  「対象文書がありません」と報告して終了することで両者を切り分ける（同期済みで 0 件の
+  branch に対して、無意味な `/update-db-*` の再実行を案内し続けないため）
 
 ## 使用フロー
 
