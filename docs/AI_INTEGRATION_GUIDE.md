@@ -384,6 +384,51 @@ await mcp.call("delete_documents", {
 - 入力バリデーション (key/series 必須、content+url 排他等)
 - OpenAI API キー未設定 (起動時 fail-fast)
 
+### 6.2.1 エラー種別の識別子 [公開契約]
+
+**「KEY が存在しない」と「KEY がゴミ箱状態」は、クライアントが取るべき行動が正反対です**
+（前者は索引を作成してよい / 後者は作成してはならず `restore_index` を案内する）。
+この 2 つは **機械可読な識別子で判別できます**。**メッセージ文言で分岐しないでください**
+（文言は実装の詳細であり公開契約ではありません。予告なく変わります）。
+
+| 識別子          | 意味                  | 取るべき行動                                 |
+| --------------- | --------------------- | -------------------------------------------- |
+| `KEY_NOT_FOUND` | 指定 KEY が存在しない | 索引を作成してよい（`sync_documents` 等）    |
+| `KEY_TRASHED`   | KEY がゴミ箱状態      | 索引を作成しない。`restore_index` を案内する |
+
+**識別子は公開契約であり、値を変更しません。** この 2 つの識別子は JSON-RPC error として返り、
+同じ値が 2 か所に載ります（クライアントの経路によって `data` が届くとは限らないため）。
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -31002, // 補助。判別の正本は data.code
+    "message": "KEY_TRASHED: key \"myrepo-specs\" はゴミ箱に入っています。restore_index で復活してから操作してください",
+    "data": { "code": "KEY_TRASHED", "key": "myrepo-specs" }
+  }
+}
+```
+
+- **`data.code`（判別の正本）**: JSON を直接パースできるクライアントはこれで分岐する
+- **`message` 先頭の `<識別子>:`**: `data` が AI agent へ提示されない経路でのフォールバック
+
+```javascript
+try {
+  await mcp.call("query", { key, series, query });
+} catch (e) {
+  switch (e.data?.code) {
+    case "KEY_NOT_FOUND": return await createIndex(key);        // 索引を作る
+    case "KEY_TRASHED":   return warnRestoreRequired(key);      // 作らず復活を案内
+    default:              throw e;                              // 判別不能 = 障害として扱う
+  }
+}
+```
+
+**上記 2 つ以外のエラーに識別子は付きません。** 判別できないエラーは「障害」として扱い、
+索引作成などの副作用を伴う操作へ倒さないでください（誤った同期を防ぐため）。
+
 ### 6.3 warnings は必ず確認
 
 silent failure 禁止方針のため、致命的でない異常は全て `warnings` に集約されます。

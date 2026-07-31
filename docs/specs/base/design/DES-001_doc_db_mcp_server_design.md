@@ -932,6 +932,33 @@ log:
 **silent failure 禁止方針**: 全エラー経路で「ログのみ」で終わらせず caller / observable state
 に必ず伝達する。詳細は memory `feedback_no_silent_failure.md` 参照。
 
+### 10.1 エラー種別の機械判別（APP-001 ERR-01）
+
+`internal/mcp/errcode.go` に識別子と組み立て関数を集約する。
+
+**識別子（公開契約。値を変更しない）**:
+
+| 識別子          | 意味                            | クライアントが取るべき行動                        | 生成箇所                                |
+| --------------- | ------------------------------- | ------------------------------------------------- | --------------------------------------- |
+| `KEY_NOT_FOUND` | 指定 KEY が存在しない           | 索引の作成（`sync_documents` 等）へ進んでよい     | `query` の KeyExists 判定（§5.3）       |
+| `KEY_TRASHED`   | KEY がゴミ箱状態（TRS-02 / 03） | 索引を作成してはならず `restore_index` を案内する | `rejectIfTrashed`（§4.6。1 箇所に集約） |
+
+**載せ方 — `*jsonrpc.Error` を返す**: go-sdk の `ToolHandlerFor` ラッパー（`mcp/server.go`）は
+handler が返した error を次の 2 通りに分岐させる。
+
+- `*jsonrpc.Error` → **そのまま JSON-RPC error として返す**（`code` / `message` / `data` が保持される）
+- それ以外の error → `CallToolResult{IsError: true}` に包み、**`content[].text` の文言だけが残る**（handler が返した `res` は破棄される）
+
+したがって後者では構造化情報を載せる余地がなく、クライアントは文言一致に退行する。ERR-01 の 2 種は前者で返す。
+
+**識別子は Message 先頭と Data の両方に載せる**（経路によって `data` がクライアントへ届くとは限らないため）:
+
+- `Data`（判別の正本）: `{"code": "<識別子>", "key": "<対象 KEY>"}`。JSON を直接パースするクライアント（SKILL の `docdb_client.py` 等）は `error.data.code` で厳密に分岐する
+- `Message` 先頭: `<識別子>: <日本語の説明>`。MCP クライアント経由で `data` が AI agent へ提示されない場合のフォールバック
+- `Code`（数値）: JSON-RPC 2.0 の予約域（-32768〜-32000）を避けたアプリケーション固有値。判別の正本は `Data.code` の文字列であり、数値は補助
+
+**回帰テスト**: `internal/mcp/errcode_test.go` が「`*jsonrpc.Error` であること・`Message` 先頭の識別子・`Data.code` / `Data.key`」を handler 経路込みで検証する。`fmt.Errorf` へ戻す変更はこのテストが落ちる。
+
 ## 11. テスト設計
 
 - **単体テスト対象**: `store`（SQL クエリ正確性）、`chunker`（Markdown 分割境界）、`search`（コサイン類似度・BM25・RRF の計算結果）、`embedder`（リトライロジック）
@@ -982,3 +1009,4 @@ log:
 | 2026-07-10 | 1.1        | レビュー指摘 3 件に対応。(1) §5.6/§8.5: `sweepPendingDeletions`/`startupSweep` が KEY のゴミ箱猶予期間と無関係に古い series 全体予約を sweep してしまい、`restore_index` 後も series データが戻らない事故を防ぐため、KEY がゴミ箱状態の間は当該 KEY の削除予約処理を先送りする仕様を明記（`internal/trash/trash.go`・`cmd/docdb/main.go` を対応する実装に修正）。(2) §5.7: `query` は `WithKeyLock` 再確認の対象外（読み取り専用パスのため）である点と、それに伴う TOCTOU 競合ウィンドウの許容理由を明記（診断のみで実装は変更せず）。(3) §8: シャットダウン時に `internal/trash.Worker` の実行完了を待たず `Store.Close()` する問題を修正するため `Worker.Done()` を新設し、`cmd/docdb/main.go` がこれを待ってから Store を閉じるよう変更した旨を記録                                                                                                                                                                              |
 | 2026-07-10 | 1.2        | 追加レビュー指摘 2 件に対応。(1) §8: 1.1 で導入した `Worker.Done()` 待ちが、`run()` の親 ctx（`signal.NotifyContext` で SIGINT/SIGTERM のみに連動）を worker にそのまま渡していたため、HTTP サーバー起動の即時失敗（ポート使用中等）経路では親 ctx が一切キャンセルされず `run()` が永久にハングする欠陥を修正。worker 専用の子 context（`context.WithCancel(ctx)`）を用意し、`run()` のどの終了経路でも必ず子 context 自身をキャンセルしてから `Done()` を待つ設計に変更した旨を追記。(2) `trash_index` MCP ツールの Description（`internal/mcp/mcp.go`）が「query も同様に拒否され、誤って検索・参照することはできない」と断定していた箇所を、§5.7 で既に文書化した TOCTOU 競合ウィンドウの許容方針と整合するよう表現を修正した旨を記録                                                                                                                                                                                           |
 | 2026-07-30 | 1.3        | §4.5 orphan record の既知の制約に「`list_indexes` の series 一覧からは消える」を追加。`fetchSeriesForKey` が `series_keys JOIN records` の `DISTINCT` であるため、desired-state が空だった series は一覧に現れず、**`list_indexes` では「未同期」と「同期済みだが空」を区別できない**（FNC-004 MNG-01）。クライアントは送信対象ドキュメント数 0 件との併用で切り分ける必要がある旨と、`pending_deletions` の予約行がスイープまで内部の痕跡として残る一方でそれを API へ公開せず、恒久的に区別可能な状態も新設しない設計判断（後者でも検索結果は必然的に 0 件であり、区別が必要なのは利用者への案内文に限られる）を明記。§3.2 の `KeyInfo` 説明にも series の集計元を追記。実装変更は無く、既存実装の観測可能な性質の文書化のみ                                                                                                                                                                                                      |
+| 2026-08-01 | 1.4        | §10.1「エラー種別の機械判別」を新設（APP-001 ERR-01 / Issue #7）。識別子 `KEY_NOT_FOUND` / `KEY_TRASHED` を公開契約として定義し、`*jsonrpc.Error` で返す設計を明記（go-sdk はそれ以外の error を text だけの `CallToolResult` に包むため構造化情報を載せられない）。識別子は `Data`（判別の正本）と `Message` 先頭（`data` が届かない経路のフォールバック）の両方に載せる。生成箇所を `internal/mcp/errcode.go` に集約し、回帰テスト `errcode_test.go` で不変条件を保証する                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
