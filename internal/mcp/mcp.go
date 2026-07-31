@@ -774,7 +774,8 @@ func (h *Handlers) handleQuery(
 		return nil, QueryResult{}, err
 	}
 	if !exists {
-		err = fmt.Errorf("key %q が存在しません", in.Key)
+		// 機械判別可能な識別子付きで返す（errcode.go / APP-001 ERR-01）。
+		err = errKeyNotFound(in.Key)
 		return nil, QueryResult{}, err
 	}
 
