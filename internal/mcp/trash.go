@@ -153,7 +153,8 @@ func (h *Handlers) rejectIfTrashed(ctx context.Context, key string) error {
 		return fmt.Errorf("check trashed: %w", err)
 	}
 	if trashed {
-		return fmt.Errorf("key %q はゴミ箱に入っています。restore_index で復活してから操作してください", key)
+		// 機械判別可能な識別子付きで返す（errcode.go / APP-001 ERR-01）。
+		return errKeyTrashed(key)
 	}
 	return nil
 }

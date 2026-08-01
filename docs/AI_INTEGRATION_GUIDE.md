@@ -295,6 +295,13 @@ desired-state である以上、0 件は「その series に該当文書が無�
 (`list_indexes` の `series[]` に無い) 場合も同様に、横断検索へ切り替えるのではなく
 `sync_documents` の実行を促すのが安全側の設計である。
 
+**未登録 series への `query` はエラーにならない (安定契約)**: サーバーは series の
+登録状態を検証しない (存在検証されるのは KEY のみで、KEY 不在は `KEY_NOT_FOUND`、
+ゴミ箱状態は `KEY_TRASHED` のエラーになる。§6.2.1 参照)。未登録 series を指定した `query` は
+該当 0 件の**成功応答**を返すため、`query` の応答だけでは「未同期」と「同期済みだが 0 件」を
+区別できない。切り分けには次項の手順を使う。なお `list_indexes` の `series` は、紐づく
+record が 0 件の KEY では `null` になる (空一覧 `[]` と同義。意味の異なる状態ではない)。
+
 **ただし `list_indexes` の `series[]` は「一度も sync していない」と「sync 済みだが
 desired-state が空だった」を区別できない**。`series[]` は record に現在紐づく series から
 作られるため、空の `documents` で sync した series は一覧から消える（空リストは正当な
@@ -383,6 +390,51 @@ await mcp.call("delete_documents", {
 - KEY が存在しない (query / upsert で必須)
 - 入力バリデーション (key/series 必須、content+url 排他等)
 - OpenAI API キー未設定 (起動時 fail-fast)
+
+### 6.2.1 エラー種別の識別子 [公開契約]
+
+**「KEY が存在しない」と「KEY がゴミ箱状態」は、クライアントが取るべき行動が正反対です**
+（前者は索引を作成してよい / 後者は作成してはならず `restore_index` を案内する）。
+この 2 つは **機械可読な識別子で判別できます**。**メッセージ文言で分岐しないでください**
+（文言は実装の詳細であり公開契約ではありません。予告なく変わります）。
+
+| 識別子          | 意味                  | 取るべき行動                                 |
+| --------------- | --------------------- | -------------------------------------------- |
+| `KEY_NOT_FOUND` | 指定 KEY が存在しない | 索引を作成してよい（`sync_documents` 等）    |
+| `KEY_TRASHED`   | KEY がゴミ箱状態      | 索引を作成しない。`restore_index` を案内する |
+
+**識別子は公開契約であり、値を変更しません。** この 2 つの識別子は JSON-RPC error として返り、
+同じ値が 2 か所に載ります（クライアントの経路によって `data` が届くとは限らないため）。
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -31002, // 補助。判別の正本は data.code
+    "message": "KEY_TRASHED: key \"myrepo-specs\" はゴミ箱に入っています。restore_index で復活してから操作してください",
+    "data": { "code": "KEY_TRASHED", "key": "myrepo-specs" }
+  }
+}
+```
+
+- **`data.code`（判別の正本）**: JSON を直接パースできるクライアントはこれで分岐する
+- **`message` 先頭の `<識別子>:`**: `data` が AI agent へ提示されない経路でのフォールバック
+
+```javascript
+try {
+  await mcp.call("query", { key, series, query });
+} catch (e) {
+  switch (e.data?.code) {
+    case "KEY_NOT_FOUND": return await createIndex(key);        // 索引を作る
+    case "KEY_TRASHED":   return warnRestoreRequired(key);      // 作らず復活を案内
+    default:              throw e;                              // 判別不能 = 障害として扱う
+  }
+}
+```
+
+**上記 2 つ以外のエラーに識別子は付きません。** 判別できないエラーは「障害」として扱い、
+索引作成などの副作用を伴う操作へ倒さないでください（誤った同期を防ぐため）。
 
 ### 6.3 warnings は必ず確認
 

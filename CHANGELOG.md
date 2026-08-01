@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **未登録 series への `query` の挙動と `list_indexes` の `series: null` を公開契約として
+  明文化（Issue #8）**: 挙動の変更はない。series は opaque な絞り込み軸でありサーバーは
+  登録状態を検証しないため、KEY に未登録の series を指定した `query` はエラーではなく
+  該当 0 件の成功応答を返す（安定契約。将来もエラー化しない）。また `list_indexes` の
+  `series` は紐づく record が 0 件の KEY では `null` になる（Go の nil slice の直列化。
+  空一覧 `[]` と同義）。「未同期」と「同期済みだが 0 件」の切り分けは従来どおり
+  クライアント側の責務（APP-001 MNG-01 / DES-001 §4.5）
+  - APP-001 FNC-003 の series パラメータ・DES-001 §3 KeyInfo / §4.5・
+    `docs/AI_INTEGRATION_GUIDE.md` §5.2・`internal/mcp/mcp.go` の jsonschema 記述
+    （`query.series` / `list_indexes.indexes`）を同時更新
+  - 回帰テスト `TestQuery_UnregisteredSeries_ReturnsEmptySuccess` /
+    `TestListIndexes_NoSeries_SerializesNull`（series 存在検証の追加や
+    nil slice の `[]` 初期化など、文書化した契約を壊す変更を検知する）
+
+### Added
+
+- **エラー種別の機械可読な識別子（APP-001 ERR-01 / DES-001 §10.1、Issue #7）**:
+  「KEY が存在しない」と「KEY がゴミ箱状態」を、クライアントがメッセージ文言に依存せず
+  判別できるようにした。この 2 つは取るべき行動が正反対（索引を作成してよい / 作成しては
+  ならず `restore_index` を案内する）であり、文言一致で分岐すると文言変更時に静かに
+  誤判定する問題があった
+  - 識別子 `KEY_NOT_FOUND` / `KEY_TRASHED` を **公開契約**として固定（`internal/mcp/errcode.go`）
+  - 該当エラーは `*jsonrpc.Error` で返し、`data`（`{"code","key"}`、判別の正本）と
+    `message` 先頭（`<識別子>:`、`data` が届かない経路のフォールバック）の両方に載せる。
+    go-sdk は `*jsonrpc.Error` 以外の error を text だけの `CallToolResult` に包むため、
+    従来の `fmt.Errorf` では構造化情報を載せられなかった
+  - 上記 2 種以外のエラーに識別子は付かない（判別できないエラーはクライアント側で
+    「障害」として扱い、副作用を伴う操作へ倒さない前提）
+  - `docs/AI_INTEGRATION_GUIDE.md` §6.2.1 に公開契約として記載
+  - 回帰テスト `internal/mcp/errcode_test.go`（`fmt.Errorf` へ戻すと落ちる）
+
 ## [0.3.2] - 2026-07-30
 
 ### Changed

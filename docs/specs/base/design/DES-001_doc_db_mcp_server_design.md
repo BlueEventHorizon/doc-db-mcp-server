@@ -159,7 +159,7 @@ classDiagram
 
 **型定義**:
 
-- `KeyInfo`: `ListKeys` の戻り値要素。`key string`・`series []string`・`doc_count int`・`chunk_count int`・`last_updated_at string`・`last_accessed_at string` を含む。MNG-01「KEY・series 一覧・ドキュメント数・chunk 数・最終更新日時・最終アクセス日時を取得できること」に対応する（ゴミ箱投入済み KEY は結果から除外する。FNC-007 TRS-04）。`series` は `series_keys JOIN records` の `DISTINCT`（`fetchSeriesForKey`）であり、record の紐付きが残っていない series は現れない（この帰結として生じる「未同期」と「同期済みだが空」の区別不能性は §4.5 参照）。旧 `expiry_policy` フィールドは TTL/LRU 廃止（FNC-007）に伴い削除した。
+- `KeyInfo`: `ListKeys` の戻り値要素。`key string`・`series []string`・`doc_count int`・`chunk_count int`・`last_updated_at string`・`last_accessed_at string` を含む。MNG-01「KEY・series 一覧・ドキュメント数・chunk 数・最終更新日時・最終アクセス日時を取得できること」に対応する（ゴミ箱投入済み KEY は結果から除外する。FNC-007 TRS-04）。`series` は `series_keys JOIN records` の `DISTINCT`（`fetchSeriesForKey`）であり、record の紐付きが残っていない series は現れない（この帰結として生じる「未同期」と「同期済みだが空」の区別不能性は §4.5 参照）。紐づく series が 0 件の KEY では `fetchSeriesForKey` が nil slice を返すため、`list_indexes` の JSON 応答では `series` が `null` になる（Go の nil slice の直列化。空一覧 `[]` と同義であり、意味の異なる状態を表すものではない。Issue #8）。旧 `expiry_policy` フィールドは TTL/LRU 廃止（FNC-007）に伴い削除した。
 - `TrashedKeyInfo`: `ListTrashedKeys` の戻り値要素。`key string`・`trashed_at string` を含む。自動最終処分までの残り時間は `trashed_at` と設定値 `trash.retention_days`（§9.2）から呼び出し元が算出する（Store 層は判定を持たず事実のみを返す方針。ADR-003）。
 - `PendingDeletionEntry`: `ListPendingDeletionsOlderThan` の戻り値要素。`key string`・`series string`・`path string`・`marked_at string` を含む。
 
@@ -334,7 +334,7 @@ path 単位のスイープに `DeleteSeries` は**使用しない**。path 単�
 - **series 未指定の KEY 全体検索には物理削除まで現れ得る**（`series == ""` 経路は `series_keys` を JOIN しない）。KEY 全体検索は全 series 横断の広域検索であり、over-recall 思想（PHIL-01）の範囲内として許容する
 - doc_count（`COUNT(DISTINCT path) FROM records`）にも物理削除まで数えられる（起動時スイープは統計算出より前に走るため、起動時統計には影響しない。FNC-006 GC-03）
 - 削除予約中の path を `sync_documents` を経由せず `upsert_documents` で復活させた場合、SYN-04 の予約解除は行われず予約行が残る。ただしスイープは orphan-only のため**復活済みの record が壊れることはなく**、stale な予約行は起動時に 0 件処理で除去されるだけで無害。予約解除を即時に行いたい場合は復活も `sync_documents` で行うこと
-- **`list_indexes` の series 一覧からは消える**（`fetchSeriesForKey` は `series_keys JOIN records` の `DISTINCT` であり、orphan record は `series_keys` を持たない）。desired-state が空だった series は当該 KEY の series 一覧に現れなくなるため、**`list_indexes` では「その series で一度も同期していない」と「同期済みだが desired-state が空だった」を区別できない**（FNC-004 MNG-01）。クライアントがこの一覧で未同期を判定する場合は、送信対象のドキュメント数が 0 かどうかを併せて確認して切り分ける必要がある（後者に対して同期の再実行を促しても状態は変わらない）。`list_indexes` はこの区別を公開しない。内部的には `pending_deletions` の予約行（`key` / `series` / `path`。`MarkDocumentForDeletion`）が起動時スイープまたは `internal/trash.Worker` の定期実行まで痕跡として残るため、その間はサーバー内部では「同期済みだった」ことを判別できるが、スイープ後は内部でも区別できなくなる。この一時的な内部状態を API へ公開したり、恒久的に区別可能な状態（例: series 単位の同期履歴）を新設することはしない — 後者でも当該 series の検索結果は必然的に 0 件であり、区別が必要なのは「クライアントが利用者へ出す案内文」に限られるため、その判断はクライアント側の情報（対象ファイル数）で足りる
+- **`list_indexes` の series 一覧からは消える**（`fetchSeriesForKey` は `series_keys JOIN records` の `DISTINCT` であり、orphan record は `series_keys` を持たない）。desired-state が空だった series は当該 KEY の series 一覧に現れなくなるため、**`list_indexes` では「その series で一度も同期していない」と「同期済みだが desired-state が空だった」を区別できない**（FNC-004 MNG-01）。クライアントがこの一覧で未同期を判定する場合は、送信対象のドキュメント数が 0 かどうかを併せて確認して切り分ける必要がある（後者に対して同期の再実行を促しても状態は変わらない）。`list_indexes` はこの区別を公開しない。内部的には `pending_deletions` の予約行（`key` / `series` / `path`。`MarkDocumentForDeletion`）が起動時スイープまたは `internal/trash.Worker` の定期実行まで痕跡として残るため、その間はサーバー内部では「同期済みだった」ことを判別できるが、スイープ後は内部でも区別できなくなる。この一時的な内部状態を API へ公開したり、恒久的に区別可能な状態（例: series 単位の同期履歴）を新設することはしない — 後者でも当該 series の検索結果は必然的に 0 件であり、区別が必要なのは「クライアントが利用者へ出す案内文」に限られるため、その判断はクライアント側の情報（対象ファイル数）で足りる。**`query` も同様に series の登録状態を検証しない**: `handleQuery` が存在検証するのは KEY のみ（不在なら ERR-01 識別子付きエラー、ゴミ箱状態なら明示エラー）であり、series は検索パイプラインへの絞り込み条件としてそのまま渡される。したがって未登録 series を指定した `query` はエラーではなく該当 0 件の成功応答を返す（FNC-003 の安定契約。Issue #8）
 - **cross-series の自己修復猶予は保証されない**: SYN-04 の「API 課金ゼロ自己修復」は、当該 orphan が回収される前に同一 series の再 sync が行われた場合の保証である。`DeleteOrphanRecords` は series を見ずに同一 key+path の orphan を全回収し、既存の `CleanOtherSeries` / `AppendAndCleanSeries` も同一 key+path の空 record を掃除するため、別 series が同じ key+path を upsert / sync すると他 series の自己修復用に残していた orphan も回収される。その後の再 sync は通常の新規登録として Embedding を再計算する（動作は常に正しく、失われるのは課金ゼロの猶予のみ）。既存掃除機構と整合した挙動である
 
 **予約を path 粒度とし record_id / content_hash を持たせない理由（設計判断）**:
@@ -932,6 +932,33 @@ log:
 **silent failure 禁止方針**: 全エラー経路で「ログのみ」で終わらせず caller / observable state
 に必ず伝達する。詳細は memory `feedback_no_silent_failure.md` 参照。
 
+### 10.1 エラー種別の機械判別（APP-001 ERR-01）
+
+`internal/mcp/errcode.go` に識別子と組み立て関数を集約する。
+
+**識別子（公開契約。値を変更しない）**:
+
+| 識別子          | 意味                            | クライアントが取るべき行動                        | 生成箇所                                |
+| --------------- | ------------------------------- | ------------------------------------------------- | --------------------------------------- |
+| `KEY_NOT_FOUND` | 指定 KEY が存在しない           | 索引の作成（`sync_documents` 等）へ進んでよい     | `query` の KeyExists 判定（§5.3）       |
+| `KEY_TRASHED`   | KEY がゴミ箱状態（TRS-02 / 03） | 索引を作成してはならず `restore_index` を案内する | `rejectIfTrashed`（§4.6。1 箇所に集約） |
+
+**載せ方 — `*jsonrpc.Error` を返す**: go-sdk の `ToolHandlerFor` ラッパー（`mcp/server.go`）は
+handler が返した error を次の 2 通りに分岐させる。
+
+- `*jsonrpc.Error` → **そのまま JSON-RPC error として返す**（`code` / `message` / `data` が保持される）
+- それ以外の error → `CallToolResult{IsError: true}` に包み、**`content[].text` の文言だけが残る**（handler が返した `res` は破棄される）
+
+したがって後者では構造化情報を載せる余地がなく、クライアントは文言一致に退行する。ERR-01 の 2 種は前者で返す。
+
+**識別子は Message 先頭と Data の両方に載せる**（経路によって `data` がクライアントへ届くとは限らないため）:
+
+- `Data`（判別の正本）: `{"code": "<識別子>", "key": "<対象 KEY>"}`。JSON を直接パースするクライアント（SKILL の `docdb_client.py` 等）は `error.data.code` で厳密に分岐する
+- `Message` 先頭: `<識別子>: <日本語の説明>`。MCP クライアント経由で `data` が AI agent へ提示されない場合のフォールバック
+- `Code`（数値）: JSON-RPC 2.0 の予約域（-32768〜-32000）を避けたアプリケーション固有値。判別の正本は `Data.code` の文字列であり、数値は補助
+
+**回帰テスト**: `internal/mcp/errcode_test.go` が「`*jsonrpc.Error` であること・`Message` 先頭の識別子・`Data.code` / `Data.key`」を handler 経路込みで検証する。`fmt.Errorf` へ戻す変更はこのテストが落ちる。
+
 ## 11. テスト設計
 
 - **単体テスト対象**: `store`（SQL クエリ正確性）、`chunker`（Markdown 分割境界）、`search`（コサイン類似度・BM25・RRF の計算結果）、`embedder`（リトライロジック）
@@ -982,3 +1009,4 @@ log:
 | 2026-07-10 | 1.1        | レビュー指摘 3 件に対応。(1) §5.6/§8.5: `sweepPendingDeletions`/`startupSweep` が KEY のゴミ箱猶予期間と無関係に古い series 全体予約を sweep してしまい、`restore_index` 後も series データが戻らない事故を防ぐため、KEY がゴミ箱状態の間は当該 KEY の削除予約処理を先送りする仕様を明記（`internal/trash/trash.go`・`cmd/docdb/main.go` を対応する実装に修正）。(2) §5.7: `query` は `WithKeyLock` 再確認の対象外（読み取り専用パスのため）である点と、それに伴う TOCTOU 競合ウィンドウの許容理由を明記（診断のみで実装は変更せず）。(3) §8: シャットダウン時に `internal/trash.Worker` の実行完了を待たず `Store.Close()` する問題を修正するため `Worker.Done()` を新設し、`cmd/docdb/main.go` がこれを待ってから Store を閉じるよう変更した旨を記録                                                                                                                                                                              |
 | 2026-07-10 | 1.2        | 追加レビュー指摘 2 件に対応。(1) §8: 1.1 で導入した `Worker.Done()` 待ちが、`run()` の親 ctx（`signal.NotifyContext` で SIGINT/SIGTERM のみに連動）を worker にそのまま渡していたため、HTTP サーバー起動の即時失敗（ポート使用中等）経路では親 ctx が一切キャンセルされず `run()` が永久にハングする欠陥を修正。worker 専用の子 context（`context.WithCancel(ctx)`）を用意し、`run()` のどの終了経路でも必ず子 context 自身をキャンセルしてから `Done()` を待つ設計に変更した旨を追記。(2) `trash_index` MCP ツールの Description（`internal/mcp/mcp.go`）が「query も同様に拒否され、誤って検索・参照することはできない」と断定していた箇所を、§5.7 で既に文書化した TOCTOU 競合ウィンドウの許容方針と整合するよう表現を修正した旨を記録                                                                                                                                                                                           |
 | 2026-07-30 | 1.3        | §4.5 orphan record の既知の制約に「`list_indexes` の series 一覧からは消える」を追加。`fetchSeriesForKey` が `series_keys JOIN records` の `DISTINCT` であるため、desired-state が空だった series は一覧に現れず、**`list_indexes` では「未同期」と「同期済みだが空」を区別できない**（FNC-004 MNG-01）。クライアントは送信対象ドキュメント数 0 件との併用で切り分ける必要がある旨と、`pending_deletions` の予約行がスイープまで内部の痕跡として残る一方でそれを API へ公開せず、恒久的に区別可能な状態も新設しない設計判断（後者でも検索結果は必然的に 0 件であり、区別が必要なのは利用者への案内文に限られる）を明記。§3.2 の `KeyInfo` 説明にも series の集計元を追記。実装変更は無く、既存実装の観測可能な性質の文書化のみ                                                                                                                                                                                                      |
+| 2026-08-01 | 1.4        | §10.1「エラー種別の機械判別」を新設（APP-001 ERR-01 / Issue #7）。識別子 `KEY_NOT_FOUND` / `KEY_TRASHED` を公開契約として定義し、`*jsonrpc.Error` で返す設計を明記（go-sdk はそれ以外の error を text だけの `CallToolResult` に包むため構造化情報を載せられない）。識別子は `Data`（判別の正本）と `Message` 先頭（`data` が届かない経路のフォールバック）の両方に載せる。生成箇所を `internal/mcp/errcode.go` に集約し、回帰テスト `errcode_test.go` で不変条件を保証する                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
