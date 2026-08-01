@@ -719,7 +719,7 @@ func (h *Handlers) handleDeleteSeries(
 type QueryInput struct {
 	Query  string `json:"query" jsonschema:"検索クエリ。自然言語の質問でも、ID/固有名詞/関数名のような literal 文字列でも可。3 signal (emb/lex/grep) が並列で処理するため、両方の性質を持つクエリ (例: 'FNC-001 の仕様') にも有効。"`
 	Key    string `json:"key" jsonschema:"検索対象の KEY。list_indexes で確認できる。"`
-	Series string `json:"series,omitempty" jsonschema:"絞り込む series。省略時は KEY 内の全 series を横断検索する。"`
+	Series string `json:"series,omitempty" jsonschema:"絞り込む series。省略時は KEY 内の全 series を横断検索する。series の登録状態は検証しない: KEY に未登録の series を指定してもエラーにならず、該当 0 件の成功応答を返す (安定契約)。「未同期」と「同期済みだが 0 件」の切り分けは、list_indexes の series 一覧と送信対象ファイル数を用いてクライアント側で行う。"`
 	Mode   string `json:"mode,omitempty" jsonschema:"検索方式。'all' (デフォルト、推奨) = emb+lex+grep 3 signal 並列 (PHIL-01 over-recall)。'rerank' = all + LLM ranking 最適化。'emb' = 意味類似のみ。'lex' = BM25 のみ。'grep' = literal 一致のみ (固有 ID/特殊用語向け)。'hybrid' = emb+lex RRF (legacy、grep なし)。"`
 	TopN   int    `json:"top_n,omitempty" jsonschema:"返却件数の上限 (デフォルト 10)。上位 AI agent が候補を読んで判定する設計のため、recall を確保するなら 10-30 程度を推奨。"`
 }
@@ -829,7 +829,7 @@ type ListIndexesInput struct{}
 
 // ListIndexesResult は list_indexes の出力。
 type ListIndexesResult struct {
-	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/chunk_count/last_updated_at/last_accessed_at を含む。ゴミ箱状態 (trash_index 済み) の KEY はこの一覧から除外される。"`
+	Indexes []store.KeyInfo `json:"indexes" jsonschema:"登録済みインデックスのリスト。各エントリに key/series 一覧/doc_count/chunk_count/last_updated_at/last_accessed_at を含む。ゴミ箱状態 (trash_index 済み) の KEY はこの一覧から除外される。series は record に現在紐づく series の集合であり、紐づく record が 0 件なら null になる (空一覧と同義)。このため「一度も同期していない series」と「同期済みだが対象 0 件の series」は本一覧では区別できない (切り分けは送信対象ファイル数を併用してクライアント側で行う)。"`
 }
 
 func (h *Handlers) handleListIndexes(

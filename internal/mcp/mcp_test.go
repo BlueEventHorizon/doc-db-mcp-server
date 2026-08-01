@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -712,6 +713,76 @@ func TestQuery_ValidationErrors(t *testing.T) {
 		if _, _, err := h.handlers.handleQuery(ctx, nil, in); err == nil {
 			t.Errorf("want validation error for %+v", in)
 		}
+	}
+}
+
+// TestQuery_UnregisteredSeries_ReturnsEmptySuccess は、既存 KEY に未登録の series を
+// 指定した query がエラーではなく該当 0 件の成功応答を返すことを検証する。
+// この挙動は APP-001 FNC-003 の安定契約（series は opaque な絞り込み軸であり
+// 登録状態の検証を行わない。将来もエラー化しない。Issue #8）であり、
+// series 存在検証を追加する変更はこのテストで検知される。
+func TestQuery_UnregisteredSeries_ReturnsEmptySuccess(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "main",
+		Documents: []UpsertDocument{{Path: "a", Content: "# H\nhello world"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out, err := h.handlers.handleQuery(ctx, nil, QueryInput{
+		Query: "hello", Key: "K", Series: "not-registered",
+	})
+	if err != nil {
+		t.Fatalf("unregistered series must not error (stable contract, Issue #8): %v", err)
+	}
+	if len(out.Results) != 0 {
+		t.Errorf("want 0 results for unregistered series, got %d", len(out.Results))
+	}
+}
+
+// TestListIndexes_NoSeries_SerializesNull は、record の紐付きが 0 件の KEY の
+// series が JSON で null になることを検証する（DES-001 §3 KeyInfo。
+// Go の nil slice の直列化であり空一覧 [] と同義、という文書化済み契約の固定。
+// 空 slice への初期化などで null → [] に変わる変更はこのテストで検知される。Issue #8）。
+func TestListIndexes_NoSeries_SerializesNull(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, _, err := h.handlers.handleUpsert(ctx, nil, UpsertInput{
+		Key: "K", Series: "main",
+		Documents: []UpsertDocument{{Path: "a", Content: "# H\nhello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// series を剥がして record 0 件の KEY を作る（keys 行は残る）
+	if _, _, err := h.handlers.handleDeleteSeries(ctx, nil, DeleteSeriesInput{
+		Key: "K", Series: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, out, err := h.handlers.handleListIndexes(ctx, nil, ListIndexesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target *store.KeyInfo
+	for i := range out.Indexes {
+		if out.Indexes[i].Key == "K" {
+			target = &out.Indexes[i]
+		}
+	}
+	if target == nil {
+		t.Fatal("key K missing from list_indexes")
+	}
+	b, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"series":null`) {
+		t.Errorf("want series serialized as null for a key with no attached series, got %s", b)
 	}
 }
 
