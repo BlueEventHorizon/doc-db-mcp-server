@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **未登録 series への `query` の挙動と `list_indexes` の `series: null` を公開契約として
+  明文化（Issue #8）**: 挙動の変更はない。series は opaque な絞り込み軸でありサーバーは
+  登録状態を検証しないため、KEY に未登録の series を指定した `query` はエラーではなく
+  該当 0 件の成功応答を返す（安定契約。将来もエラー化しない）。また `list_indexes` の
+  `series` は紐づく record が 0 件の KEY では `null` になる（Go の nil slice の直列化。
+  空一覧 `[]` と同義）。「未同期」と「同期済みだが 0 件」の切り分けは従来どおり
+  クライアント側の責務（APP-001 MNG-01 / DES-001 §4.5）
+  - APP-001 FNC-003 の series パラメータ・DES-001 §3 KeyInfo / §4.5・
+    `docs/AI_INTEGRATION_GUIDE.md` §5.2・`internal/mcp/mcp.go` の jsonschema 記述
+    （`query.series` / `list_indexes.indexes`）を同時更新
+  - 回帰テスト `TestQuery_UnregisteredSeries_ReturnsEmptySuccess` /
+    `TestListIndexes_NoSeries_SerializesNull`（series 存在検証の追加や
+    nil slice の `[]` 初期化など、文書化した契約を壊す変更を検知する）
+
 ### Added
 
 - **エラー種別の機械可読な識別子（APP-001 ERR-01 / DES-001 §10.1、Issue #7）**:

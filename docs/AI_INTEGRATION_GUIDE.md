@@ -295,6 +295,13 @@ desired-state である以上、0 件は「その series に該当文書が無�
 (`list_indexes` の `series[]` に無い) 場合も同様に、横断検索へ切り替えるのではなく
 `sync_documents` の実行を促すのが安全側の設計である。
 
+**未登録 series への `query` はエラーにならない (安定契約)**: サーバーは series の
+登録状態を検証しない (存在検証されるのは KEY のみで、KEY 不在は `KEY_NOT_FOUND`、
+ゴミ箱状態は `KEY_TRASHED` のエラーになる。§6.2.1 参照)。未登録 series を指定した `query` は
+該当 0 件の**成功応答**を返すため、`query` の応答だけでは「未同期」と「同期済みだが 0 件」を
+区別できない。切り分けには次項の手順を使う。なお `list_indexes` の `series` は、紐づく
+record が 0 件の KEY では `null` になる (空一覧 `[]` と同義。意味の異なる状態ではない)。
+
 **ただし `list_indexes` の `series[]` は「一度も sync していない」と「sync 済みだが
 desired-state が空だった」を区別できない**。`series[]` は record に現在紐づく series から
 作られるため、空の `documents` で sync した series は一覧から消える（空リストは正当な
