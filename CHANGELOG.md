@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-01
+
 ### Documentation
 
 - **未登録 series への `query` の挙動と `list_indexes` の `series: null` を公開契約として
@@ -629,8 +631,14 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.3
+[0.3.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.2
+[0.3.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.1
+[0.3.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.0
+[0.2.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.2.1
 [0.2.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.2.0
+[0.1.13]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.13
 [0.1.12]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.12
 [0.1.11]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.11
 [0.1.10]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.1.10
