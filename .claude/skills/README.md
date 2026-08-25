@@ -1,9 +1,10 @@
 # doc-db 用 doc-search SKILLs（参考実装）
 
-このディレクトリの 6 SKILL は、[doc-db MCP サーバー](https://github.com/BlueEventHorizon/doc-db-mcp-server)
+このディレクトリの 8 SKILL は、[doc-db MCP サーバー](https://github.com/BlueEventHorizon/doc-db-mcp-server)
 をプロジェクトの文書検索基盤として使うための **Claude Code 用クライアント参考実装**です。
 「プロジェクトの文書一覧を `.doc_structure.yaml` で定義 → doc-db へ同期 → 自然言語で検索」
-という運用を、**Python 3.9+ stdlib のみ**で実現します。
+という運用と、`.doc_structure.yaml` に依らない汎用文書の格納・検索
+(`/build-doc-db` / `/query-doc-db`) を、**Python 3.9+ stdlib のみ**で実現します。
 
 **doc-db サーバの HTTP エンドポイント (`http://localhost:<port>/mcp`) を直接叩く**ため、
 Claude Code 側の MCP 登録は**不要**です（doc-db を MCP 登録して使うこともできますが、
@@ -17,21 +18,26 @@ Claude Code 側の MCP 登録は**不要**です（doc-db を MCP 登録して�
 | `/query-db-rules`          | rules 対象文書を doc-db で検索 (同上)                                                              |
 | `/delete-db-series <name>` | 指定 series (Git branch 等) を specs/rules 両 KEY から一括除去 (branch cleanup)                    |
 | `/manage-db-indexes`       | KEY メタデータ (chunk 数・doc 数・series・最終アクセス日時) の提示、ゴミ箱投入・一覧確認・復活     |
+| `/build-doc-db <path>...`  | 任意の文書を汎用 KEY `generic-docs` に格納・蓄積 (manifest 方式。`.doc_structure.yaml` 不要)       |
+| `/query-doc-db`            | `generic-docs` に格納した汎用文書を検索 (未起動時は manifest 対象の grep フォールバック)           |
 
 ## 他プロジェクトへの配布
 
-`.claude/skills/` 配下の 6 ディレクトリを **そのまま丸ごとコピー** すれば別プロジェクトでも動作する:
+`.claude/skills/` 配下の 8 ディレクトリを **そのまま丸ごとコピー** すれば別プロジェクトでも動作する:
 
 ```bash
 # コピー先プロジェクトのルートで
 rsync -av <src>/.claude/skills/{update,query}-db-{rules,specs}/ \
           <src>/.claude/skills/delete-db-series/ \
-          <src>/.claude/skills/manage-db-indexes/ .claude/skills/
+          <src>/.claude/skills/manage-db-indexes/ \
+          <src>/.claude/skills/build-doc-db/ \
+          <src>/.claude/skills/query-doc-db/ .claude/skills/
 ```
 
 前提:
 
-1. コピー先プロジェクトのルートに `.doc_structure.yaml` が存在すること (下記の書式)
+1. コピー先プロジェクトのルートに `.doc_structure.yaml` が存在すること (下記の書式。
+   `/build-doc-db` / `/query-doc-db` のみを使う場合は不要)
 2. `python3` (3.9 以上) が利用可能なこと。**追加依存なし** (stdlib のみで動作)
 3. doc-db サーバ **v0.2.0+** がローカルに稼働していること (下記セットアップ)
 
@@ -101,7 +107,10 @@ MCP handshake (initialize → notifications/initialized → tools/call) を発�
 
 ## KEY / series 命名規則
 
-各 SKILL は以下の自動命名を採用する:
+specs / rules 系 SKILL は以下の自動命名を採用する
+(**例外**: `/build-doc-db` / `/query-doc-db` は KEY 固定 `generic-docs`・series 固定 `main` の
+プロジェクト横断グローバル格納庫。登録済み一覧は `~/.doc-db/skill-manifests/<key>.json` の
+manifest で永続化し、毎回 manifest 全体を desired-state 同期することで蓄積を実現する):
 
 - **KEY**: `<project-dir-basename>-<specs|rules>`\
   例: `/Users/moons/data/dev/myrepo` から呼び出せば KEY は `myrepo-specs`。
