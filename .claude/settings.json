@@ -157,6 +157,10 @@
       "Skill(query-docs)",
       "Skill(review)",
 
+      "Bash(touch *)",
+      "Bash(open *)"
+    ],
+    "ask": [
       "Bash(git mv *)",
       "Bash(git push *)",
       "Bash(git checkout *)",
@@ -173,11 +177,8 @@
       "Bash(rm *)",
       "Bash(cp *)",
       "Bash(mv *)",
-      "Bash(touch *)",
-      "Bash(open *)",
       "Bash(mkdir *)"
-    ],
-    "ask": []
+    ]
   },
   "hooks": {
     "Stop": [
