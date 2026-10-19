@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-19
+
+サーバー本体（Go）の挙動変更はない。同梱 SKILL とドキュメントの追加のみ。
+
+### Added
+
+- **汎用文書の格納・検索 SKILL `build-doc-db` / `query-doc-db` を追加**:
+  `.doc_structure.yaml` の specs / rules の枠に入らない汎用文書（メモ・外部資料・調査ノート等）を、
+  KEY 固定 `generic-docs`・series 固定 `main` のプロジェクト横断の格納庫へ格納・検索する
+  - `sync_documents` は desired-state 同期のため、登録済み一覧を
+    `~/.doc-db/skill-manifests/<key>.json` の manifest に永続化し、毎回 manifest 全体を同期する
+    （前回格納分が切り離されない）
+  - `build-doc-db` は格納の取り消し（remove）と登録一覧の確認（list）も担う
+  - `.claude/skills/README.md`・`CLAUDE.md` の SKILL 構成記述を 9 SKILL 構成に更新
+
+### Documentation
+
+- **macOS ログイン時の自動起動手順を追加**（`docs/doc-db-mac-autostart.md`）:
+  LaunchAgent（launchd）による自動起動、API キーの渡し方、起動確認、設定変更・停止の手順。
+  README の起動手順から参照
+
+### Changed
+
+- `.claude/settings.json` の権限設定を整理（`touch` / `open` を allow へ移し、
+  `git push` / `rm` 等を ask に変更）。`.codex/hooks.json` を削除
+
 ## [0.3.3] - 2026-08-01
 
 ### Documentation
@@ -631,7 +657,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.4
 [0.3.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.3
 [0.3.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.2
 [0.3.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.1

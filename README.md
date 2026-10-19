@@ -323,7 +323,7 @@ record は物理削除予約として記録され、保持期間（`trash.retent
 
 doc-db は「クライアント側が自分の文書一覧を管理し、サーバーへ同期・検索する」設計のため、
 実際の運用にはクライアント実装が必要になる。本リポジトリの
-[`.claude/skills/`](.claude/skills/README.md) に **Claude Code 用の SKILL 6 種を
+[`.claude/skills/`](.claude/skills/README.md) に **Claude Code 用の SKILL 8 種を
 参考実装として同梱**している:
 
 | SKILL                      | 役割                                                                     |
@@ -334,6 +334,8 @@ doc-db は「クライアント側が自分の文書一覧を管理し、サー�
 | `/query-db-rules`          | ルール文書を 3 signal 検索                                               |
 | `/delete-db-series <name>` | 指定 series（Git branch 等）を一括除去（branch cleanup）                 |
 | `/manage-db-indexes`       | KEY メタデータ提示・ゴミ箱投入・一覧確認・復活を対話的に行う             |
+| `/build-doc-db`            | 汎用文書を KEY `generic-docs` に格納・取り消し・一覧確認                 |
+| `/query-doc-db`            | `generic-docs` に格納した汎用文書を 3 signal 検索                        |
 
 特徴:
 
@@ -341,7 +343,10 @@ doc-db は「クライアント側が自分の文書一覧を管理し、サー�
   MCP 登録も外部パッケージも不要）
 - 対象文書は各プロジェクトのルートに置く **`.doc_structure.yaml`**（specs / rules の
   ディレクトリ定義）から解決する。KEY・series は「プロジェクト名 + git branch」で自動決定
-- 5 ディレクトリを rsync すれば**他プロジェクトでもそのまま動く**
+- `/build-doc-db` / `/query-doc-db` は `.doc_structure.yaml` に依らず、KEY `generic-docs`・
+  series `main` 固定のプロジェクト横断の格納庫を使う（登録一覧は
+  `~/.doc-db/skill-manifests/<key>.json` に永続化）
+- 8 ディレクトリを rsync すれば**他プロジェクトでもそのまま動く**
 
 セットアップ・`.doc_structure.yaml` の書式・独自クライアントの作り方は
 [`.claude/skills/README.md`](.claude/skills/README.md) と
