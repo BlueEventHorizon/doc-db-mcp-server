@@ -198,6 +198,12 @@ doc-db --show-config      # 同上（make を経由しない直接呼び出し�
 
 起動直後は標準出力にも設定サマリ（config / log / db のパスと待受ポート）が 1 度だけ表示される。
 
+### macOS での自動起動（任意）
+
+Mac へのログイン時に doc-db を自動起動する場合は、LaunchAgent を設定する。
+API キーの渡し方、起動確認、設定変更・停止の手順は、
+[macOS 自動起動手順](docs/doc-db-mac-autostart.md)を参照。
+
 ### 3. MCP クライアントへの登録
 
 Streamable HTTP transport のため **URL 形式**で登録する（subprocess `command` は使わない）。
