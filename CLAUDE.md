@@ -188,14 +188,20 @@ git push
 
 ## `.claude/skills/` の構成
 
-このリポジトリには 6 つの SKILL がある。**doc-db を使う側** (`update-db-*` / `query-db-*` / `delete-db-series`) と
+このリポジトリには 9 つの SKILL がある。**doc-db を使う側** (`update-db-*` / `query-db-*` /
+`delete-db-series` / `manage-db-indexes` / `build-doc-db` / `query-doc-db`) と
 **doc-db を配布する側** (`setup-homebrew-formula`) が同居している。
 
-`update-db-*` / `query-db-*` / `delete-db-series` は **doc-db サーバの HTTP エンドポイント
+doc-db を使う側の SKILL は **doc-db サーバの HTTP エンドポイント
 (`http://localhost:<port>/mcp`) を Python stdlib のみで直接叩く**（v0.1.11+）。
-Claude Code の MCP 登録は不要。他プロジェクトへ 5 ディレクトリを rsync すれば単独で動く設計。
+Claude Code の MCP 登録は不要。他プロジェクトへディレクトリを rsync すれば単独で動く設計。
 
-- **`docdb_client.py`** (5 SKILL に同一コピー): MCP Streamable HTTP handshake を stdlib のみで実装。
+`build-doc-db` / `query-doc-db` は `.doc_structure.yaml` に依らない**汎用文書の格納・検索**
+（KEY 固定 `generic-docs`・series 固定 `main` のプロジェクト横断グローバル格納庫）。
+`sync_documents` の desired-state 特性で前回格納分が切り離されないよう、登録済み一覧を
+`~/.doc-db/skill-manifests/<key>.json` の manifest に永続化し、毎回 manifest 全体を同期する。
+
+- **`docdb_client.py`** (8 SKILL に同一コピー): MCP Streamable HTTP handshake を stdlib のみで実装。
   `sync`（v0.2.0+ 推奨）は desired-state 同期を 1 回投入 + `get_sync_status` ポーリングで進捗を
   stderr に表示（削除ファイルにも追従）。`upsert`（旧方式、削除非追従）は 30 件バッチで残置
 - **`resolve_docs.py`** (5 SKILL に同一コピー): `.doc_structure.yaml` v3.0 を stdlib のみでパース。
