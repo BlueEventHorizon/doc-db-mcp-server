@@ -5,6 +5,9 @@ targets:
     version_file: VERSION
     version_path: "" # plain text ファイル（内容がバージョン文字列そのもの）
     sync_files:
+      - path: Cargo.toml
+        pattern: 'version = "{version}"'
+        filter: 'version = "'
       # Formula tag: は "v{version}" 形式（DES-002 §4.1 / APP-002 VER-06）。
       # filter で同一行内に必ず存在する文字列を指定し、誤マッチを防ぐ。
       - path: Formula/doc-db.rb

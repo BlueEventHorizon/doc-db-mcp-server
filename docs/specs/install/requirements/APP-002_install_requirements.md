@@ -8,12 +8,12 @@ doc-db MCP Server を macOS ユーザーが Homebrew で簡単にインストー
 
 ## 前提条件
 
-| ID     | 要件                                                                                                                     |
-| ------ | ------------------------------------------------------------------------------------------------------------------------ |
-| PRE-01 | base 仕様 APP-001 の前提条件（OPENAI_API_*_KEY 環境変数）が満たされていること                                            |
-| PRE-02 | インストール先 macOS が Homebrew 公式インストール済みであること（Apple Silicon = `/opt/homebrew`、Intel = `/usr/local`） |
-| PRE-03 | macOS 13 (Ventura) 以上であること                                                                                        |
-| PRE-04 | Go toolchain（Go 1.22 以上）が Homebrew 経由で導入可能であること（Formula の `depends_on` で確保）                       |
+| ID     | 要件                                                                                                                                |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| PRE-01 | base 仕様 APP-001 の前提条件（OPENAI_API_*_KEY 環境変数）が満たされていること                                                       |
+| PRE-02 | インストール先 macOS が Homebrew 公式インストール済みであること（Apple Silicon = `/opt/homebrew`、Intel = `/usr/local`）            |
+| PRE-03 | macOS 13 (Ventura) 以上であること                                                                                                   |
+| PRE-04 | 配布対象のソースをビルドできるツールチェーンを Homebrew で導入できること。Rust 版は Rust と CMake、公開済み Go 版は Go を使用する。 |
 
 ## 要件一覧
 
@@ -32,28 +32,28 @@ GitHub リポジトリそのものを Homebrew tap として使用できる形�
 
 | ID     | 要件                                                                                                                                                                                  |
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| FML-01 | Formula はソースビルド方式で動作する（`go build` を `install` メソッドで実行）                                                                                                        |
+| FML-01 | Formula はソースビルド方式で動作する。Rust 版は `fetch` で Cargo.lock に固定された依存関係を取得し、`install` の Cargo ビルドはオフラインで実行する。                                 |
 | FML-02 | Formula は対象 git tag（例: `v0.1.0`、形式は VER-06 で確定）の commit を `url` + `tag` + `revision` で固定参照する。version bump 時は tag・revision を Formula 側でも更新する         |
-| FML-03 | Formula は Go toolchain への依存（`depends_on "go" => :build`）と macOS バージョン依存（`depends_on macos: :ventura`）を宣言する                                                      |
+| FML-03 | Formula は対象ソースのビルド依存と macOS バージョン依存（`depends_on macos: :ventura`）を宣言する。                                                                                   |
 | FML-04 | ビルド成果物は `doc-db` という名前のシングルバイナリとして `bin/` 配下にインストールされる                                                                                            |
 | FML-05 | Formula の `caveats` セクションで、設定ファイル（`~/.doc-db/doc-db.yaml`）配置手順・OpenAI API キー環境変数設定手順・Claude Code / Claude Desktop への MCP サーバー登録手順を明示する |
-| FML-06 | Formula の `test` セクションで、インストールされた `doc-db --version` がバージョン文字列を返すことを検証する                                                                          |
+| FML-06 | Formula の `test` で CLI のバージョンと同梱 YAML を検証する。Rust 版では一時データベースを使用し、ループバックの MCP `initialize` でサーバー名とバージョンを照合する。                |
 
 ### FNC-103 バージョン整合性
 
 リリース時に Formula と他のバージョン参照箇所が乖離していないことを機械的に検証できる必要がある。
 
-| ID     | 要件                                                                                                                                                                                                                                                                  |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| VER-01 | プロジェクト内のバージョン正本（canonical）は `VERSION` ファイル（plain text）とする                                                                                                                                                                                  |
-| VER-02 | バイナリは `doc-db --version` でバージョン文字列を出力する。バイナリに埋め込むバージョン値はビルド時に VERSION ファイルから取得する（実装方式は設計書 §4.2 で確定。Go の `//go:embed` はパッケージ外を参照できないため、`go build -ldflags "-X ..."` 方式を採用する） |
-| VER-03 | `--version` は OPENAI API キー検証・設定ファイル読み込み・サーバー起動より前に処理し、即時終了すること（Homebrew test の `brew test doc-db` が長時間化しないようにするため）                                                                                          |
-| VER-04 | CHANGELOG.md の最新リリースエントリのバージョンは canonical と一致しなければならない                                                                                                                                                                                  |
-| VER-05 | `.version-config.yaml` の version_file は VERSION ファイルを指していなければならない                                                                                                                                                                                  |
-| VER-06 | リリースタグおよび Formula の `tag:` は `v{canonical}`（例: `v0.1.0`）形式で統一する。`.version-config.yaml` の `tag_format` は `v{version}` を維持する                                                                                                               |
-| VER-07 | Formula の `revision:` フィールドの値は、`git tag v{version}` が指す commit の SHA と一致していなければならない                                                                                                                                                       |
-| VER-08 | VER-04 / VER-05 / VER-06（Formula `tag:`）は version bump 直後に検証可能であること（`scripts/verify_version_consistency.sh` 相当）                                                                                                                                    |
-| VER-09 | VER-07 は git tag 確定後に検証可能であること（`scripts/verify_release_tag.sh` 相当）                                                                                                                                                                                  |
+| ID     | 要件                                                                                                                                                                         |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| VER-01 | プロジェクト内のバージョン正本（canonical）は `VERSION` ファイル（plain text）とする                                                                                         |
+| VER-02 | バイナリは `doc-db --version` でバージョン文字列を出力する。バージョン値はビルド時に VERSION ファイルから取得する。                                                          |
+| VER-03 | `--version` は OPENAI API キー検証・設定ファイル読み込み・サーバー起動より前に処理し、即時終了すること（Homebrew test の `brew test doc-db` が長時間化しないようにするため） |
+| VER-04 | CHANGELOG.md の最新リリースエントリのバージョンは canonical と一致しなければならない                                                                                         |
+| VER-05 | `.version-config.yaml` の version_file は VERSION ファイルを指していなければならない                                                                                         |
+| VER-06 | リリースタグおよび Formula の `tag:` は `v{canonical}`（例: `v0.1.0`）形式で統一する。`.version-config.yaml` の `tag_format` は `v{version}` を維持する                      |
+| VER-07 | Formula の `revision:` フィールドの値は、`git tag v{version}` が指す commit の SHA と一致していなければならない                                                              |
+| VER-08 | VER-04 / VER-05 / VER-06（Formula `tag:`）は version bump 直後に検証可能であること（`scripts/verify_version_consistency.sh` 相当）                                           |
+| VER-09 | タグが main の第1親履歴上にあり、タグ時点の VERSION と Formula tag が一致することを確認する。配布前に VER-07 も検証する。                                                    |
 
 ### FNC-104 インストール後ガイダンス
 
@@ -76,11 +76,11 @@ GitHub リポジトリそのものを Homebrew tap として使用できる形�
 
 ## 外部依存
 
-| ID          | 依存先                                                   |
-| ----------- | -------------------------------------------------------- |
-| INST-EXT-01 | Homebrew（macOS パッケージマネージャー）                 |
-| INST-EXT-02 | Go toolchain 1.22+（Formula ビルド時に Homebrew が導入） |
-| INST-EXT-03 | git（Formula の `url` 参照に必要。Homebrew 同梱）        |
+| ID          | 依存先                                                                |
+| ----------- | --------------------------------------------------------------------- |
+| INST-EXT-01 | Homebrew（macOS パッケージマネージャー）                              |
+| INST-EXT-02 | Rust 版のビルドには Rust と CMake、公開済み Go 版には Go を使用する。 |
+| INST-EXT-03 | git（Formula の `url` 参照に必要。Homebrew 同梱）                     |
 
 ## 非機能要件
 

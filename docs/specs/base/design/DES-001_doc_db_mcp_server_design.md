@@ -10,6 +10,10 @@
 
 ## 1. 概要
 
+Rust 版のモジュール対応は [README のレイヤー構成](../../../../README.md#レイヤー構成) を参照する。本文の Go パッケージ名と型名は移植前の参照実装を指す。MCP ツールと SQLite のデータ形式は Rust 版でも引き継ぐ。
+
+Rust 版の待受は IPv4 ループバックに限定する。MCP の Host はループバック用の値のみを受け付け、Origin 付きリクエストは拒否する。文書 URL 取得は各接続で DNS 応答を検証し、その応答だけを接続候補にする。リダイレクト先も検証し、本文の上限は 10 MiB とする。既存の `fetcher.allow_private` を明示的に有効にするとプライベート IP も取得できる。
+
 Markdown テキストのハイブリッド検索（ベクトル + BM25 + LLM Rerank）を提供する汎用 MCP サーバー。Go で実装し、純粋 Go 製 SQLite（`modernc.org/sqlite`）を採用することで CGO 不要・シングルバイナリ配布を実現する。MCP go-sdk の Streamable HTTP transport を使用し、OpenAI API は標準ライブラリの `net/http` で直接呼び出す。
 
 **Streamable HTTP 採用理由**: MCP go-sdk の標準 transport であり、SSE と比較して双方向ストリーミングに適している。SSE transport は go-sdk のサポートが限定的（サーバー送信専用）であり、ツール呼び出しの応答返却が煩雑になる。Streamable HTTP は MCP 2025-03 仕様で推奨される transport であり、将来互換性の観点からも採用する（PRE-02/NFR-03）。

@@ -47,7 +47,7 @@ LLM Rerank は **ranking 最適化のためのオプション**であり、recal
 | **重複 Embedding 排除** | 同一内容は hash で検出し Embedding を共有。branch/series を低コストで多重管理                           |
 | **series 削除**         | branch 単位で `delete_series` により record から除去（v0.1.9+）                                         |
 | **desired-state 同期**  | `sync_documents` で削除ファイルにも追従（欠落 path を即時切り離し。v0.2.0+）                            |
-| **シングルバイナリ**    | pure-Go SQLite。Homebrew tap で 1 コマンド導入                                                          |
+| **シングルバイナリ**    | Rust と同梱 SQLite。Homebrew tap で 1 コマンド導入                                                      |
 | **ゴミ箱経由の削除**    | KEY 削除は即時物理削除せずゴミ箱投入。保持期間（デフォルト 3 日）経過後に自動最終処分。期間内は復活可能 |
 | **SSRF 防御**           | URL 登録はプライベート IP をデフォルトで拒否                                                            |
 
@@ -60,7 +60,7 @@ flowchart TD
     Client["MCP クライアント<br/>(Claude Code / Desktop 等)"]
     Client -->|"Streamable HTTP (MCP 2025-03)<br/>http://localhost:58080/mcp"| Tools
 
-    subgraph "MCP Server (go-sdk) — 11 tools"
+    subgraph "MCP Server (rmcp) — 11 tools"
         Tools["upsert_documents / delete_documents / delete_series<br/>query / list_indexes / trash_index / list_trashed_indexes / restore_index<br/>sync_documents / get_sync_status / schedule_delete_series"]
         Chunker["Chunker<br/>(見出し境界チャンク分割)"]
         Embedder["Embedder<br/>(OpenAI Embedding API)"]
@@ -99,18 +99,15 @@ flowchart LR
 
 ### レイヤー構成
 
-| パッケージ          | 責務                                                   |
-| ------------------- | ------------------------------------------------------ |
-| `cmd/docdb`         | エントリポイント・設定読み込み・配線                   |
-| `internal/mcp`      | MCP ツールハンドラ（11 種）                            |
-| `internal/search`   | 3 signal 検索パイプライン（emb / lex / grep / rerank） |
-| `internal/reranker` | OpenAI Chat Completions ベース LLM Rerank              |
-| `internal/chunker`  | Markdown → 見出し境界チャンク分割                      |
-| `internal/embedder` | OpenAI Embedding API（部分失敗対応）                   |
-| `internal/fetcher`  | URL → コンテンツ取得（SSRF 防御付き）                  |
-| `internal/trash`    | ゴミ箱（KEY・orphan record）自動最終処分ワーカー       |
-| `internal/store`    | SQLite 読み書き・WAL・アトミック AppendAndCleanSeries  |
-| `internal/config`   | YAML 設定ローダー（`~/.doc-db/doc-db.yaml`）           |
+| モジュール        | 責務                                              |
+| ----------------- | ------------------------------------------------- |
+| `rust/main.rs`    | CLI、MCP 待受、定期回収ワーカー                   |
+| `rust/server.rs`  | MCP ツール、KEY 単位の排他制御、同期ジョブ        |
+| `rust/search.rs`  | Embedding / BM25 / 全文 GREP / LLM Rerank         |
+| `rust/chunker.rs` | Markdown の見出し境界チャンク分割                 |
+| `rust/network.rs` | OpenAI API、URL 取得、ローカルファイルの読み取り  |
+| `rust/store.rs`   | SQLite、WAL、差分登録と削除予約のトランザクション |
+| `rust/config.rs`  | YAML 設定（`~/.doc-db/doc-db.yaml`）              |
 
 上位レイヤーのみが下位を参照する。循環依存なし。
 
@@ -122,14 +119,19 @@ flowchart LR
 brew tap blueeventhorizon/doc-db https://github.com/BlueEventHorizon/doc-db-mcp-server
 brew install blueeventhorizon/doc-db/doc-db
 doc-db --version
+brew test blueeventhorizon/doc-db/doc-db
 ```
 
+`brew test` はバイナリのバージョンと同梱の設定ファイルを検証します。Rust 版では、一時データベースを使った MCP 初期化も確認します。
+
 ### ソースからビルド
+
+Rust の安定版ツールチェーン、C コンパイラ、CMake が必要です。
 
 ```bash
 git clone https://github.com/BlueEventHorizon/doc-db-mcp-server.git
 cd doc-db-mcp-server
-make build            # ldflags 経由で VERSION を注入
+make build            # Cargo.lock に固定された依存関係でビルド
 ./doc-db --version    # VERSION ファイルの値が表示される
 ```
 
@@ -196,7 +198,9 @@ make show-config          # 解決済みの config/log/db パスを確認
 doc-db --show-config      # 同上（make を経由しない直接呼び出し）
 ```
 
-起動直後は標準出力にも設定サマリ（config / log / db のパスと待受ポート）が 1 度だけ表示される。
+Rust 版は `127.0.0.1` で待ち受けます。同じマシン上の信頼できるクライアントから `http://localhost:58080/mcp` に接続してください。ブラウザーからの Origin 付きリクエストは拒否します。`local_path` はサーバープロセスが読み取れる通常ファイルを参照できます。
+
+既存の SQLite を引き継ぐときは、Go 版を停止してデータベースをバックアップしてから Rust 版を起動してください。
 
 ### macOS での自動起動（任意）
 
@@ -298,7 +302,7 @@ Embedding を再計算しない**。既存 record の `series_keys` に新しい
 
 #### テスト保証
 
-この挙動は以下のテストで常時検証されている (`go test ./...` で自動実行):
+Rust の MCP 統合テストは、Go 版の形式で保存した Embedding を別の series から再利用し、API 呼び出しがゼロであることを検証します。Go 版の比較用テストは `make test-go` で実行できます。
 
 - `internal/store/store_test.go::TestAppendAndCleanSeries_DIF02` — Store 層の
   「同ハッシュ既存時は series 追記のみ、旧 record は series が空になれば物理削除」
@@ -368,14 +372,17 @@ doc-db は「クライアント側が自分の文書一覧を管理し、サー�
 ## 開発
 
 ```bash
-make build                 # バイナリビルド
-go test ./...              # 全パッケージテスト
-go test -race ./...        # レース検出テスト
+make build                 # Rust 版のバイナリビルド
+make test                  # Rust 版の単体・MCP 統合テスト（Python 3 が必要）
+make test-go               # 移植前の Go 版の比較用テスト
+cargo audit --deny unsound --deny yanked
 make verify-version        # VERSION / CHANGELOG / .version-config.yaml / Formula tag 整合性
-make verify-tag            # Formula revision == git tag commit SHA 検証
+make verify-tag            # main の第1親履歴、タグ時点の VERSION / Formula、固定 SHA を検証
 make show-config           # 解決済み設定 (log/db パス等) を表示
 make show-log              # 設定済みログファイルを tail -f で追跡
 ```
+
+RustSec の監査では、公式 SDK `rmcp` の間接依存 `chrono` に保守終了の警告が出ます。監査結果に警告を残し、既知の脆弱性、unsound、yanked の検出時は CI を失敗させます。[RustSec アドバイザリ](https://rustsec.org/advisories/RUSTSEC-2026-0543)
 
 ## ライセンス
 

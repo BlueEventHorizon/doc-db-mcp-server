@@ -1,0 +1,76 @@
+name: Homebrew checks
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/homebrew.yml"
+      - "Formula/**"
+      - "rust/**"
+      - "Cargo.*"
+      - "doc-db.yaml.example"
+      - "VERSION"
+      - "scripts/verify_*"
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release-tag:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: make verify-version
+      - if: github.ref_type == 'tag'
+        run: bash scripts/verify_release_tag.sh --tag-only "${GITHUB_REF_NAME#v}" refs/remotes/origin/main
+      - if: github.ref_type == 'branch'
+        run: |
+          if grep -Eq '^[[:space:]]*revision:[[:space:]]*"0{40}"$' Formula/doc-db.rb; then
+            echo 'Release tag revision is pending.'
+          else
+            make verify-tag
+          fi
+
+  source-install:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Test the checkout through an isolated tap
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          source_repo="$RUNNER_TEMP/doc-db-source.git"
+          tap_repo="$RUNNER_TEMP/doc-db-tap"
+          release_tag="v$(cat VERSION)"
+          source_commit=$(git rev-parse HEAD)
+          git init -q -b main "$source_repo"
+          git -C "$source_repo" fetch --depth 1 --no-tags "file://$GITHUB_WORKSPACE" "$source_commit"
+          git -C "$source_repo" checkout --detach FETCH_HEAD
+          git -C "$source_repo" tag --no-sign "$release_tag" "$source_commit"
+
+          mkdir -p "$tap_repo/Formula"
+          ruby -e '
+            file, source, commit = ARGV
+            formula = File.read(file)
+            formula.sub!(/^  url .+$/) { "  url #{("file://" + source).dump}," } or abort "Formula url missing"
+            formula.sub!(/^      revision: "[0-9a-f]{40}"$/) { "      revision: #{commit.dump},\n      using: :git" } or abort "Formula revision missing"
+            print formula
+          ' Formula/doc-db.rb "$source_repo" "$source_commit" > "$tap_repo/Formula/doc-db.rb"
+          git -C "$tap_repo" init -q -b main
+          git -C "$tap_repo" add Formula/doc-db.rb
+          git -C "$tap_repo" -c user.name=CI -c user.email=ci@example.invalid commit --no-gpg-sign -m 'Stage test formula'
+
+          brew tap local/doc-db "file://$tap_repo"
+          if brew command trust >/dev/null 2>&1; then
+            brew trust --formula local/doc-db/doc-db
+          fi
+          brew install --build-from-source --skip-link local/doc-db/doc-db
+          brew test local/doc-db/doc-db
