@@ -72,5 +72,5 @@ jobs:
           if brew command trust >/dev/null 2>&1; then
             brew trust --formula local/doc-db/doc-db
           fi
-          brew install --build-from-source --skip-link local/doc-db/doc-db
+          brew install --build-from-source local/doc-db/doc-db
           brew test local/doc-db/doc-db
