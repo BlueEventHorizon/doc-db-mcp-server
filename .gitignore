@@ -34,6 +34,8 @@ docs/references
 # Go ビルド成果物（リポジトリ root のビルドバイナリのみ。`cmd/docdb/` パッケージは無視しない）
 /docdb
 /doc-db
+/target/
+/.temp/
 *.sqlite
 docs/specs/test-docs
 reference

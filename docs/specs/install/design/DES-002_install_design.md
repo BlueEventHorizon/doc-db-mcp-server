@@ -10,6 +10,12 @@
 
 ## 1. 概要
 
+Rust 版のビルドは `cargo build --release --locked` を使用し、`VERSION` をコンパイル時に読み込む。Formula の `fetch` が Cargo.lock に固定された依存関係を取得し、`install` はオフラインでビルドする。公開済み v0.3.4 の固定コミットには Go の取得・ビルド手順を使う。
+
+タグ作成時は `scripts/verify_release_tag.sh --tag-only` で main の第1親履歴、タグ時点の VERSION と Formula の tag を検証する。Formula に実 SHA を記入した後は `make verify-tag` で現在の Formula の固定 SHA まで検証する。
+
+Homebrew CI は一時 tap を作成して Rust 版をソースからインストールし、§7.1 の `brew test` を実行する。
+
 doc-db MCP Server を macOS ユーザーが Homebrew で導入できるようにする。リポジトリ自体を Homebrew tap として機能させる「自家 tap」方式を採用する（専用 `homebrew-*` リポジトリを別途用意しない）。Go プロジェクトとしてのシングルバイナリ性質（CGO 不要・pure-Go SQLite）を活かし、Formula 内の `go build` でビルドして `bin/` に配置する。
 
 **Swift-Selena プロジェクトとの差分**: ビルドツール（`swift build` → `go build`）、canonical version の置き場所（`Sources/Constants.swift` → `VERSION` ファイル）、test の方式（MCP `initialize` JSON-RPC → `doc-db --version` スモークテスト）を doc-db 用に変更する。残りの設計（自家 tap・Formula 配置・整合性検証スクリプト 2 本・caveats ガイダンス）は同方針を踏襲する。
@@ -300,7 +306,7 @@ sequenceDiagram
     Dev->>Dev: Formula revision: を tag commit SHA に更新
     Dev->>VR: 実行
     VR-->>Dev: ok（VER-07 一致）
-    Dev->>Git: git push origin main --tags
+    Dev->>Git: git push --atomic origin main v{new}
     Dev->>Brew: brew install --build-from-source ./Formula/doc-db.rb
     Brew-->>Dev: ok（実 install 検証）
 ```
@@ -360,27 +366,18 @@ doc-db は HTTP transport で動作するため、Claude Desktop の `mcpServers
 
 ### 7.1 Formula の test
 
-`brew test doc-db` で実行される項目：
+`brew test doc-db` は、`doc-db --version` の出力が Formula のバージョンと完全に一致し、同梱 YAML を読み込めることを確認する。Rust 版では、同梱 YAML から作った隔離設定、一時 SQLite、テスト用のダミー API キーでサーバーを起動する。ループバック上の Streamable HTTP で MCP `initialize` を送り、サーバー名とバージョンを照合する。確認後はテストプロセスを終了する。
 
-| 項目                       | 内容                                                                                                                         |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `--version` スモークテスト | `doc-db --version` を実行し、出力に `version.to_s`（Formula の version 属性 = `tag:` から v を除いた値）が含まれることを確認 |
-
-実装上の前提（VER-03）：
-
-- `cmd/docdb/main.go` の `--version` 分岐は **設定ファイル読み込み・OPENAI API キー検証・Store/Expiry 初期化のいずれよりも前** に実行する。これを満たさないと `brew test` 環境（`~/.doc-db/doc-db.yaml` 不在・API キー未設定）でテストがハングするか fail-fast で落ちる
-- Formula の `test` ブロックではタイムアウトを明示しない（`--version` は即時終了する前提）
-
-> Streamable HTTP 経由の MCP 機能テストは行わない。HTTP サーバー起動には設定ファイルと API キーが必要であり、`brew test` の隔離環境ではセットアップコストが高すぎる。MCP 機能の正しさは Go の単体・統合テストで担保する（DES-001 §11）。
+公開済みの Go 版は全インターフェースで待ち受けるため、CLI と同梱 YAML の検証を行う。
 
 ### 7.2 リリース前検証
 
-| 検証                                                               | スクリプト                                                                  |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| バージョン整合性（CHANGELOG / .version-config.yaml / Formula tag） | `scripts/verify_version_consistency.sh`                                     |
-| Formula revision の git commit SHA 一致                            | `scripts/verify_release_tag.sh`                                             |
-| Formula 構文監査                                                   | `brew audit --strict Formula/doc-db.rb`                                     |
-| 実 install 検証                                                    | ローカルクローン上で `brew install --build-from-source ./Formula/doc-db.rb` |
+| 検証                                                               | スクリプト                                                        |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| バージョン整合性（CHANGELOG / .version-config.yaml / Formula tag） | `scripts/verify_version_consistency.sh`                           |
+| main の第1親履歴・タグ時点のバージョン・Formula の固定 SHA         | `scripts/verify_release_tag.sh`                                   |
+| Formula 構文監査                                                   | tap 登録後に `brew audit --strict blueeventhorizon/doc-db/doc-db` |
+| ソースインストールと MCP 初期化                                    | Homebrew CI の一時 tap                                            |
 
 ## 8. 使用する既存コンポーネント
 
@@ -405,7 +402,7 @@ doc-db は HTTP transport で動作するため、Claude Desktop の `mcpServers
 | `scripts/verify_version_consistency.sh`                                                                  | ✅ 実装済み（2026-06-26） | `make verify-version` で実行。canonical (`VERSION`) と CHANGELOG / .version-config.yaml / Formula tag の整合性を検証。初回検証パス済み                                  |
 | `scripts/verify_release_tag.sh`                                                                          | ✅ 実装済み（2026-06-26） | `make verify-tag` で実行。tag 未作成のため現時点では fail する（期待動作）                                                                                              |
 | `.version-config.yaml` の `sync_files` に Formula 追加                                                   | ✅ 実装済み（2026-06-26） | `/forge:update-version` 実行時に Formula tag が自動更新される                                                                                                           |
-| `cmd/docdb/main.go` のバイナリ出力名 `doc-db`                                                            | ⚠️ 部分対応                | Makefile・Formula は `doc-db` で出力。開発者が直接 `go build ./cmd/docdb` する場合は `docdb` になるので注意                                                             |
+| `cmd/docdb/main.go` のバイナリ出力名 `doc-db`                                                            | ⚠️ 部分対応               | Makefile・Formula は `doc-db` で出力。開発者が直接 `go build ./cmd/docdb` する場合は `docdb` になるので注意                                                             |
 | MCP サーバー本体・ツールハンドラ                                                                         | 🚧 未実装                 | DES-001 §3.1 / §5 で設計済み                                                                                                                                            |
 | 検索パイプライン（emb/lex/hybrid/rerank）                                                                | 🚧 未実装                 | DES-001 §6 で設計済み                                                                                                                                                   |
 

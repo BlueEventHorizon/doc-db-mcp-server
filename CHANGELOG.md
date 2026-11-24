@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- MCP サーバー本体を Rust へ移植。SQLite の保存形式、設定ファイル、11 個の MCP ツールを引き継ぐ。
+- MCP 待受を IPv4 ループバックに制限。ブラウザーからの Origin 付きリクエストを拒否し、文書 URL の取得先検証と本文サイズ制限を追加。
+
 ## [0.3.4] - 2026-10-19
 
 サーバー本体（Go）の挙動変更はない。同梱 SKILL とドキュメントの追加のみ。

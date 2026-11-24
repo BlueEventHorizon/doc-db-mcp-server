@@ -4,6 +4,7 @@
 # canonical: VERSION ファイルの内容（plain text、改行 trim）
 #
 # 検証項目:
+#   - Cargo.toml と Cargo.lock の doc-db パッケージが canonical と一致
 #   - CHANGELOG.md の最新リリースエントリ `## [X.Y.Z]` が canonical と一致 (VER-04)
 #   - .version-config.yaml の version_file が "VERSION" を指す         (VER-05 前段)
 #   - .version-config.yaml の tag_format が "v{version}"               (VER-06 前段)
@@ -36,6 +37,15 @@ fi
 echo "canonical (VERSION): $canonical"
 
 errors=0
+
+manifest_version=$(sed -n -E 's/^version = "([^"]+)"$/\1/p' Cargo.toml)
+lockfile_version=$(awk '/^\[\[package\]\]$/ { docdb=0 } /^name = "doc-db"$/ { docdb=1 } docdb && /^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.lock)
+if [ "$manifest_version" != "$canonical" ] || [ "$lockfile_version" != "$canonical" ]; then
+  echo "ERROR: Cargo.toml ($manifest_version) または Cargo.lock ($lockfile_version) が canonical ($canonical) と不一致" >&2
+  errors=$((errors + 1))
+else
+  echo "ok    Cargo.toml と Cargo.lock: $canonical"
+fi
 
 # --- VER-04: CHANGELOG.md の最新リリースエントリ
 changelog_latest=$(grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md \
