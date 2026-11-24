@@ -25,6 +25,7 @@ exit code:
     1  接続失敗 (doc-db サーバ未起動) または resolve 段階のエラー
     2  一部バッチが失敗 (failed > 0)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,8 +44,15 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--type", required=True, choices=["rules", "specs"])
     ap.add_argument("--key", default=None, help="省略時: <project_name>-<type>")
-    ap.add_argument("--series", default=None, help="省略時: 現在の git branch (fallback: main)")
-    ap.add_argument("--batch-size", type=int, default=docdb_client.DEFAULT_BATCH_SIZE, dest="batch_size")
+    ap.add_argument(
+        "--series", default=None, help="省略時: 現在の git branch (fallback: main)"
+    )
+    ap.add_argument(
+        "--batch-size",
+        type=int,
+        default=docdb_client.DEFAULT_BATCH_SIZE,
+        dest="batch_size",
+    )
     ap.add_argument("--timeout", type=int, default=docdb_client.DEFAULT_TIMEOUT)
     args = ap.parse_args()
 
@@ -57,12 +65,17 @@ def main() -> int:
         return int(e.code or 1)
 
     if not files:
-        json.dump({
-            "status": "ok",
-            "type": args.type,
-            "total": 0,
-            "message": f"{args.type} 対象文書がありません。.doc_structure.yaml を確認してください。",
-        }, sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "status": "ok",
+                "type": args.type,
+                "total": 0,
+                "message": f"{args.type} 対象文書がありません。.doc_structure.yaml を確認してください。",
+            },
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 0
 
@@ -77,20 +90,32 @@ def main() -> int:
     n_batches = (total + batch_size - 1) // batch_size
 
     aggregated = {
-        "key": key, "series": series, "total": total, "batches": n_batches,
-        "processed": 0, "skipped": 0, "failed": 0, "errors": [], "warnings": [],
+        "key": key,
+        "series": series,
+        "total": total,
+        "batches": n_batches,
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+        "warnings": [],
     }
 
-    print(f"upsert start: total={total} batches={n_batches} batch_size={batch_size} "
-          f"key={key} series={series}", file=sys.stderr)
+    print(
+        f"upsert start: total={total} batches={n_batches} batch_size={batch_size} "
+        f"key={key} series={series}",
+        file=sys.stderr,
+    )
 
     client = docdb_client.Client(timeout=args.timeout)
 
     for i in range(0, total, batch_size):
-        chunk = entries[i:i + batch_size]
+        chunk = entries[i : i + batch_size]
         done = min(i + batch_size, total)
         try:
-            r = client.call("upsert_documents", {"key": key, "series": series, "documents": chunk})
+            r = client.call(
+                "upsert_documents", {"key": key, "series": series, "documents": chunk}
+            )
         except Exception as e:  # noqa: BLE001
             msg = str(e)
             if "接続できません" in msg:
@@ -98,7 +123,9 @@ def main() -> int:
                 print(f"ERROR: {msg}", file=sys.stderr)
                 return 1
             aggregated["failed"] += len(chunk)
-            aggregated["errors"].append({"batch_start": i, "batch_size": len(chunk), "error": msg})
+            aggregated["errors"].append(
+                {"batch_start": i, "batch_size": len(chunk), "error": msg}
+            )
             bar = docdb_client._progress_bar(done, total)
             print(f"  {bar} BATCH FAILED: {msg}", file=sys.stderr)
             continue
@@ -111,8 +138,11 @@ def main() -> int:
                 aggregated[k].extend(v)
 
         bar = docdb_client._progress_bar(done, total)
-        print(f"  {bar} processed={aggregated['processed']:>4} "
-              f"skipped={aggregated['skipped']:>4} failed={aggregated['failed']:>3}", file=sys.stderr)
+        print(
+            f"  {bar} processed={aggregated['processed']:>4} "
+            f"skipped={aggregated['skipped']:>4} failed={aggregated['failed']:>3}",
+            file=sys.stderr,
+        )
 
     json.dump(aggregated, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")

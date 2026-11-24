@@ -14,6 +14,7 @@ Usage:
 exclude 判定は forge SKILL と同じ「パスの任意階層の bare-name マッチ」を採用
 （例: exclude=[plan] は docs/specs/xxx/plan/... を除外）。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,10 +28,14 @@ from pathlib import Path
 try:
     import yaml  # type: ignore
 except ImportError:
-    print(json.dumps({
-        "status": "error",
-        "message": "pyyaml が必要です。`pip install pyyaml` でインストールしてください。",
-    }))
+    print(
+        json.dumps(
+            {
+                "status": "error",
+                "message": "pyyaml が必要です。`pip install pyyaml` でインストールしてください。",
+            }
+        )
+    )
     sys.exit(1)
 
 
@@ -67,20 +72,26 @@ def _emit_and_exit(payload: dict, code: int = 0) -> None:
 def resolve(type_key: str, project_root: Path) -> list[str]:
     cfg_path = project_root / ".doc_structure.yaml"
     if not cfg_path.exists():
-        _emit_and_exit({
-            "status": "error",
-            "message": f".doc_structure.yaml が {project_root} に存在しません。/forge:setup-doc-structure で生成してください。",
-        }, code=2)
+        _emit_and_exit(
+            {
+                "status": "error",
+                "message": f".doc_structure.yaml が {project_root} に存在しません。/forge:setup-doc-structure で生成してください。",
+            },
+            code=2,
+        )
 
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
     section = cfg.get(type_key)
     if not section:
-        _emit_and_exit({
-            "status": "error",
-            "message": f".doc_structure.yaml に '{type_key}' セクションがありません。",
-        }, code=2)
+        _emit_and_exit(
+            {
+                "status": "error",
+                "message": f".doc_structure.yaml に '{type_key}' セクションがありません。",
+            },
+            code=2,
+        )
 
     root_dirs = section.get("root_dirs", []) or []
     patterns = section.get("patterns", {}) or {}
@@ -135,31 +146,33 @@ def main() -> int:
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001
-        _emit_and_exit({
-            "status": "error",
-            "message": f"resolve error: {e}",
-        }, code=1)
+        _emit_and_exit(
+            {
+                "status": "error",
+                "message": f"resolve error: {e}",
+            },
+            code=1,
+        )
 
     # 相対パスと絶対パスの両方を返す。upsert_documents では
     #   path       = 相対 (search 結果の表示用識別子)
     #   local_path = 絶対 (doc-db がディスクから読む)
     # として使い分ける。
-    entries = [
-        {"path": rel, "local_path": str(project_root / rel)}
-        for rel in files
-    ]
+    entries = [{"path": rel, "local_path": str(project_root / rel)} for rel in files]
     branch = detect_git_branch(project_root)
 
-    _emit_and_exit({
-        "status": "ok",
-        "type": args.type,
-        "project_root": str(project_root),
-        "project_name": project_root.name,
-        "git_branch": branch,    # 現在の Git branch (upsert 時の series として使う推奨値)
-        "files": files,          # 後方互換: 相対パスのみのリスト
-        "entries": entries,      # 新: {path, local_path} オブジェクトのリスト
-        "count": len(files),
-    })
+    _emit_and_exit(
+        {
+            "status": "ok",
+            "type": args.type,
+            "project_root": str(project_root),
+            "project_name": project_root.name,
+            "git_branch": branch,  # 現在の Git branch (upsert 時の series として使う推奨値)
+            "files": files,  # 後方互換: 相対パスのみのリスト
+            "entries": entries,  # 新: {path, local_path} オブジェクトのリスト
+            "count": len(files),
+        }
+    )
 
 
 if __name__ == "__main__":

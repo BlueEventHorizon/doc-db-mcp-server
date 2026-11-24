@@ -12,6 +12,7 @@ Usage:
 stdout: {"status": "ok", "key": ..., "count": N, "documents": [絶対パス...]}
 exit code: 0 成功 (manifest 無しは count=0) / 1 manifest 破損
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,14 +42,21 @@ def main() -> int:
             data = json.loads(p.read_text(encoding="utf-8"))
             documents = [str(d) for d in data.get("documents", [])]
         except (json.JSONDecodeError, OSError) as e:
-            print(f"ERROR: manifest の読み込みに失敗しました ({p}): {e}", file=sys.stderr)
+            print(
+                f"ERROR: manifest の読み込みに失敗しました ({p}): {e}", file=sys.stderr
+            )
             return 1
 
     # 存在しなくなったファイルは fallback grep の対象から除外して報告する
     # (manifest 自体の更新は build-doc-db 側の責務なのでここでは書き換えない)
     existing = [d for d in sorted(documents) if Path(d).is_file()]
     missing = len(documents) - len(existing)
-    out = {"status": "ok", "key": args.key, "count": len(existing), "documents": existing}
+    out = {
+        "status": "ok",
+        "key": args.key,
+        "count": len(existing),
+        "documents": existing,
+    }
     if missing:
         out["missing"] = missing
     json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
