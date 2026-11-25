@@ -24,6 +24,7 @@ anchor / merge / multiline scalar 等は非対応 (使われたら明示的に�
 exclude 判定は「パスの任意階層の bare-name マッチ」を採用
 (例: exclude=[plan] は docs/specs/xxx/plan/... を除外)。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,20 +41,21 @@ from pathlib import Path
 # forge の resolve_doc_structure.py::parse_config と互換。
 # ---------------------------------------------------------------------------
 
+
 def _parse_value(value: str):
     """YAML 値をパース (文字列 / 数値 / bool / インライン配列)。"""
     value = value.strip()
-    if not value.startswith('"') and '  #' in value:
-        value = value[: value.index('  #')].strip()
-    if value.startswith('[') and value.endswith(']'):
+    if not value.startswith('"') and "  #" in value:
+        value = value[: value.index("  #")].strip()
+    if value.startswith("[") and value.endswith("]"):
         inner = value[1:-1].strip()
         if not inner:
             return []
-        return [item.strip().strip('"\'') for item in inner.split(',')]
-    value = value.strip('"\'')
-    if value.lower() == 'true':
+        return [item.strip().strip("\"'") for item in inner.split(",")]
+    value = value.strip("\"'")
+    if value.lower() == "true":
         return True
-    if value.lower() == 'false':
+    if value.lower() == "false":
         return False
     try:
         return int(value)
@@ -66,14 +68,14 @@ def _lookahead_is_list(lines, start_idx: int, parent_indent: int = 4) -> bool:
     for i in range(start_idx, min(start_idx + 10, len(lines))):
         line = lines[i]
         stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
+        if not stripped or stripped.startswith("#"):
             continue
         indent = len(line) - len(line.lstrip())
         if indent <= parent_indent:
             break
-        if stripped.startswith('- '):
+        if stripped.startswith("- "):
             return True
-        if ':' in stripped:
+        if ":" in stripped:
             return False
     return True
 
@@ -85,17 +87,17 @@ def parse_config(content: str) -> dict:
     current_subsection = None
     current_list = None
     current_dict = None
-    lines = content.split('\n')
+    lines = content.split("\n")
 
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
+        if not stripped or stripped.startswith("#"):
             continue
         indent = len(line) - len(line.lstrip())
 
-        if ':' in stripped and not stripped.startswith('- '):
-            key, _, value = stripped.partition(':')
-            key = key.strip().strip('"\'')
+        if ":" in stripped and not stripped.startswith("- "):
+            key, _, value = stripped.partition(":")
+            key = key.strip().strip("\"'")
             value = value.strip()
 
             if indent == 0:
@@ -119,7 +121,9 @@ def parse_config(content: str) -> dict:
                 current_dict = None
             elif indent == 4 and current_section and current_subsection:
                 if value:
-                    result[current_section][current_subsection][key] = _parse_value(value)
+                    result[current_section][current_subsection][key] = _parse_value(
+                        value
+                    )
                     current_list = None
                     current_dict = None
                 else:
@@ -132,11 +136,11 @@ def parse_config(content: str) -> dict:
                         current_dict = result[current_section][current_subsection][key]
                         current_list = None
             elif indent == 6 and current_dict is not None:
-                current_dict[key] = _parse_value(value) if value else ''
-        elif stripped.startswith('- ') and current_list is not None:
-            item = stripped[2:].strip().strip('"\'')
-            if '  #' in item and not item.startswith('"'):
-                item = item[: item.index('  #')].strip()
+                current_dict[key] = _parse_value(value) if value else ""
+        elif stripped.startswith("- ") and current_list is not None:
+            item = stripped[2:].strip().strip("\"'")
+            if "  #" in item and not item.startswith('"'):
+                item = item[: item.index("  #")].strip()
             current_list.append(item)
 
     return result
@@ -145,6 +149,7 @@ def parse_config(content: str) -> dict:
 # ---------------------------------------------------------------------------
 # doc-db 固有: git branch 検出 / 出力
 # ---------------------------------------------------------------------------
+
 
 def detect_project_name(project_root: Path) -> str:
     """git worktree 環境でも安定した project 識別名 (KEY prefix) を返す。
@@ -233,19 +238,25 @@ def _walk_md_files(root: Path) -> list[Path]:
 def resolve(type_key: str, project_root: Path) -> list[str]:
     cfg_path = project_root / ".doc_structure.yaml"
     if not cfg_path.exists():
-        _emit_and_exit({
-            "status": "error",
-            "message": f".doc_structure.yaml が {project_root} に存在しません。/forge:setup-doc-structure で生成してください。",
-        }, code=2)
+        _emit_and_exit(
+            {
+                "status": "error",
+                "message": f".doc_structure.yaml が {project_root} に存在しません。/forge:setup-doc-structure で生成してください。",
+            },
+            code=2,
+        )
 
     cfg = parse_config(cfg_path.read_text(encoding="utf-8")) or {}
 
     section = cfg.get(type_key)
     if not section:
-        _emit_and_exit({
-            "status": "error",
-            "message": f".doc_structure.yaml に '{type_key}' セクションがありません。",
-        }, code=2)
+        _emit_and_exit(
+            {
+                "status": "error",
+                "message": f".doc_structure.yaml に '{type_key}' セクションがありません。",
+            },
+            code=2,
+        )
 
     root_dirs = section.get("root_dirs", []) or []
     patterns = section.get("patterns", {}) or {}
@@ -294,28 +305,30 @@ def main() -> int:
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001
-        _emit_and_exit({
-            "status": "error",
-            "message": f"resolve error: {e}",
-        }, code=1)
+        _emit_and_exit(
+            {
+                "status": "error",
+                "message": f"resolve error: {e}",
+            },
+            code=1,
+        )
 
-    entries = [
-        {"path": rel, "local_path": str(project_root / rel)}
-        for rel in files
-    ]
+    entries = [{"path": rel, "local_path": str(project_root / rel)} for rel in files]
     branch = detect_git_branch(project_root)
     project_name = detect_project_name(project_root)
 
-    _emit_and_exit({
-        "status": "ok",
-        "type": args.type,
-        "project_root": str(project_root),
-        "project_name": project_name,
-        "git_branch": branch,
-        "files": files,
-        "entries": entries,
-        "count": len(files),
-    })
+    _emit_and_exit(
+        {
+            "status": "ok",
+            "type": args.type,
+            "project_root": str(project_root),
+            "project_name": project_name,
+            "git_branch": branch,
+            "files": files,
+            "entries": entries,
+            "count": len(files),
+        }
+    )
     return 0
 
 

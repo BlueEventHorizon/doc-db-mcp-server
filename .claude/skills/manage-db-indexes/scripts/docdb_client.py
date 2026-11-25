@@ -86,14 +86,16 @@ def _parse_response(raw: bytes, content_type: str) -> dict:
     if "text/event-stream" in content_type:
         for line in body.splitlines():
             if line.startswith("data:"):
-                data = line[len("data:"):].strip()
+                data = line[len("data:") :].strip()
                 if data:
                     return json.loads(data)
         raise RuntimeError(f"SSE レスポンスに data 行が見つかりません: {body!r}")
     return json.loads(body)
 
 
-def _post(url: str, payload: dict, session_id: str | None, timeout: int) -> tuple[dict | None, dict]:
+def _post(
+    url: str, payload: dict, session_id: str | None, timeout: int
+) -> tuple[dict | None, dict]:
     """JSON-RPC を POST し、(response body, headers) を返す。notification は body None。"""
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
@@ -106,7 +108,9 @@ def _post(url: str, payload: dict, session_id: str | None, timeout: int) -> tupl
             headers = {k.lower(): v for k, v in resp.headers.items()}
             raw = resp.read()
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}") from e
+        raise RuntimeError(
+            f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}"
+        ) from e
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"doc-db サーバに接続できません ({url}): {e.reason}. "
@@ -146,8 +150,12 @@ class Client:
         if resp is None or "error" in resp:
             raise RuntimeError(f"initialize 失敗: {resp}")
         self.session_id = headers.get("mcp-session-id")
-        _post(self.url, {"jsonrpc": "2.0", "method": "notifications/initialized"},
-              self.session_id, self.timeout)
+        _post(
+            self.url,
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            self.session_id,
+            self.timeout,
+        )
 
     def call(self, name: str, arguments: dict) -> dict:
         if self.session_id is None:
@@ -260,7 +268,9 @@ def _normalize_entries(raw) -> list[dict]:
     documents = []
     for e in raw:
         if not isinstance(e, dict) or "path" not in e or "local_path" not in e:
-            raise ValueError(f"entries の各要素は {{path, local_path}} を持つ必要があります: {e}")
+            raise ValueError(
+                f"entries の各要素は {{path, local_path}} を持つ必要があります: {e}"
+            )
         documents.append({"path": e["path"], "local_path": e["local_path"]})
     return documents
 
@@ -271,18 +281,27 @@ def cmd_upsert(args: argparse.Namespace) -> int:
     batch_size = max(1, args.batch_size)
     client = Client(timeout=args.timeout)
 
-    aggregated = {"processed": 0, "skipped": 0, "failed": 0, "errors": [], "warnings": []}
+    aggregated = {
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+        "warnings": [],
+    }
     started = time.monotonic()
 
     if total == 0:
         print("(no entries to upsert)", file=sys.stderr)
     else:
         n_batches = (total + batch_size - 1) // batch_size
-        print(f"upsert start: total={total} batches={n_batches} batch_size={batch_size} "
-              f"key={args.key} series={args.series}", file=sys.stderr)
+        print(
+            f"upsert start: total={total} batches={n_batches} batch_size={batch_size} "
+            f"key={args.key} series={args.series}",
+            file=sys.stderr,
+        )
 
         for i in range(0, total, batch_size):
-            chunk = documents[i:i + batch_size]
+            chunk = documents[i : i + batch_size]
             done_before = min(i + batch_size, total)
             arguments = {
                 "key": args.key,
@@ -294,12 +313,12 @@ def cmd_upsert(args: argparse.Namespace) -> int:
                 r = client.call("upsert_documents", arguments)
             except Exception as e:
                 aggregated["failed"] += len(chunk)
-                aggregated["errors"].append({"batch_start": i, "batch_size": len(chunk),
-                                             "error": str(e)})
+                aggregated["errors"].append(
+                    {"batch_start": i, "batch_size": len(chunk), "error": str(e)}
+                )
                 elapsed = time.monotonic() - t0
                 bar = _progress_bar(done_before, total)
-                print(f"  {bar} BATCH FAILED ({elapsed:5.1f}s): {e}",
-                      file=sys.stderr)
+                print(f"  {bar} BATCH FAILED ({elapsed:5.1f}s): {e}", file=sys.stderr)
                 continue
 
             for k in ("processed", "skipped", "failed"):
@@ -314,12 +333,15 @@ def cmd_upsert(args: argparse.Namespace) -> int:
             rate = done_before / cum_elapsed if cum_elapsed > 0 else 0
             eta = (total - done_before) / rate if rate > 0 else 0
             bar = _progress_bar(done_before, total)
-            print(f"  {bar} "
-                  f"processed={aggregated['processed']:>4} "
-                  f"skipped={aggregated['skipped']:>4} "
-                  f"failed={aggregated['failed']:>3} "
-                  f"({elapsed:5.1f}s / batch, "
-                  f"ETA {eta:6.0f}s)", file=sys.stderr)
+            print(
+                f"  {bar} "
+                f"processed={aggregated['processed']:>4} "
+                f"skipped={aggregated['skipped']:>4} "
+                f"failed={aggregated['failed']:>3} "
+                f"({elapsed:5.1f}s / batch, "
+                f"ETA {eta:6.0f}s)",
+                file=sys.stderr,
+            )
 
         total_elapsed = time.monotonic() - started
         print(f"upsert done: total_elapsed={total_elapsed:.1f}s", file=sys.stderr)
@@ -341,10 +363,19 @@ def cmd_upsert_batch(args: argparse.Namespace) -> int:
     total = len(documents)
     offset = max(0, args.offset)
     limit = max(1, args.limit)
-    chunk = documents[offset:offset + limit]
+    chunk = documents[offset : offset + limit]
 
-    result = {"offset": offset, "limit": limit, "total": total, "batch_count": len(chunk),
-              "processed": 0, "skipped": 0, "failed": 0, "errors": [], "warnings": []}
+    result = {
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "batch_count": len(chunk),
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+        "warnings": [],
+    }
 
     if not chunk:
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
@@ -381,8 +412,14 @@ def _progress_bar(done: int, total: int, width: int = 30) -> str:
     return f"[{bar}] {int(ratio * 100):3d}%"
 
 
-def sync_and_wait(client: Client, key: str, series: str, documents: list[dict],
-                  wait_seconds: int, poll_interval: float = 2.0) -> dict:
+def sync_and_wait(
+    client: Client,
+    key: str,
+    series: str,
+    documents: list[dict],
+    wait_seconds: int,
+    poll_interval: float = 2.0,
+) -> dict:
     """sync_documents を 1 回投入し、get_sync_status を done/failed までポーリングする。
 
     sync_documents (v0.2.0+) は documents を「当該 key・series の完全な現在状態」と
@@ -396,19 +433,25 @@ def sync_and_wait(client: Client, key: str, series: str, documents: list[dict],
     サーバー側で継続しており、再実行すれば冪等に収束する)。
     """
     try:
-        r = client.call("sync_documents", {"key": key, "series": series, "documents": documents})
+        r = client.call(
+            "sync_documents", {"key": key, "series": series, "documents": documents}
+        )
     except RuntimeError as e:
         if "sync_documents" in str(e) or "not found" in str(e).lower():
             raise RuntimeError(
                 f"{e}\nsync_documents は doc-db v0.2.0+ の機能です。"
-                f"`brew upgrade doc-db` でサーバを更新してください。") from e
+                f"`brew upgrade doc-db` でサーバを更新してください。"
+            ) from e
         raise
     job_id = r.get("job_id")
     if not job_id:
         raise RuntimeError(f"sync_documents が job_id を返しませんでした: {r}")
 
-    print(f"sync accepted: job_id={job_id} total={len(documents)} "
-          f"key={key} series={series}", file=sys.stderr)
+    print(
+        f"sync accepted: job_id={job_id} total={len(documents)} "
+        f"key={key} series={series}",
+        file=sys.stderr,
+    )
 
     started = time.monotonic()
     last_line = ""
@@ -417,9 +460,11 @@ def sync_and_wait(client: Client, key: str, series: str, documents: list[dict],
         status = st.get("status", "")
         done = st.get("processed", 0) + st.get("skipped", 0) + st.get("failed", 0)
         bar = _progress_bar(done, len(documents))
-        line = (f"  {bar} [{status:>7}] processed={st.get('processed', 0):>4} "
-                f"skipped={st.get('skipped', 0):>4} failed={st.get('failed', 0):>3} "
-                f"detached={st.get('deleted_paths_marked', 0):>3}")
+        line = (
+            f"  {bar} [{status:>7}] processed={st.get('processed', 0):>4} "
+            f"skipped={st.get('skipped', 0):>4} failed={st.get('failed', 0):>3} "
+            f"detached={st.get('deleted_paths_marked', 0):>3}"
+        )
         if line != last_line:
             print(line, file=sys.stderr)
             last_line = line
@@ -431,9 +476,12 @@ def sync_and_wait(client: Client, key: str, series: str, documents: list[dict],
             st["job_id"] = job_id
             st["total"] = len(documents)
             st["status"] = "timeout"
-            print(f"WARNING: {wait_seconds}s 以内に完了しませんでした。ジョブは"
-                  f"サーバー側で継続中です (get_sync_status job_id={job_id} で確認可、"
-                  f"再実行しても DIF-02 により課金は差分のみ)", file=sys.stderr)
+            print(
+                f"WARNING: {wait_seconds}s 以内に完了しませんでした。ジョブは"
+                f"サーバー側で継続中です (get_sync_status job_id={job_id} で確認可、"
+                f"再実行しても DIF-02 により課金は差分のみ)",
+                file=sys.stderr,
+            )
             return st
         time.sleep(poll_interval)
 
@@ -461,18 +509,27 @@ def cmd_sync_start(args: argparse.Namespace) -> int:
     documents = _normalize_entries(json.loads(args.entries_json))
     client = Client(timeout=args.timeout)
     try:
-        r = client.call("sync_documents", {"key": args.key, "series": args.series, "documents": documents})
+        r = client.call(
+            "sync_documents",
+            {"key": args.key, "series": args.series, "documents": documents},
+        )
     except RuntimeError as e:
         if "sync_documents" in str(e) or "not found" in str(e).lower():
             raise RuntimeError(
                 f"{e}\nsync_documents は doc-db v0.2.0+ の機能です。"
-                f"`brew upgrade doc-db` でサーバを更新してください。") from e
+                f"`brew upgrade doc-db` でサーバを更新してください。"
+            ) from e
         raise
     job_id = r.get("job_id")
     if not job_id:
         raise RuntimeError(f"sync_documents が job_id を返しませんでした: {r}")
 
-    result = {"job_id": job_id, "key": args.key, "series": args.series, "total": len(documents)}
+    result = {
+        "job_id": job_id,
+        "key": args.key,
+        "series": args.series,
+        "total": len(documents),
+    }
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     return 0
@@ -539,74 +596,127 @@ def cmd_restore_index(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
-                        help=f"HTTP タイムアウト秒 (デフォルト {DEFAULT_TIMEOUT})")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        help=f"HTTP タイムアウト秒 (デフォルト {DEFAULT_TIMEOUT})",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_query = sub.add_parser("query", help="doc-db query を実行")
     p_query.add_argument("--key", required=True)
     p_query.add_argument("--query", required=True)
-    p_query.add_argument("--mode", default="all",
-                         choices=["all", "rerank", "emb", "lex", "grep", "hybrid"])
+    p_query.add_argument(
+        "--mode",
+        default="all",
+        choices=["all", "rerank", "emb", "lex", "grep", "hybrid"],
+    )
     p_query.add_argument("--top-n", type=int, default=20, dest="top_n")
-    p_query.add_argument("--series", default=None,
-                         help="絞り込む series (Git branch 名)。指定時は登録を検証し、"
-                              "未登録なら検索せず exit 3 で終了する。"
-                              "省略時は全 series 横断検索 (削除済み文書が混入し得る)")
-    p_query.add_argument("--no-verify-series", action="store_false",
-                         dest="verify_series",
-                         help="--series の登録検証 (list_indexes) を省略する。"
-                              "未登録 series を指定した場合はヒット 0 件が返る")
+    p_query.add_argument(
+        "--series",
+        default=None,
+        help="絞り込む series (Git branch 名)。指定時は登録を検証し、"
+        "未登録なら検索せず exit 3 で終了する。"
+        "省略時は全 series 横断検索 (削除済み文書が混入し得る)",
+    )
+    p_query.add_argument(
+        "--no-verify-series",
+        action="store_false",
+        dest="verify_series",
+        help="--series の登録検証 (list_indexes) を省略する。"
+        "未登録 series を指定した場合はヒット 0 件が返る",
+    )
     p_query.set_defaults(func=cmd_query, verify_series=True)
 
-    p_up = sub.add_parser("upsert",
-                          help="doc-db upsert_documents (local_path 経路、バッチ分割 + 進捗表示)")
+    p_up = sub.add_parser(
+        "upsert",
+        help="doc-db upsert_documents (local_path 経路、バッチ分割 + 進捗表示)",
+    )
     p_up.add_argument("--key", required=True)
     p_up.add_argument("--series", required=True)
-    p_up.add_argument("--entries-json", required=True, dest="entries_json",
-                      help="[{path, local_path}, ...] の JSON 文字列")
-    p_up.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
-                      dest="batch_size",
-                      help=f"1 リクエストあたりのドキュメント数 (デフォルト {DEFAULT_BATCH_SIZE})")
+    p_up.add_argument(
+        "--entries-json",
+        required=True,
+        dest="entries_json",
+        help="[{path, local_path}, ...] の JSON 文字列",
+    )
+    p_up.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        dest="batch_size",
+        help=f"1 リクエストあたりのドキュメント数 (デフォルト {DEFAULT_BATCH_SIZE})",
+    )
     p_up.set_defaults(func=cmd_upsert)
 
-    p_ub = sub.add_parser("upsert-batch",
-                          help="entries[] の 1 バッチ分 (offset/limit) だけを処理して即 return する。"
-                               "Claude Code から呼ぶ場合はこちらを SKILL 側でループすること。")
+    p_ub = sub.add_parser(
+        "upsert-batch",
+        help="entries[] の 1 バッチ分 (offset/limit) だけを処理して即 return する。"
+        "Claude Code から呼ぶ場合はこちらを SKILL 側でループすること。",
+    )
     p_ub.add_argument("--key", required=True)
     p_ub.add_argument("--series", required=True)
-    p_ub.add_argument("--entries-json", required=True, dest="entries_json",
-                      help="[{path, local_path}, ...] の JSON 文字列 (全件)")
-    p_ub.add_argument("--offset", type=int, required=True, help="開始インデックス (0始まり)")
-    p_ub.add_argument("--limit", type=int, default=DEFAULT_BATCH_SIZE,
-                      help=f"このバッチで処理する件数 (デフォルト {DEFAULT_BATCH_SIZE})")
+    p_ub.add_argument(
+        "--entries-json",
+        required=True,
+        dest="entries_json",
+        help="[{path, local_path}, ...] の JSON 文字列 (全件)",
+    )
+    p_ub.add_argument(
+        "--offset", type=int, required=True, help="開始インデックス (0始まり)"
+    )
+    p_ub.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"このバッチで処理する件数 (デフォルト {DEFAULT_BATCH_SIZE})",
+    )
     p_ub.set_defaults(func=cmd_upsert_batch)
 
-    p_sync = sub.add_parser("sync",
-                            help="doc-db sync_documents (v0.2.0+、desired-state 同期)。"
-                                 "entries を完全な現在状態として 1 回で投入し、"
-                                 "get_sync_status を完了までポーリングする。削除にも追従。")
+    p_sync = sub.add_parser(
+        "sync",
+        help="doc-db sync_documents (v0.2.0+、desired-state 同期)。"
+        "entries を完全な現在状態として 1 回で投入し、"
+        "get_sync_status を完了までポーリングする。削除にも追従。",
+    )
     p_sync.add_argument("--key", required=True)
     p_sync.add_argument("--series", required=True)
-    p_sync.add_argument("--entries-json", required=True, dest="entries_json",
-                        help="[{path, local_path}, ...] の JSON 文字列 (当該 key・series の完全な現在状態)")
-    p_sync.add_argument("--wait", type=int, default=DEFAULT_TIMEOUT,
-                        help=f"ジョブ完了待ちの上限秒 (デフォルト {DEFAULT_TIMEOUT})")
+    p_sync.add_argument(
+        "--entries-json",
+        required=True,
+        dest="entries_json",
+        help="[{path, local_path}, ...] の JSON 文字列 (当該 key・series の完全な現在状態)",
+    )
+    p_sync.add_argument(
+        "--wait",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        help=f"ジョブ完了待ちの上限秒 (デフォルト {DEFAULT_TIMEOUT})",
+    )
     p_sync.set_defaults(func=cmd_sync)
 
-    p_sync_start = sub.add_parser("sync-start",
-                                  help="sync_documents を投入し、ポーリングせず即座に job_id を返す。"
-                                       "Claude Code から呼ぶ場合は SKILL 側で sync-status をループすること"
-                                       "（stderr の進捗はユーザーに届かないため）。")
+    p_sync_start = sub.add_parser(
+        "sync-start",
+        help="sync_documents を投入し、ポーリングせず即座に job_id を返す。"
+        "Claude Code から呼ぶ場合は SKILL 側で sync-status をループすること"
+        "（stderr の進捗はユーザーに届かないため）。",
+    )
     p_sync_start.add_argument("--key", required=True)
     p_sync_start.add_argument("--series", required=True)
-    p_sync_start.add_argument("--entries-json", required=True, dest="entries_json",
-                              help="[{path, local_path}, ...] の JSON 文字列 (当該 key・series の完全な現在状態)")
+    p_sync_start.add_argument(
+        "--entries-json",
+        required=True,
+        dest="entries_json",
+        help="[{path, local_path}, ...] の JSON 文字列 (当該 key・series の完全な現在状態)",
+    )
     p_sync_start.set_defaults(func=cmd_sync_start)
 
-    p_sync_status = sub.add_parser("sync-status",
-                                   help="get_sync_status を 1 回だけ呼び、結果を JSON で返す (ポーリングしない)。"
-                                        "AI が間隔を空けて繰り返し呼び、そのつど進捗をテキストで報告すること。")
+    p_sync_status = sub.add_parser(
+        "sync-status",
+        help="get_sync_status を 1 回だけ呼び、結果を JSON で返す (ポーリングしない)。"
+        "AI が間隔を空けて繰り返し呼び、そのつど進捗をテキストで報告すること。",
+    )
     p_sync_status.add_argument("--job-id", required=True, dest="job_id")
     p_sync_status.set_defaults(func=cmd_sync_status)
 
@@ -615,23 +725,30 @@ def main() -> int:
     p_ds.add_argument("--series", required=True)
     p_ds.set_defaults(func=cmd_delete_series)
 
-    p_li = sub.add_parser("list-indexes",
-                          help="doc-db list_indexes を実行 (KEY メタデータ一覧、"
-                               "chunk_count 含む、ゴミ箱状態の KEY は除外)")
+    p_li = sub.add_parser(
+        "list-indexes",
+        help="doc-db list_indexes を実行 (KEY メタデータ一覧、"
+        "chunk_count 含む、ゴミ箱状態の KEY は除外)",
+    )
     p_li.set_defaults(func=cmd_list_indexes)
 
-    p_ti = sub.add_parser("trash-index",
-                          help="doc-db trash_index を実行 (指定 KEY をゴミ箱状態にする)")
+    p_ti = sub.add_parser(
+        "trash-index", help="doc-db trash_index を実行 (指定 KEY をゴミ箱状態にする)"
+    )
     p_ti.add_argument("--key", required=True)
     p_ti.set_defaults(func=cmd_trash_index)
 
-    p_lt = sub.add_parser("list-trashed-indexes",
-                          help="doc-db list_trashed_indexes を実行 (ゴミ箱状態の KEY 一覧、"
-                               "trashed_at / remaining_seconds 含む)")
+    p_lt = sub.add_parser(
+        "list-trashed-indexes",
+        help="doc-db list_trashed_indexes を実行 (ゴミ箱状態の KEY 一覧、"
+        "trashed_at / remaining_seconds 含む)",
+    )
     p_lt.set_defaults(func=cmd_list_trashed_indexes)
 
-    p_ri = sub.add_parser("restore-index",
-                          help="doc-db restore_index を実行 (ゴミ箱状態の KEY を復活させる)")
+    p_ri = sub.add_parser(
+        "restore-index",
+        help="doc-db restore_index を実行 (ゴミ箱状態の KEY を復活させる)",
+    )
     p_ri.add_argument("--key", required=True)
     p_ri.set_defaults(func=cmd_restore_index)
 

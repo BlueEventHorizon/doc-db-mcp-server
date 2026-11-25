@@ -39,6 +39,7 @@ exit code (--start-only 指定時):
     0  投入成功 (job_id を返す。対象 0 件の場合は同期せず total=0 で終了)
     1  接続失敗 / resolve 段階のエラー
 """
+
 from __future__ import annotations
 
 import argparse
@@ -57,13 +58,23 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--type", required=True, choices=["rules", "specs"])
     ap.add_argument("--key", default=None, help="省略時: <project_name>-<type>")
-    ap.add_argument("--series", default=None, help="省略時: 現在の git branch (fallback: main)")
-    ap.add_argument("--wait", type=int, default=docdb_client.DEFAULT_TIMEOUT,
-                    help=f"ジョブ完了待ちの上限秒 (デフォルト {docdb_client.DEFAULT_TIMEOUT})")
+    ap.add_argument(
+        "--series", default=None, help="省略時: 現在の git branch (fallback: main)"
+    )
+    ap.add_argument(
+        "--wait",
+        type=int,
+        default=docdb_client.DEFAULT_TIMEOUT,
+        help=f"ジョブ完了待ちの上限秒 (デフォルト {docdb_client.DEFAULT_TIMEOUT})",
+    )
     ap.add_argument("--timeout", type=int, default=docdb_client.DEFAULT_TIMEOUT)
-    ap.add_argument("--start-only", action="store_true", dest="start_only",
-                    help="sync_documents を投入し job_id を即座に返して終了する "
-                         "(完了までブロックしない。呼び出し側が sync-status をループする前提)")
+    ap.add_argument(
+        "--start-only",
+        action="store_true",
+        dest="start_only",
+        help="sync_documents を投入し job_id を即座に返して終了する "
+        "(完了までブロックしない。呼び出し側が sync-status をループする前提)",
+    )
     args = ap.parse_args()
 
     project_root = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())).resolve()
@@ -84,13 +95,18 @@ def main() -> int:
     # 0 件時は同期せずに終了する。全 path を意図的に外したい場合は
     # /delete-db-series か docdb_client.py sync --entries-json '[]' を直接使うこと。
     if not files:
-        json.dump({
-            "status": "ok",
-            "type": args.type,
-            "total": 0,
-            "message": f"{args.type} 対象文書がありません。.doc_structure.yaml を確認してください"
-                       f"（誤設定時の全切り離しを防ぐため、0 件では同期しません）。",
-        }, sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "status": "ok",
+                "type": args.type,
+                "total": 0,
+                "message": f"{args.type} 対象文書がありません。.doc_structure.yaml を確認してください"
+                f"（誤設定時の全切り離しを防ぐため、0 件では同期しません）。",
+            },
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 0
 
@@ -103,27 +119,49 @@ def main() -> int:
         # docdb_client.py sync-status --job-id <id> をループしてテキストで
         # 進捗を報告する (stderr の進捗表示はユーザーに中継されないため)。
         try:
-            r = client.call("sync_documents", {"key": key, "series": series, "documents": entries})
+            r = client.call(
+                "sync_documents", {"key": key, "series": series, "documents": entries}
+            )
         except RuntimeError as e:
             msg = str(e)
             if "sync_documents" in msg or "not found" in msg.lower():
-                msg = (f"{msg}\nsync_documents は doc-db v0.2.0+ の機能です。"
-                       f"`brew upgrade doc-db` でサーバを更新してください。")
+                msg = (
+                    f"{msg}\nsync_documents は doc-db v0.2.0+ の機能です。"
+                    f"`brew upgrade doc-db` でサーバを更新してください。"
+                )
             print(f"ERROR: {msg}", file=sys.stderr)
-            json.dump({"status": "error", "key": key, "series": series, "error": msg},
-                      sys.stdout, ensure_ascii=False, indent=2)
+            json.dump(
+                {"status": "error", "key": key, "series": series, "error": msg},
+                sys.stdout,
+                ensure_ascii=False,
+                indent=2,
+            )
             sys.stdout.write("\n")
             return 1
         job_id = r.get("job_id")
         if not job_id:
             msg = f"sync_documents が job_id を返しませんでした: {r}"
             print(f"ERROR: {msg}", file=sys.stderr)
-            json.dump({"status": "error", "key": key, "series": series, "error": msg},
-                      sys.stdout, ensure_ascii=False, indent=2)
+            json.dump(
+                {"status": "error", "key": key, "series": series, "error": msg},
+                sys.stdout,
+                ensure_ascii=False,
+                indent=2,
+            )
             sys.stdout.write("\n")
             return 1
-        json.dump({"status": "accepted", "job_id": job_id, "key": key, "series": series,
-                   "total": len(entries)}, sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "status": "accepted",
+                "job_id": job_id,
+                "key": key,
+                "series": series,
+                "total": len(entries),
+            },
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 0
 
@@ -132,8 +170,12 @@ def main() -> int:
     except RuntimeError as e:
         msg = str(e)
         print(f"ERROR: {msg}", file=sys.stderr)
-        json.dump({"status": "error", "key": key, "series": series, "error": msg},
-                  sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {"status": "error", "key": key, "series": series, "error": msg},
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 1
 

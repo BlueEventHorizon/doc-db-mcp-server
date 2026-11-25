@@ -3,7 +3,8 @@
 targets:
   - name: doc-db-mcp-server
     version_file: VERSION
-    version_path: "" # plain text ファイル（内容がバージョン文字列そのもの）
+    # plain text ファイル（内容がバージョン文字列そのもの）
+    version_path: ""
     sync_files:
       - path: Cargo.toml
         pattern: 'version = "{version}"'

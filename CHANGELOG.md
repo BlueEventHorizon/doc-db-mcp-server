@@ -7,10 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-25
+
 ### Changed
 
 - MCP サーバー本体を Rust へ移植。SQLite の保存形式、設定ファイル、11 個の MCP ツールを引き継ぐ。
 - MCP 待受を IPv4 ループバックに制限。ブラウザーからの Origin 付きリクエストを拒否し、文書 URL の取得先検証と本文サイズ制限を追加。
+- Homebrew Formula を Rust ビルド（`rust` / `cmake`）に切り替え。`brew test` でサーバーを起動し、MCP `initialize` の応答とバージョンを検証する。
+- dprint プラグインを npm 配布に切り替え。
+
+### Fixed
+
+- CI で `brew test` の前に doc-db をリンクするよう修正。
 
 ## [0.3.4] - 2026-10-19
 
@@ -662,7 +670,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.4.0
 [0.3.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.4
 [0.3.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.3
 [0.3.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.2
