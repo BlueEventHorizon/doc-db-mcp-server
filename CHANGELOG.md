@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-26
+
 ### Added
 
 - **エラーの識別子 `EMBEDDING_FAILED` / `INTERNAL_ERROR`** を追加（doc-link など、失敗を機械で判別する client 向け）。
@@ -695,7 +697,8 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.4.1
 [0.4.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.4.0
 [0.3.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.4
 [0.3.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.3
