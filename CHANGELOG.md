@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   全チャンクの Embedding がある文書は従来どおり skip する（DIF-02。Embedding の再計算なし）。
   OpenAI の失敗で不完全になった文書を、次の同期で補えるようにするため。
 
+### Notes
+
+- 上記の識別子（`EMBEDDING_FAILED` / `INTERNAL_ERROR`）、`document_errors`、欠けた Embedding の補充は **Rust 版のみ**。
+  比較用の Go 版（`cmd/`、`internal/`）には入れていない（owner 承認済み）。Go 版は従来どおり、
+  識別子は `KEY_NOT_FOUND` / `KEY_TRASHED` のみで、Embedding が欠けた文書も同一ハッシュなら skip する。
+- 入力の不正（JSON-RPC `-32602`）には識別子を付けない。識別子はサーバー内部の失敗に付く。
+
 ## [0.4.0] - 2026-11-25
 
 ### Changed

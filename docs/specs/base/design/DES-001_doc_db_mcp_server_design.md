@@ -965,7 +965,7 @@ handler が返した error を次の 2 通りに分岐させる。
 
 ### 10.2 Embedding 失敗の識別子と欠けた Embedding の補充（Rust 版）
 
-doc-link など、OpenAI の失敗を機械で判別する client のための契約。**Rust 版（`rust/`）のみ**が対象で、比較用の Go 版には入れない。既存の tool 名・入力・出力の項目は変えず、追加のみである。
+doc-link など、OpenAI の失敗を機械で判別する client のための契約。**Rust 版（`rust/`）のみ**が対象で、比較用の Go 版には入れない（owner 承認済み）。**Rust 版と Go 版のふるまいの差**: Go 版は識別子が `KEY_NOT_FOUND` / `KEY_TRASHED` のみで、`document_errors` を返さず、Embedding が欠けた record も同一ハッシュなら skip する（DIF-02 の従来のふるまい）。既存の tool 名・入力・出力の項目は変えず、追加のみである。
 
 **識別子（追加）**:
 
