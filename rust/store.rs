@@ -191,15 +191,117 @@ fn record_id(db: &Connection, key: &str, path: &str, hash: &str) -> Result<Optio
         .optional()?)
 }
 
-pub fn reuse(db: &mut Connection, key: &str, series: &str, path: &str, hash: &str) -> Result<bool> {
+/// Embedding が保存されていないチャンク。
+pub struct MissingChunk {
+    pub id: i64,
+    pub index: usize,
+    pub heading_path: String,
+    pub text: String,
+}
+
+/// 同一 KEY・パス・内容ハッシュの record の状態。
+pub enum Reuse {
+    /// record が無い。新規に登録する。
+    New,
+    /// record があり、全チャンクに Embedding がある。Embedding を再計算しない (DIF-02)。
+    Complete,
+    /// record があるが、Embedding が欠けたチャンクがある。欠けたチャンクだけを補う。
+    Incomplete {
+        record_id: i64,
+        total: usize,
+        missing: Vec<MissingChunk>,
+    },
+}
+
+/// 既存 record を series へ紐づけ、その Embedding の欠けを返す。
+pub fn reuse(
+    db: &mut Connection,
+    key: &str,
+    series: &str,
+    path: &str,
+    hash: &str,
+) -> Result<Reuse> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_writable(&tx, key)?;
     let Some(id) = record_id(&tx, key, path, hash)? else {
-        return Ok(false);
+        return Ok(Reuse::New);
     };
     attach(&tx, key, series, path, id)?;
+    let missing = {
+        let mut stmt = tx.prepare_cached(
+            "SELECT c.id,c.chunk_index,c.heading_path,c.text FROM chunks c
+             WHERE c.record_id=?1 AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id=c.id)
+             ORDER BY c.chunk_index",
+        )?;
+        stmt.query_map([id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .map(|row| {
+            let (id, index, heading_path, text) = row?;
+            Ok(MissingChunk {
+                id,
+                index: usize::try_from(index)?,
+                heading_path,
+                text,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?
+    };
+    let reuse = if missing.is_empty() {
+        Reuse::Complete
+    } else {
+        let total: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE record_id=?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        Reuse::Incomplete {
+            record_id: id,
+            total: usize::try_from(total)?,
+            missing,
+        }
+    };
     tx.commit()?;
-    Ok(true)
+    Ok(reuse)
+}
+
+/// 欠けていたチャンクの Embedding だけを保存する。
+pub fn fill_vectors(
+    db: &mut Connection,
+    key: &str,
+    record_id: i64,
+    vectors: Vec<(i64, Vec<f32>)>,
+) -> Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    require_writable(&tx, key)?;
+    {
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO embeddings (chunk_id,vector,dim) VALUES (?1,?2,?3)",
+        )?;
+        for (chunk_id, vector) in vectors {
+            let blob: Vec<u8> = vector
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            insert.execute(params![chunk_id, blob, i64::try_from(vector.len())?])?;
+        }
+    }
+    let timestamp = now();
+    tx.execute(
+        "UPDATE records SET updated_at=?2 WHERE id=?1",
+        params![record_id, timestamp],
+    )?;
+    tx.execute(
+        "UPDATE keys SET last_updated_at=?2 WHERE key=?1",
+        params![key, timestamp],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn save(

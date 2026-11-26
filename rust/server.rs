@@ -24,7 +24,7 @@ use crate::{
     VERSION, chunker, config,
     network::{self, Fetcher, OpenAi},
     search,
-    store::{self, KeyState, Store},
+    store::{self, KeyState, Reuse, Store},
 };
 
 type ToolResult = Result<Value, ErrorData>;
@@ -59,6 +59,20 @@ struct Job {
     deleted_paths_marked: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     errors: Vec<String>,
+    /// 失敗した文書ごとの識別子。`done` でも Embedding に失敗した文書があれば含まれる。
+    document_errors: Vec<JobDocumentError>,
+    /// `failed` のときの失敗の識別子。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
+}
+
+/// 同期ジョブの文書ごとの失敗。機械で読む形式（文言は `errors` にある）。
+#[derive(Clone, Serialize)]
+struct JobDocumentError {
+    path: String,
+    code: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_chunks: Vec<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -140,8 +154,33 @@ struct UpsertResult {
 struct DocumentError {
     path: String,
     error: String,
+    /// 失敗の識別子（`EMBEDDING_FAILED` / `INTERNAL_ERROR`）。
+    code: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skipped_chunks: Vec<usize>,
+}
+
+/// Embedding の取得結果。`vectors` は入力と同じ長さで、失敗した位置は `None`。
+struct Embedded {
+    vectors: Vec<Option<Vec<f32>>>,
+    failed: Vec<usize>,
+    error: String,
+}
+
+impl Embedded {
+    /// 失敗があれば文書の失敗として返す。`chunk_index` は入力の位置をチャンクの番号へ変える。
+    fn failure(&self, path: &str, chunk_index: impl Fn(usize) -> usize) -> Option<DocumentError> {
+        (!self.failed.is_empty()).then(|| DocumentError {
+            path: path.to_owned(),
+            error: self.error.clone(),
+            code: EMBEDDING_FAILED,
+            skipped_chunks: self
+                .failed
+                .iter()
+                .map(|&position| chunk_index(position))
+                .collect(),
+        })
+    }
 }
 
 enum UpsertOutcome {
@@ -153,11 +192,82 @@ fn invalid(message: impl Into<std::borrow::Cow<'static, str>>) -> ErrorData {
     ErrorData::invalid_params(message, None)
 }
 
+const EMBEDDING_FAILED: &str = "EMBEDDING_FAILED";
+const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+
+/// 識別子を持つ失敗。原因の鎖に載せ、`error_code` が読む。
+#[derive(Debug)]
+struct Coded {
+    code: &'static str,
+    message: String,
+}
+
+impl std::fmt::Display for Coded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Coded {}
+
+/// 失敗の原因の鎖から識別子を決める。該当が無ければ `INTERNAL_ERROR`。
+fn error_code(error: &anyhow::Error) -> &'static str {
+    error
+        .chain()
+        .find_map(|cause| {
+            if let Some(coded) = cause.downcast_ref::<Coded>() {
+                Some(coded.code)
+            } else if cause.is::<network::EmbeddingFailed>() {
+                Some(EMBEDDING_FAILED)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(INTERNAL_ERROR)
+}
+
+/// key_error 由来の MCP エラーを、識別子を保つ anyhow エラーへ変える。
+fn coded(error: ErrorData) -> anyhow::Error {
+    let code = match error.data.as_ref().and_then(|data| data["code"].as_str()) {
+        Some("KEY_NOT_FOUND") => "KEY_NOT_FOUND",
+        Some("KEY_TRASHED") => "KEY_TRASHED",
+        _ => INTERNAL_ERROR,
+    };
+    anyhow::Error::new(Coded {
+        code,
+        message: error.message.into_owned(),
+    })
+}
+
 fn internal(error: anyhow::Error) -> ErrorData {
     tracing::error!(%error, "MCP ツールの処理に失敗しました");
+    // 数値の code は互換のため -32603 のまま。判別の正本は data.code。
+    match error_code(&error) {
+        EMBEDDING_FAILED => {
+            let status = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<network::EmbeddingFailed>())
+                .and_then(network::EmbeddingFailed::http_status);
+            let data = match status {
+                Some(status) => json!({"code": EMBEDDING_FAILED, "http_status": status}),
+                None => json!({"code": EMBEDDING_FAILED}),
+            };
+            ErrorData::internal_error(
+                "EMBEDDING_FAILED: OpenAI から Embedding を取得できませんでした。サーバーログを確認してください",
+                Some(data),
+            )
+        }
+        code => ErrorData::internal_error(
+            format!("{code}: サーバー側の処理に失敗しました。サーバーログを確認してください"),
+            Some(json!({"code": code})),
+        ),
+    }
+}
+
+fn internal_text(message: &'static str) -> ErrorData {
     ErrorData::internal_error(
-        "サーバー側の処理に失敗しました。サーバーログを確認してください",
-        None,
+        format!("{INTERNAL_ERROR}: {message}"),
+        Some(json!({"code": INTERNAL_ERROR})),
     )
 }
 
@@ -296,40 +406,79 @@ impl Server {
                 .run(move |db| store::reuse(db, &key, &series, &path, &hash))
                 .await?
         };
-        if existing {
+        if matches!(existing, Reuse::Complete) {
             return Ok(UpsertOutcome::Skipped);
         }
         let max_size = self.0.config.chunker.max_chunk_size;
         let chunks =
             tokio::task::spawn_blocking(move || chunker::split(&content, max_size)).await??;
-        let mut vectors = Vec::with_capacity(chunks.len());
-        let mut skipped_chunks = Vec::new();
-        let mut error = String::new();
-        for batch in chunks.chunks(100) {
-            let input: Vec<_> = batch
+        // Embedding が欠けた同一内容の record は skip せず、欠けたチャンクだけを再度 Embedding する。
+        // チャンクの分割が保存時と一致しない（設定変更など）ときは、全チャンクを登録し直す。
+        if let Reuse::Incomplete {
+            record_id,
+            total,
+            missing,
+        } = existing
+            && chunks.len() == total
+            && missing.iter().all(|chunk| {
+                chunks.get(chunk.index).is_some_and(|new| {
+                    new.text == chunk.text && new.heading_path == chunk.heading_path
+                })
+            })
+        {
+            let input: Vec<_> = missing
                 .iter()
-                .map(|chunk| chunk.embed_text.as_str())
+                .map(|chunk| chunks[chunk.index].embed_text.as_str())
                 .collect();
-            match self.0.openai.embed(&input).await {
-                Ok(batch) => vectors.extend(batch.into_iter().map(Some)),
-                Err(batch_error) => {
-                    tracing::warn!(error = %batch_error, "Embedding に失敗したチャンクを本文のみで保存します");
-                    error = format!("embed: {batch_error}");
-                    skipped_chunks.extend(vectors.len()..vectors.len() + batch.len());
-                    vectors.resize_with(vectors.len() + batch.len(), || None);
-                }
+            let embedded = self.embed_texts(&input).await;
+            let error = embedded.failure(&path, |position| missing[position].index);
+            let filled: Vec<_> = missing
+                .iter()
+                .zip(embedded.vectors)
+                .filter_map(|(chunk, vector)| vector.map(|vector| (chunk.id, vector)))
+                .collect();
+            if !filled.is_empty() {
+                self.0
+                    .store
+                    .run(move |db| store::fill_vectors(db, &key, record_id, filled))
+                    .await?;
             }
+            return Ok(UpsertOutcome::Processed(error));
         }
-        let error = (!skipped_chunks.is_empty()).then(|| DocumentError {
-            path: path.clone(),
-            error,
-            skipped_chunks,
-        });
+        let input: Vec<_> = chunks
+            .iter()
+            .map(|chunk| chunk.embed_text.as_str())
+            .collect();
+        let embedded = self.embed_texts(&input).await;
+        let error = embedded.failure(&path, |position| position);
+        let vectors = embedded.vectors;
         self.0
             .store
             .run(move |db| store::save(db, &key, &series, &path, &hash, chunks, vectors))
             .await?;
         Ok(UpsertOutcome::Processed(error))
+    }
+
+    /// 100 件ずつ Embedding を得る。失敗したバッチは `None` で埋め、位置と原因を返す。
+    async fn embed_texts(&self, input: &[&str]) -> Embedded {
+        let mut embedded = Embedded {
+            vectors: Vec::with_capacity(input.len()),
+            failed: Vec::new(),
+            error: String::new(),
+        };
+        for batch in input.chunks(100) {
+            match self.0.openai.embed(batch).await {
+                Ok(batch) => embedded.vectors.extend(batch.into_iter().map(Some)),
+                Err(batch_error) => {
+                    tracing::warn!(error = %batch_error, "Embedding に失敗したチャンクを本文のみで保存します");
+                    embedded.error = format!("embed: {batch_error}");
+                    let start = embedded.vectors.len();
+                    embedded.failed.extend(start..start + batch.len());
+                    embedded.vectors.resize_with(start + batch.len(), || None);
+                }
+            }
+        }
+        embedded
     }
 
     async fn upsert_into(&self, key: &str, series: &str, doc: Document, result: &mut UpsertResult) {
@@ -346,6 +495,7 @@ impl Server {
                 result.errors.push(DocumentError {
                     path,
                     error: format!("{error:#}"),
+                    code: error_code(&error),
                     skipped_chunks: Vec::new(),
                 });
             }
@@ -379,7 +529,7 @@ impl Server {
         self.0
             .jobs
             .lock()
-            .map_err(|_| ErrorData::internal_error("ジョブ状態を取得できません", None))?
+            .map_err(|_| internal_text("ジョブ状態を取得できません"))?
             .states
             .insert(
                 job_id.clone(),
@@ -390,6 +540,8 @@ impl Server {
                     failed: 0,
                     deleted_paths_marked: 0,
                     errors: Vec::new(),
+                    document_errors: Vec::new(),
+                    code: None,
                 },
             );
         let server = self.clone();
@@ -409,6 +561,7 @@ impl Server {
                     if let Some(job) = jobs.states.get_mut(&id) {
                         job.status = if result.is_ok() { "done" } else { "failed" };
                         if let Err(error) = result {
+                            job.code = Some(error_code(&error));
                             job.errors.push(error.to_string());
                         }
                     }
@@ -427,9 +580,7 @@ impl Server {
 
     async fn run_sync(&self, id: &str, input: DocumentsInput) -> Result<()> {
         let _guard = self.key_lock(&input.key).await?;
-        self.check_key(&input.key, false)
-            .await
-            .map_err(|error| anyhow::anyhow!("{}", error.message))?;
+        self.check_key(&input.key, false).await.map_err(coded)?;
         let mut result = UpsertResult::default();
         let desired = input
             .documents
@@ -443,12 +594,15 @@ impl Server {
                 job.processed = result.processed;
                 job.skipped = result.skipped;
                 job.failed = result.failed;
-                job.errors.extend(
-                    result
-                        .errors
-                        .drain(..)
-                        .map(|error| format!("path {:?}: {}", error.path, error.error)),
-                );
+                for error in result.errors.drain(..) {
+                    job.errors
+                        .push(format!("path {:?}: {}", error.path, error.error));
+                    job.document_errors.push(JobDocumentError {
+                        path: error.path,
+                        code: error.code,
+                        skipped_chunks: error.skipped_chunks,
+                    });
+                }
             })?;
         }
         let marked = self
@@ -478,7 +632,7 @@ impl Server {
             .0
             .jobs
             .lock()
-            .map_err(|_| ErrorData::internal_error("ジョブ状態を取得できません", None))?;
+            .map_err(|_| internal_text("ジョブ状態を取得できません"))?;
         to_value(
             jobs.states
                 .get(&input.job_id)
