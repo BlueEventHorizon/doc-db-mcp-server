@@ -23,7 +23,7 @@ class DocDb < Formula
   # scripts/verify_version_consistency.sh and scripts/verify_release_tag.sh.
   url "https://github.com/BlueEventHorizon/doc-db-mcp-server.git",
       tag:      "v0.4.1",
-      revision: "0000000000000000000000000000000000000000"
+      revision: "374dac516e244dcb755c2a86793a77a0e543de3d"
   license "MIT"
 
   # macOS 13 (Ventura) minimum (PRE-03).
