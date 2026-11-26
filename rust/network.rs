@@ -213,6 +213,42 @@ pub fn read_local(path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// OpenAI API が成功以外の HTTP 状態を返した。
+#[derive(Debug)]
+pub struct ApiStatus(pub u16);
+
+impl std::fmt::Display for ApiStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OpenAI API が HTTP {} を返しました", self.0)
+    }
+}
+
+impl std::error::Error for ApiStatus {}
+
+/// 再試行を尽くしても OpenAI から Embedding を得られなかった。
+/// 認証・通信・HTTP エラー・応答の不正を含む。MCP エラーの識別子 `EMBEDDING_FAILED` に対応する。
+#[derive(Debug)]
+pub struct EmbeddingFailed(anyhow::Error);
+
+impl EmbeddingFailed {
+    /// 原因に含まれる OpenAI API の HTTP 状態コード。
+    pub fn http_status(&self) -> Option<u16> {
+        self.0
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<ApiStatus>())
+            .map(|status| status.0)
+    }
+}
+
+// 既存クライアントが読む `embed: ...` の文言を変えないため、原因の文言をそのまま表示する。
+impl std::fmt::Display for EmbeddingFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+
+impl std::error::Error for EmbeddingFailed {}
+
 pub struct OpenAi {
     client: Client,
     base_url: Url,
@@ -281,11 +317,9 @@ impl OpenAi {
             .timeout(timeout)
             .send()
             .await?;
-        ensure!(
-            response.status().is_success(),
-            "OpenAI API が HTTP {} を返しました",
-            response.status()
-        );
+        if !response.status().is_success() {
+            return Err(ApiStatus(response.status().as_u16()).into());
+        }
         limited_body(response, API_RESPONSE_LIMIT).await
     }
 
@@ -302,7 +336,9 @@ impl OpenAi {
                 Err(error) => last_error = Some(error),
             }
         }
-        Err(last_error.context("Embedding API を呼び出せませんでした")?)
+        let error =
+            last_error.unwrap_or_else(|| anyhow::anyhow!("Embedding API を呼び出せませんでした"));
+        Err(EmbeddingFailed(error).into())
     }
 
     async fn embed_once(&self, payload: &Value, count: usize) -> Result<Vec<Vec<f32>>> {
