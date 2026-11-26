@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクト概要
 
-Markdown ドキュメントの **ハイブリッド検索 MCP サーバー**（Go / pure-Go SQLite / OpenAI Embedding + BM25 + 全文 GREP + LLM Rerank）。
+Markdown ドキュメントの **ハイブリッド検索 MCP サーバー**（Rust / SQLite / OpenAI Embedding + BM25 + 全文 GREP + LLM Rerank）。
 Streamable HTTP transport で MCP 2025-03 プロトコルを話す。単一バイナリで配布し、
 Homebrew 自家 tap (`blueeventhorizon/doc-db`) からインストールする。
 
@@ -14,11 +14,12 @@ Homebrew 自家 tap (`blueeventhorizon/doc-db`) からインストールする�
 ## よく使うコマンド
 
 ```bash
-make build              # VERSION から ldflags 経由でバージョン注入してビルド
-make test               # go test ./...
+make build              # Cargo.lock に固定された依存関係で Rust バイナリをビルド
+make test               # Rust 版の単体・MCP 統合テスト
+make test-go            # Go 版を比較対象としてテスト
 make verify             # verify-version + verify-tag を順に実行
 make verify-version     # VERSION / CHANGELOG / .version-config.yaml / Formula tag の静的整合検証
-make verify-tag         # Formula revision == git tag commit SHA 検証（tag 作成後のみ pass）
+make verify-tag         # main の第1親履歴、タグ時点の VERSION / Formula、固定 SHA を検証
 
 go test -race ./...             # レース検出テスト
 go test ./internal/mcp/ -run TestUpsert_DIF02_SameHashSkips -v   # 単一テスト実行
@@ -45,17 +46,16 @@ LLM Rerank は **ranking 最適化オプション**であり、recall を広げ�
 上位のみが下位を参照する。循環依存なし。
 
 ```
-cmd/docdb           エントリポイント・設定読み込み・配線
-internal/mcp        MCP ツールハンドラ（11 種）
-internal/search     3 signal 検索パイプライン（emb / lex / grep / rerank）
-internal/reranker   OpenAI Chat Completions ベース LLM Rerank
-internal/chunker    Markdown → 見出し境界チャンク分割
-internal/embedder   OpenAI Embedding API（部分失敗対応）
-internal/fetcher    URL → コンテンツ取得（SSRF 防御付き）
-internal/trash      ゴミ箱投入済み KEY・orphan record の自動最終処分ワーカー（旧 internal/expiry の TTL/LRU を置換）
-internal/store      SQLite 読み書き・WAL・アトミック AppendAndCleanSeries
-internal/config     YAML 設定ローダー（~/.doc-db/doc-db.yaml）
+rust/main.rs      CLI、MCP 待受、定期回収ワーカー
+rust/server.rs    MCP ツールハンドラ（11 種）、KEY 単位の排他制御、同期ジョブ
+rust/search.rs    3 signal 検索パイプライン（emb / lex / grep / rerank）
+rust/network.rs   OpenAI API、URL 取得、ローカルファイル読み取り
+rust/chunker.rs   Markdown → 見出し境界チャンク分割
+rust/store.rs     SQLite、WAL、差分登録・削除予約のトランザクション
+rust/config.rs    YAML 設定ローダー（~/.doc-db/doc-db.yaml）
 ```
+
+`cmd/docdb` と `internal` は互換性比較用の Go 実装。Rust の MCP 統合テストは `rust/tests.rs` にある。
 
 ### データモデルの中核概念
 
@@ -111,7 +111,8 @@ Formula の `revision:` は git tag 確定後にしか正しい SHA を書けな
 - `CHANGELOG.md`（`[Unreleased]` セクションを新版へ昇格 + 新規 `[Unreleased]` を追加）
 - `Formula/doc-db.rb` の `tag:`
 
-**手動**: Formula の `revision:` を `"0000000000000000000000000000000000000000"` にリセット
+**手動**: `cargo update --workspace --offline` で Cargo.lock のパッケージバージョンを同期する。
+Formula の `revision:` を `"0000000000000000000000000000000000000000"` にリセット
 （`sync_files` は SHA を扱えないため）。
 
 検証: `make verify-version` が全 ok になるまで進まない。
@@ -120,7 +121,7 @@ Formula の `revision:` は git tag 確定後にしか正しい SHA を書けな
 
 ```bash
 /anvil:commit    # または手動:
-git add VERSION CHANGELOG.md Formula/doc-db.rb .version-config.yaml README.md
+git add VERSION CHANGELOG.md Formula/doc-db.rb Cargo.toml Cargo.lock .version-config.yaml README.md
 git commit -m "chore: bump version to X.Y.Z"
 git push
 ```
@@ -143,6 +144,7 @@ git pull                                   # merge を確実に取り込む
 git tag vX.Y.Z                             # main HEAD (= merge commit) に tag
 tag_commit=$(git rev-parse "vX.Y.Z^{commit}")
 echo "tag_commit: $tag_commit"
+bash scripts/verify_release_tag.sh --tag-only
 ```
 
 ### フェーズ 4: Formula revision を実 SHA に確定（main）
@@ -157,14 +159,13 @@ git commit -m "chore(release): Formula revision を vX.Y.Z tag commit に確定
 tag vX.Y.Z → $tag_commit
 verify_release_tag.sh: VER-07 OK"
 
-make verify-tag   # revision == tag commit SHA を検証。落ちたらやり直し
+make verify-tag   # main の第1親履歴、タグ時点の VERSION / Formula と固定 SHA を検証
 ```
 
 ### フェーズ 5: 全部 push
 
 ```bash
-git push origin main
-git push origin vX.Y.Z
+git push --atomic origin main vX.Y.Z
 ```
 
 ### フェーズ 6: main から develop へ戻す

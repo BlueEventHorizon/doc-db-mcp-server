@@ -329,7 +329,8 @@ do {
   await sleep(1000);
   status = await mcp.call("get_sync_status", { job_id });
 } while (status.status === "running");
-// status: { status: "done", processed, skipped, failed, deleted_paths_marked, errors? }
+// status: { status: "done", processed, skipped, failed, deleted_paths_marked, errors?, document_errors }
+// done でも Embedding に失敗した文書は status.document_errors に載る (§6.1)
 
 // branch 削除を検知したら series 全体を削除予約 (即時削除しない・sync で取り消し可能)
 await mcp.call("schedule_delete_series", {
@@ -382,6 +383,32 @@ await mcp.call("delete_documents", {
 
 - `failed > 0` → 該当 path は完全に処理できず。retry 候補
 - `skipped_chunks` あり → 部分的に成功 (テキストは保存、一部 vector 欠落)
+- 各 `errors[]` 要素の `code` (`EMBEDDING_FAILED` / `INTERNAL_ERROR`、§6.2.1) で失敗の種類を判別する。文言で分岐しない
+- **Embedding が欠けた文書は、次の同期・upsert で補われる**。同じ KEY・series・path・内容でも、Embedding が
+  欠けたチャンクを持つ文書は skip されず、欠けたチャンクだけが再度 Embedding される (完全な文書は従来どおり skip)
+
+`sync_documents` のジョブ (`get_sync_status`) は、失敗した文書を `document_errors` に機械可読な形で返します
+(常に存在し、失敗が無ければ空配列)。ジョブが `done` でも Embedding に失敗した文書がありうるため、`done` だけで完全とみなさないでください:
+
+```json
+{
+  "status": "done",
+  "processed": 3,
+  "skipped": 0,
+  "failed": 1,
+  "deleted_paths_marked": 0,
+  "errors": [
+    "path \"a.md\": embed: OpenAI API が HTTP 500 を返しました",
+    "path \"missing.md\": local_path: ..."
+  ],
+  "document_errors": [
+    { "path": "a.md", "code": "EMBEDDING_FAILED", "skipped_chunks": [0] },
+    { "path": "missing.md", "code": "INTERNAL_ERROR" }
+  ]
+}
+```
+
+ジョブ自体が `failed` のときは、トップレベルの `code` (`KEY_TRASHED` / `INTERNAL_ERROR` など) も付きます。
 
 ### 6.2 致命的エラー
 
@@ -433,8 +460,28 @@ try {
 }
 ```
 
-**上記 2 つ以外のエラーに識別子は付きません。** 判別できないエラーは「障害」として扱い、
-索引作成などの副作用を伴う操作へ倒さないでください（誤った同期を防ぐため）。
+上記の 2 つに加えて、次の 2 つの識別子を **サーバーの内部で起きた失敗** に付けます
+（`KEY_*` と同様、JSON-RPC error の `data.code` と `message` 先頭に載ります）:
+
+| 識別子             | 意味                                                                                                    | 返す場面                                                            | 取るべき行動                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `EMBEDDING_FAILED` | OpenAI から Embedding を得られない (再試行 3 回を尽くした後。認証・通信・HTTP エラー・応答の不正を含む) | `query` のクエリの Embedding。同期・upsert の文書のチャンク (§6.1)  | OpenAI の失敗として扱う (検索基盤の切り替え、復旧後の再同期など) |
+| `INTERNAL_ERROR`   | 上記以外のサーバー内部の失敗 (保存先・ファイルの読み取りなど)                                           | 任意の tool の JSON-RPC error。同期・upsert の文書ごとの失敗 (§6.1) | 障害として扱う                                                   |
+
+```jsonc
+{
+  "error": {
+    "code": -32603, // 従来どおり。判別の正本は data.code
+    "message": "EMBEDDING_FAILED: OpenAI から Embedding を取得できませんでした。サーバーログを確認してください",
+    "data": { "code": "EMBEDDING_FAILED", "http_status": 401 } // http_status は確認できたときのみ
+  }
+}
+```
+
+- `EMBEDDING_FAILED` の `data.http_status` は、OpenAI が HTTP の失敗を返したときだけ載ります (通信の失敗・応答の不正では載りません)。認証情報と OpenAI の応答の生の文字列は、エラーに載りません
+- 入力の不正 (`-32602`。key 空・job_id 不明など) には識別子は付きません。呼び出し側の誤りであり、サーバー内部の失敗ではないためです
+- **識別子を読み取れないエラーは「障害」として扱い**、索引作成などの副作用を伴う操作へ倒さないでください（誤った同期を防ぐため）。
+  識別子が付くのは、この表の 4 つです
 
 ### 6.3 warnings は必ず確認
 

@@ -1,0 +1,32 @@
+[package]
+name = "doc-db"
+version = "0.4.1"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+regex = { version = "1", default-features = false, features = ["std", "perf"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+rustix = { version = "1", features = ["fs"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde-saphyr = { version = "2.2", default-features = false, features = ["deserialize"] }
+serde_json = "1"
+sha2 = "0.11"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "doc-db"
+path = "rust/main.rs"

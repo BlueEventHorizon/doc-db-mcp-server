@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-26
+
+### Added
+
+- **エラーの識別子 `EMBEDDING_FAILED` / `INTERNAL_ERROR`** を追加（doc-link など、失敗を機械で判別する client 向け）。
+  JSON-RPC エラーの `error.data.code` に載る。`EMBEDDING_FAILED` は `query` のクエリの Embedding 失敗
+  （`data.http_status` に OpenAI の HTTP 状態コードを載せることがある）、`INTERNAL_ERROR` はそれ以外のサーバー内部の失敗。
+  数値の `error.code` は従来どおり `-32603`。`KEY_NOT_FOUND` / `KEY_TRASHED` は変更なし。
+- **同期ジョブの文書ごとの失敗を機械可読に報告**: `get_sync_status` の応答に `document_errors`
+  （`{path, code, skipped_chunks?}` の配列。常に存在し、失敗が無ければ空）を追加。ジョブが `done` でも
+  Embedding に失敗した文書はここに載る。`failed` のジョブには `code` も付く。
+  `upsert_documents` の `errors[]` の各要素にも `code` を追加。既存の `errors`（文字列の一覧）は変更なし。
+
+### Changed
+
+- **Embedding が欠けた文書を同期で skip しない**: 同じ KEY・path・内容でも Embedding が欠けたチャンクを持つ
+  record は、`upsert_documents` / `sync_documents` で skip せず、欠けたチャンクだけを再度 Embedding する。
+  全チャンクの Embedding がある文書は従来どおり skip する（DIF-02。Embedding の再計算なし）。
+  OpenAI の失敗で不完全になった文書を、次の同期で補えるようにするため。
+
+### Notes
+
+- 上記の識別子（`EMBEDDING_FAILED` / `INTERNAL_ERROR`）、`document_errors`、欠けた Embedding の補充は **Rust 版のみ**。
+  比較用の Go 版（`cmd/`、`internal/`）には入れていない（owner 承認済み）。Go 版は従来どおり、
+  識別子は `KEY_NOT_FOUND` / `KEY_TRASHED` のみで、Embedding が欠けた文書も同一ハッシュなら skip する。
+- 入力の不正（JSON-RPC `-32602`）には識別子を付けない。識別子はサーバー内部の失敗に付く。
+
+## [0.4.0] - 2026-11-25
+
+### Changed
+
+- MCP サーバー本体を Rust へ移植。SQLite の保存形式、設定ファイル、11 個の MCP ツールを引き継ぐ。
+- MCP 待受を IPv4 ループバックに制限。ブラウザーからの Origin 付きリクエストを拒否し、文書 URL の取得先検証と本文サイズ制限を追加。
+- Homebrew Formula を Rust ビルド（`rust` / `cmake`）に切り替え。`brew test` でサーバーを起動し、MCP `initialize` の応答とバージョンを検証する。
+- dprint プラグインを npm 配布に切り替え。
+
+### Fixed
+
+- CI で `brew test` の前に doc-db をリンクするよう修正。
+
 ## [0.3.4] - 2026-10-19
 
 サーバー本体（Go）の挙動変更はない。同梱 SKILL とドキュメントの追加のみ。
@@ -657,7 +697,9 @@ v0.1.2 後の詳細監査で発見した reference (`reference/doc-db/scripts/*.
 - CJK regex を `[^\x00-\x7F]+` に修正（Go RE2 の `\W` は ASCII 専用のため）
 - bm25_df の DF 計算: `termSet` + `df -= 1` に統一（DF はレコード単位、DES-001 §6.2）
 
-[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/BlueEventHorizon/doc-db-mcp-server/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.4.1
+[0.4.0]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.4.0
 [0.3.4]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.4
 [0.3.3]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.3
 [0.3.2]: https://github.com/BlueEventHorizon/doc-db-mcp-server/releases/tag/v0.3.2

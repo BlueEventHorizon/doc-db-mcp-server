@@ -37,6 +37,7 @@ exit code (--start-only 未指定時):
     2  ジョブ failed / 一部ドキュメント失敗 / 完了待ちタイムアウト
 exit code (--start-only 指定時): 0 投入成功 / 1 接続失敗・引数エラー
 """
+
 from __future__ import annotations
 
 import argparse
@@ -71,8 +72,10 @@ def load_manifest(key: str) -> "list[str]":
         raise SystemExit(1)
     docs = data.get("documents", [])
     if not isinstance(docs, list):
-        print(f"ERROR: manifest の形式が不正です ({p}): documents が配列ではありません",
-              file=sys.stderr)
+        print(
+            f"ERROR: manifest の形式が不正です ({p}): documents が配列ではありません",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     return [str(d) for d in docs]
 
@@ -80,9 +83,14 @@ def load_manifest(key: str) -> "list[str]":
 def save_manifest(key: str, series: str, documents: "list[str]") -> None:
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
     manifest_path(key).write_text(
-        json.dumps({"key": key, "series": series, "documents": sorted(documents)},
-                   ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8")
+        json.dumps(
+            {"key": key, "series": series, "documents": sorted(documents)},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def expand_paths(raw_paths: "list[str]", exts: "set[str]") -> "list[str]":
@@ -106,34 +114,53 @@ def expand_paths(raw_paths: "list[str]", exts: "set[str]") -> "list[str]":
     return sorted(files)
 
 
-def sync_all(args: argparse.Namespace, key: str, series: str,
-             documents: "list[str]", extra: dict) -> int:
+def sync_all(
+    args: argparse.Namespace, key: str, series: str, documents: "list[str]", extra: dict
+) -> int:
     """manifest 全体を sync し、成功したら manifest を保存する。"""
     entries = [{"path": p, "local_path": p} for p in documents]
     client = docdb_client.Client(timeout=args.timeout)
 
     def fail(msg: str) -> int:
         if "sync_documents" in msg or "not found" in msg.lower():
-            msg += ("\nsync_documents は doc-db v0.2.0+ の機能です。"
-                    "`brew upgrade doc-db` でサーバを更新してください。")
+            msg += (
+                "\nsync_documents は doc-db v0.2.0+ の機能です。"
+                "`brew upgrade doc-db` でサーバを更新してください。"
+            )
         print(f"ERROR: {msg}", file=sys.stderr)
-        json.dump({"status": "error", "key": key, "series": series, "error": msg, **extra},
-                  sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {"status": "error", "key": key, "series": series, "error": msg, **extra},
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 1
 
     if args.start_only:
         try:
-            r = client.call("sync_documents",
-                            {"key": key, "series": series, "documents": entries})
+            r = client.call(
+                "sync_documents", {"key": key, "series": series, "documents": entries}
+            )
         except RuntimeError as e:
             return fail(str(e))
         job_id = r.get("job_id")
         if not job_id:
             return fail(f"sync_documents が job_id を返しませんでした: {r}")
         save_manifest(key, series, documents)
-        json.dump({"status": "accepted", "job_id": job_id, "key": key, "series": series,
-                   "total": len(entries), **extra}, sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "status": "accepted",
+                "job_id": job_id,
+                "key": key,
+                "series": series,
+                "total": len(entries),
+                **extra,
+            },
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 0
 
@@ -161,52 +188,86 @@ def prune_missing(documents: "list[str]") -> "tuple[list[str], list[str]]":
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("command", choices=["add", "remove", "resync", "list"])
     ap.add_argument("paths", nargs="*", help="add/remove の対象 file / dir")
     ap.add_argument("--key", default=DEFAULT_KEY)
-    ap.add_argument("--series", default=DEFAULT_SERIES,
-                    help=f"doc-db の series (デフォルト {DEFAULT_SERIES!r} 固定。"
-                         f"サーバ API 上、登録時の省略は不可)")
-    ap.add_argument("--exts", default=DEFAULT_EXTS,
-                    help=f"dir 展開時に対象とする拡張子 (デフォルト {DEFAULT_EXTS})")
-    ap.add_argument("--start-only", action="store_true", dest="start_only",
-                    help="sync を投入し job_id を即座に返して終了する "
-                         "(呼び出し側が docdb_client.py sync-status をループする前提)")
+    ap.add_argument(
+        "--series",
+        default=DEFAULT_SERIES,
+        help=f"doc-db の series (デフォルト {DEFAULT_SERIES!r} 固定。"
+        f"サーバ API 上、登録時の省略は不可)",
+    )
+    ap.add_argument(
+        "--exts",
+        default=DEFAULT_EXTS,
+        help=f"dir 展開時に対象とする拡張子 (デフォルト {DEFAULT_EXTS})",
+    )
+    ap.add_argument(
+        "--start-only",
+        action="store_true",
+        dest="start_only",
+        help="sync を投入し job_id を即座に返して終了する "
+        "(呼び出し側が docdb_client.py sync-status をループする前提)",
+    )
     ap.add_argument("--wait", type=int, default=docdb_client.DEFAULT_TIMEOUT)
     ap.add_argument("--timeout", type=int, default=docdb_client.DEFAULT_TIMEOUT)
     args = ap.parse_args()
 
-    exts = {e if e.startswith(".") else f".{e}" for e in args.exts.lower().split(",") if e}
+    exts = {
+        e if e.startswith(".") else f".{e}" for e in args.exts.lower().split(",") if e
+    }
     manifest = load_manifest(args.key)
 
     if args.command == "list":
-        json.dump({"status": "ok", "key": args.key, "count": len(manifest),
-                   "documents": sorted(manifest)}, sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "status": "ok",
+                "key": args.key,
+                "count": len(manifest),
+                "documents": sorted(manifest),
+            },
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 0
 
     if args.command in ("add", "remove") and not args.paths:
-        print(f"ERROR: {args.command} には対象 path を 1 つ以上指定してください",
-              file=sys.stderr)
+        print(
+            f"ERROR: {args.command} には対象 path を 1 つ以上指定してください",
+            file=sys.stderr,
+        )
         return 1
     if args.command == "resync" and args.paths:
-        print("ERROR: resync は path を取りません (manifest 全体を再同期します)",
-              file=sys.stderr)
+        print(
+            "ERROR: resync は path を取りません (manifest 全体を再同期します)",
+            file=sys.stderr,
+        )
         return 1
 
     if args.command == "add":
         new_files = expand_paths(args.paths, exts)
         if not new_files:
-            print(f"ERROR: 指定 path から対象ファイルが見つかりません "
-                  f"(対象拡張子: {sorted(exts)})", file=sys.stderr)
+            print(
+                f"ERROR: 指定 path から対象ファイルが見つかりません "
+                f"(対象拡張子: {sorted(exts)})",
+                file=sys.stderr,
+            )
             return 1
         merged = sorted(set(manifest) | set(new_files))
         added = sorted(set(new_files) - set(manifest))
         kept, pruned = prune_missing(merged)
-        return sync_all(args, args.key, args.series, kept,
-                        {"added": len(added), "pruned": len(pruned)})
+        return sync_all(
+            args,
+            args.key,
+            args.series,
+            kept,
+            {"added": len(added), "pruned": len(pruned)},
+        )
 
     if args.command == "remove":
         # remove は「manifest から外す」操作なので、ディスクに無い path も除去対象にする
@@ -222,21 +283,39 @@ def main() -> int:
         removed = sorted(set(manifest) & targets)
         unknown = sorted(targets - set(manifest))
         if unknown:
-            print(f"WARN: manifest に無い path を無視します: {unknown}", file=sys.stderr)
+            print(
+                f"WARN: manifest に無い path を無視します: {unknown}", file=sys.stderr
+            )
         if not removed:
-            print("ERROR: 指定 path はいずれも manifest に登録されていません", file=sys.stderr)
+            print(
+                "ERROR: 指定 path はいずれも manifest に登録されていません",
+                file=sys.stderr,
+            )
             return 1
         remaining = [m for m in manifest if m not in targets]
         kept, pruned = prune_missing(remaining)
         # remaining が 0 件でも sync する (全切り離し)。remove は明示操作のため許可
-        return sync_all(args, args.key, args.series, kept,
-                        {"removed": len(removed), "pruned": len(pruned)})
+        return sync_all(
+            args,
+            args.key,
+            args.series,
+            kept,
+            {"removed": len(removed), "pruned": len(pruned)},
+        )
 
     # resync
     if not manifest:
-        json.dump({"status": "ok", "key": args.key, "total": 0,
-                   "message": "manifest が空です。先に add で文書を格納してください。"},
-                  sys.stdout, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "status": "ok",
+                "key": args.key,
+                "total": 0,
+                "message": "manifest が空です。先に add で文書を格納してください。",
+            },
+            sys.stdout,
+            ensure_ascii=False,
+            indent=2,
+        )
         sys.stdout.write("\n")
         return 0
     kept, pruned = prune_missing(manifest)

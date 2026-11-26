@@ -10,6 +10,10 @@
 
 ## 1. 概要
 
+Rust 版のモジュール対応は [README のレイヤー構成](../../../../README.md#レイヤー構成) を参照する。本文の Go パッケージ名と型名は移植前の参照実装を指す。MCP ツールと SQLite のデータ形式は Rust 版でも引き継ぐ。
+
+Rust 版の待受は IPv4 ループバックに限定する。MCP の Host はループバック用の値のみを受け付け、Origin 付きリクエストは拒否する。文書 URL 取得は各接続で DNS 応答を検証し、その応答だけを接続候補にする。リダイレクト先も検証し、本文の上限は 10 MiB とする。既存の `fetcher.allow_private` を明示的に有効にするとプライベート IP も取得できる。
+
 Markdown テキストのハイブリッド検索（ベクトル + BM25 + LLM Rerank）を提供する汎用 MCP サーバー。Go で実装し、純粋 Go 製 SQLite（`modernc.org/sqlite`）を採用することで CGO 不要・シングルバイナリ配布を実現する。MCP go-sdk の Streamable HTTP transport を使用し、OpenAI API は標準ライブラリの `net/http` で直接呼び出す。
 
 **Streamable HTTP 採用理由**: MCP go-sdk の標準 transport であり、SSE と比較して双方向ストリーミングに適している。SSE transport は go-sdk のサポートが限定的（サーバー送信専用）であり、ツール呼び出しの応答返却が煩雑になる。Streamable HTTP は MCP 2025-03 仕様で推奨される transport であり、将来互換性の観点からも採用する（PRE-02/NFR-03）。
@@ -958,6 +962,33 @@ handler が返した error を次の 2 通りに分岐させる。
 - `Code`（数値）: JSON-RPC 2.0 の予約域（-32768〜-32000）を避けたアプリケーション固有値。判別の正本は `Data.code` の文字列であり、数値は補助
 
 **回帰テスト**: `internal/mcp/errcode_test.go` が「`*jsonrpc.Error` であること・`Message` 先頭の識別子・`Data.code` / `Data.key`」を handler 経路込みで検証する。`fmt.Errorf` へ戻す変更はこのテストが落ちる。
+
+### 10.2 Embedding 失敗の識別子と欠けた Embedding の補充（Rust 版）
+
+doc-link など、OpenAI の失敗を機械で判別する client のための契約。**Rust 版（`rust/`）のみ**が対象で、比較用の Go 版には入れない（owner 承認済み）。**Rust 版と Go 版のふるまいの差**: Go 版は識別子が `KEY_NOT_FOUND` / `KEY_TRASHED` のみで、`document_errors` を返さず、Embedding が欠けた record も同一ハッシュなら skip する（DIF-02 の従来のふるまい）。既存の tool 名・入力・出力の項目は変えず、追加のみである。
+
+**識別子（追加）**:
+
+| 識別子             | 意味                                                                                               | 返す場面                                                      |
+| ------------------ | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `EMBEDDING_FAILED` | 再試行（3 回）を尽くしても OpenAI から Embedding を得られない。認証・通信・HTTP エラー・応答の不正 | `query` のクエリの Embedding。同期・upsert での文書のチャンク |
+| `INTERNAL_ERROR`   | 上記以外のサーバー内部の失敗（保存先・ファイルの読み取りなど）                                     | 任意の tool の JSON-RPC エラー。同期・upsert の文書ごとの失敗 |
+
+- JSON-RPC エラー: `error.data.code` が判別の正本。`message` 先頭にも `<識別子>: ` を載せる。数値の `error.code` は従来どおり `-32603`。`EMBEDDING_FAILED` には、確認できた OpenAI の HTTP 状態コードを `error.data.http_status` に載せる。認証情報と OpenAI の応答の生の文字列は載せない。
+- 同期ジョブ（`get_sync_status`）: `document_errors: [{path, code, skipped_chunks?}]` を常に返す。ジョブが `done` でも、Embedding に失敗した文書（本文は保存済みで、一部または全部のチャンクの Embedding が欠ける）はここに載る。`failed` のジョブには `code`（`KEY_NOT_FOUND` / `KEY_TRASHED` / `INTERNAL_ERROR` など）を付ける。
+- `upsert_documents` の `errors[]` の各要素にも `code` を付ける。
+- 入力の不正（`-32602`）には識別子を付けない（呼び出し側の誤りであり、サーバー内部の失敗ではない）。
+- 既存の `errors`（文字列の一覧。Embedding の失敗は `embed: ` で始まる）は変更しない。
+
+**Embedding が欠けた record の補充（DIF-02 の精緻化）**: 同一 KEY・path・内容ハッシュの record があっても、Embedding が保存されていないチャンクを持つ record は skip しない。
+
+1. record を series へ紐づける（従来の DIF-02 と同じ）
+2. 全チャンクに Embedding があれば skip（`skipped` に数える。Embedding を呼ばない）
+3. 欠けたチャンクがあれば、本文を再度チャンクに分け、保存済みのチャンクと分割が一致するとき（チャンク数・欠けたチャンクの見出しと本文が一致）、欠けたチャンクの `embed_text` だけを Embedding して保存する（`processed` に数える）
+4. 分割が一致しないとき（`chunker.max_chunk_size` の変更など）は、record の全チャンクを登録し直す
+5. 補充が再び失敗しても、record は series に紐づいたまま `document_errors` に `EMBEDDING_FAILED` を報告する。次の同期が再び補う
+
+**回帰テスト**: `rust/tests.rs::embedding_failure_is_coded_and_next_sync_repairs_missing_chunks` が、OpenAI の mock の失敗・復旧で、上記の識別子・`document_errors`・欠けたチャンクだけの再 Embedding・完全な文書の skip を検証する。
 
 ## 11. テスト設計
 
